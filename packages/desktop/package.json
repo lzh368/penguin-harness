@@ -35,6 +35,7 @@
     "@penguinharness/software-development": "workspace:*",
     "@penguinharness/use-bento-slides": "workspace:*",
     "@penguinharness/use-firecrawl": "workspace:*",
+    "@penguinharness/wikiskill-rsi-toolkit": "workspace:*",
     "@penguinharness/use-claude-code": "workspace:*"
   },
   "devDependencies": {
