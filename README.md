@@ -88,7 +88,7 @@ Four plugin categories ship in the box ([docs](https://penguin.ooo/docs/skills))
 
 | Category             | Plugins                                                                       |
 | -------------------- | ----------------------------------------------------------------------------- |
-| Agent Self-Evolution | `default-rsi-toolkit`, `opro-rsi-toolkit`, `ape-rsi-toolkit`, `ace-rsi-toolkit`, `awm-rsi-toolkit` |
+| Agent Self-Evolution | `default-rsi-toolkit`, `opro-rsi-toolkit`, `ape-rsi-toolkit`, `ace-rsi-toolkit`, `awm-rsi-toolkit`, `wikiskill-rsi-toolkit` |
 | Office Productivity  | `a2ui`, `data-analysis`, `use-firecrawl`, `browser-automation`, `use-bento-slides`, `humanizer`, `goal`, `continual-learning`, `agent-company` |
 | Software Development | `software-development`, `use-claude-code`                              |
 | AI App Development   | `agent-development`, `model-development`, `skill-porting`                     |

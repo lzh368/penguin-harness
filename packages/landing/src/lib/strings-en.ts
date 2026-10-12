@@ -473,6 +473,7 @@ penguin run --message "Analyze data.csv and summarize quarterly sales"`,
           "ape-rsi-toolkit",
           "ace-rsi-toolkit",
           "awm-rsi-toolkit",
+          "rsi-wikiskill",
         ],
       },
       {

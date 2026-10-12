@@ -88,7 +88,7 @@ https://github.com/user-attachments/assets/604eb626-0a5d-4a62-87e3-14ebade1cd5f
 
 | 分类        | 插件                                                                            |
 | ----------- | ------------------------------------------------------------------------------- |
-| Agent 自进化 | `default-rsi-toolkit`、`opro-rsi-toolkit`、`ape-rsi-toolkit`、`ace-rsi-toolkit`、`awm-rsi-toolkit` |
+| Agent 自进化 | `default-rsi-toolkit`、`opro-rsi-toolkit`、`ape-rsi-toolkit`、`ace-rsi-toolkit`、`awm-rsi-toolkit`、`wikiskill-rsi-toolkit` |
 | 办公效率    | `a2ui`、`data-analysis`、`use-firecrawl`、`browser-automation`、`use-bento-slides`、`humanizer`、`goal`、`continual-learning`、`agent-company` |
 | 软件开发    | `software-development`、`use-claude-code`                                |
 | AI 应用开发 | `agent-development`、`model-development`、`skill-porting`                       |

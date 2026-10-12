@@ -453,6 +453,7 @@ penguin run --message "分析 data.csv，输出季度销售额"`,
           "ape-rsi-toolkit",
           "ace-rsi-toolkit",
           "awm-rsi-toolkit",
+          "rsi-wikiskill",
         ],
       },
       {

@@ -89,7 +89,14 @@ describe("loadLibraryPlugins", () => {
   it("loads every plugin directory sorted by name: its npm version, a category, and a dated version on every part", async () => {
     const plugins = loadLibraryPlugins();
     expect(plugins.map((p) => p.name)).toEqual([...plugins.map((p) => p.name)].sort());
-    expect(plugins.length).toBe(19);
+    const host = JSON.parse(
+      await fs.readFile(path.resolve(import.meta.dirname, "../package.json"), "utf8"),
+    ) as { dependencies: Record<string, string> };
+    const declared = Object.keys(host.dependencies)
+      .filter((name) => name.startsWith("@penguinharness/"))
+      .map((name) => name.slice("@penguinharness/".length))
+      .sort();
+    expect(plugins.map((plugin) => plugin.name)).toEqual(declared);
     for (const plugin of plugins) {
       const pkg = JSON.parse(
         await fs.readFile(path.join(pluginsRoot, plugin.name, "package.json"), "utf8"),
@@ -203,11 +210,11 @@ describe("loadLibraryPlugins", () => {
     expect(Object.keys(files).some((rel) => rel.startsWith("reference/"))).toBe(true);
   });
 
-  it("every RSI toolkit other than the default ships the same evaluation reference", () => {
-    // Each algorithm toolkit evaluates through its own copy of one reference, so that it needs
-    // no other plugin; the copies must not drift apart.
-    const toolkits = loadLibraryPlugins().filter(
-      (p) => p.category === "rsi" && p.name !== "default-rsi-toolkit",
+  it("OPRO, APE, ACE and AWM ship the same evaluation reference", () => {
+    // These four toolkits share one evaluation protocol. WikiSkill has a separate protocol
+    // that withholds validation and test task contents from its Controller.
+    const toolkits = ["opro", "ape", "ace", "awm"].map((algorithm) =>
+      libraryPlugin(`${algorithm}-rsi-toolkit`)!,
     );
     expect(toolkits.length).toBeGreaterThan(1);
     const references = toolkits.map((plugin) => {

@@ -1,0 +1,43 @@
+{
+  "name": "@penguinharness/wikiskill-rsi-toolkit",
+  "version": "0.2.13",
+  "description": "WikiSkill RSI Toolkit: compile training trajectories into a persistent wiki and reusable skills, retain only improvements on a held-out validation set, and evaluate the final skill set on isolated test tasks.",
+  "keywords": [
+    "penguin-plugin",
+    "penguinharness",
+    "skills",
+    "rsi",
+    "wikiskill"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Prism-Shadow/penguin-harness.git",
+    "directory": "plugins/wikiskill-rsi-toolkit"
+  },
+  "files": [
+    "icon.svg",
+    "skills",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "penguin": {
+    "title": "WikiSkill RSI Toolkit",
+    "title_zh": "WikiSkill RSI 工具包",
+    "description_zh": "WikiSkill RSI 工具包：将训练轨迹整理为持久 Wiki 和可复用技能，仅保留在独立验证集上提升的技能包，并在隔离的测试任务上评估最终技能包。",
+    "short_description": "Evolve reusable skills from a persistent training wiki.",
+    "short_description_zh": "从持久训练 Wiki 迭代生成可复用技能。",
+    "category": "rsi",
+    "icon": "icon.svg",
+    "preinstall": false,
+    "quick_start": {
+      "prompt": "Use the `rsi-wikiskill` Skill to prepare a WikiSkill experiment. Inspect the experiment configuration, the fixed Target and evaluator boundaries, and the benchmark adapter. Report what is ready and what remains to complete a one-case preflight before starting the three independent replicas.",
+      "prompt_zh": "使用 `rsi-wikiskill` 技能准备 WikiSkill 实验：检查实验配置、固定 Target、评测角色边界和 Benchmark 适配器，说明哪些已就绪、单题预检还缺什么，再开始三次独立重复实验。",
+      "skills": [
+        "rsi-wikiskill"
+      ]
+    }
+  }
+}
