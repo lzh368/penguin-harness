@@ -26,7 +26,6 @@ import { en } from "../src/lib/strings-en";
 
 const params = {
   skill: "rsi-wikiskill",
-  label: "WikiSkill",
   targetAgentId: "target-reports",
   benchmarkId: "reports-train",
   runs: 3,
@@ -116,7 +115,6 @@ describe("WikiSkill's experiment handoff", () => {
       const prompt = buildRsiOptimizePrompt("Keep the original budget.", {
         ...params,
         skill: `${method}-rsi-toolkit`,
-        label: method.toUpperCase(),
         provider: "baseline-provider",
         modelId: "baseline-model",
       });

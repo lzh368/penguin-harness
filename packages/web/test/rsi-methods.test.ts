@@ -223,7 +223,10 @@ describe("the toolkits this repository ships", () => {
 
   it("offers WikiSkill by its localized plugin name and selects its differently named Skill", () => {
     const toolkits = all.filter((p) => p.category === RSI_CATEGORY).map((p) => p.item);
-    for (const [locale, label] of [["zh", "WikiSkill RSI 工具包"], ["en", "WikiSkill RSI Toolkit"]] as const) {
+    for (const [locale, label] of [
+      ["zh", "WikiSkill RSI 工具包"],
+      ["en", "WikiSkill RSI Toolkit"],
+    ] as const) {
       const method = pickRsiMethod(rsiMethods(toolkits, locale), "wikiskill-rsi-toolkit");
       expect(method).toMatchObject({
         plugin: "wikiskill-rsi-toolkit",

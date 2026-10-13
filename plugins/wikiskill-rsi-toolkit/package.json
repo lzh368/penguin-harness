@@ -1,6 +1,6 @@
 {
   "name": "@penguinharness/wikiskill-rsi-toolkit",
-  "version": "0.2.13",
+  "version": "0.2.15",
   "description": "WikiSkill RSI Toolkit: compile training trajectories into a persistent wiki and reusable skills, retain only improvements on a held-out validation set, and evaluate the final skill set on isolated test tasks.",
   "keywords": [
     "penguin-plugin",
