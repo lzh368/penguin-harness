@@ -75,7 +75,7 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual((config["runs_per_case"], config["max_iterations"]), (1, 2))
         self.assertIn("not_paper_default", config["iteration_budget_basis"])
         for model in config["role_models"].values():
-            self.assertEqual(model, {"provider": "deepseek", "model_id": "deepseek-flash", "thinking_level": "medium"})
+            self.assertEqual(model, {"provider": "deepseek", "model_id": "deepseek-flash", "thinking_level": "xhigh"})
 
     def test_deterministic_bytes_and_self_excluding_hash(self):
         first, second = profile.build_profile(), profile.build_profile()

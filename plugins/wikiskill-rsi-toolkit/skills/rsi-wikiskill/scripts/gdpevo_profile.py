@@ -197,10 +197,10 @@ def validate_role_models(value):
 
 def build_profile(iterations=2, benchmark_root=None, role_models=None):
     require(type(iterations) is int and iterations >= 1, "iterations must be a positive integer")
-    # Preserve existing example profiles byte-for-byte. This is a default, not a
+    # The fallback runtime of a profile built without one. This is a default, not a
     # constraint: explicit runtimes are retained in the experiment's own hash.
     if role_models is None:
-        model = {"provider": "deepseek", "model_id": "deepseek-flash", "thinking_level": "medium"}
+        model = {"provider": "deepseek", "model_id": "deepseek-flash", "thinking_level": "xhigh"}
         role_models = {role: dict(model) for role in ROLES}
     role_models = validate_role_models(role_models)
     phases = split_tasks()
@@ -275,7 +275,7 @@ def main():
             validate_role_models(role_models)
         elif explicit:
             runtime = {"provider": args.provider, "model_id": args.model_id,
-                       "thinking_level": args.thinking or "medium"}
+                       "thinking_level": args.thinking or "xhigh"}
             role_models = {role: dict(runtime) for role in ROLES}
         profile = build_profile(args.iterations, args.benchmark_root, role_models)
         if args.benchmark_root is not None:
