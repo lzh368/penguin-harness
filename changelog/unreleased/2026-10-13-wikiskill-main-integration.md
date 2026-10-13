@@ -3,6 +3,7 @@
 - **Date:** 2026-10-13
 - **Type:** fix
 - **Scope:** `web`, `core`, `skills`
+- **PR:** [lzh368/penguin-harness #1](https://github.com/lzh368/penguin-harness/pull/1)
 
 [中文版](2026-10-13-wikiskill-main-integration.zh.md)
 

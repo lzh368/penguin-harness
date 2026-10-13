@@ -3,6 +3,7 @@
 - **Date:** 2026-10-13
 - **Type:** fix
 - **Scope:** `skills`, `web`
+- **PR:** [lzh368/penguin-harness #1](https://github.com/lzh368/penguin-harness/pull/1)
 
 [English](2026-10-13-wikiskill-model-selection.md)
 

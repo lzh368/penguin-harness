@@ -3,6 +3,7 @@
 - **Date:** 2026-10-12
 - **Type:** feature
 - **Scope:** `skills`, `core`, `cli`, `desktop`, `docs`
+- **PR:** [lzh368/penguin-harness #1](https://github.com/lzh368/penguin-harness/pull/1)
 
 [中文版](2026-10-12-wikiskill-rsi-toolkit.zh.md)
 
