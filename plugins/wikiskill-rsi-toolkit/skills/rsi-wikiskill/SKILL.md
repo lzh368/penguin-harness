@@ -1,7 +1,7 @@
 ---
 name: rsi-wikiskill
 description: Run or resume WikiSkill experiments in Penguin. Compile training traces into a persistent Wiki, propose one skill change per batch, and accept changes only when independent validation improves. Use for skill-based RSI with isolated evaluation, including GDPevo through Harbor.
-version: 2026.10.13.3
+version: 2026.10.13.4
 ---
 
 # WikiSkill 自进化
