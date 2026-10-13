@@ -26,7 +26,8 @@
  * only one preselected, and its tail hands it the baseline's provider and model when there is a
  * baseline. Until the library is read — or when the read fails, or it lists no toolkit — the
  * select is disabled and says why, and the tab is the default loop's form: that loop is the
- * product's own and needs nothing from the list.
+ * product's own and needs nothing from the list. WikiSkill instead resolves and freezes the
+ * actual Session runtime and its own experiment configuration before it begins.
  *
  * The conversation is an ordinary Session, listed with the agent's own: only the Test Sessions
  * it starts through `penguin run` (CLI Sessions) are archived, by the listing rule.
@@ -59,7 +60,13 @@ import { agentDisplayName, useProject } from "../../state/project";
 import { PromptFold, composeAiPrompt, pickDefaultAgent, useAiBridge } from "../ai-create";
 import { ModelCatalogSelect } from "../chat/model-select";
 import { defaultTargetScore, latestScoreOfAgent } from "./benchmark-metrics";
-import { MAX_RUNS, evaluateTail, optimizeTail, rsiOptimizeTail } from "./benchmark-prompts";
+import {
+  MAX_RUNS,
+  buildRsiOptimizePrompt,
+  evaluateTail,
+  optimizeTail,
+  wikiSkillAgentPairValid,
+} from "./benchmark-prompts";
 import type { EvaluateParams, OptimizeParams, RsiOptimizeParams } from "./benchmark-prompts";
 import {
   DEFAULT_TOOLKIT_PLUGIN,
@@ -116,6 +123,9 @@ export function UseBenchmarkModal({
   const [testAgentId, setTestAgentId] = useState(
     lastTested ?? currentAgent?.agentId ?? pickDefaultAgent(agents)?.agentId ?? "",
   );
+  // WikiSkill can prepare an isolated Target itself. Keep this choice separate so switching
+  // methods does not replace the tested Agent used by Evaluate or the other optimizers.
+  const [wikiSkillTargetId, setWikiSkillTargetId] = useState("");
   const baseline = latestScoreOfAgent(benchmark.evaluations, testAgentId);
   // The record that baseline is read from — the tested agent's newest scored evaluation, as
   // latestScoreOfAgent picks it. The default loop keeps the provider and model it was recorded
@@ -156,6 +166,7 @@ export function UseBenchmarkModal({
   const toolkit = pickRsiMethod(methods, methodPlugin);
   const isDefaultMethod = toolkit === null || toolkit.kind === "default";
   const optimizerSkill = toolkit?.skill ?? OPTIMIZATION_SKILL;
+  const isWikiSkill = optimizerSkill === "rsi-wikiskill";
   const [skillsByAgent, setSkillsByAgent] = useState<Record<string, string[]>>({});
 
   // The installed Skills of the agents that could carry the work out, fetched once per agent,
@@ -208,25 +219,29 @@ export function UseBenchmarkModal({
   };
   const rsiParams: RsiOptimizeParams = {
     ...evaluateParams,
+    ...(isWikiSkill ? { targetAgentId: wikiSkillTargetId } : {}),
     skill: optimizerSkill,
-    ...(baselineRuntime ?? {}),
+    ...(!isWikiSkill ? (baselineRuntime ?? {}) : {}),
   };
   const text =
     tab === "evaluate"
       ? composeAiPrompt(note, evaluateTail(evaluateParams))
       : isDefaultMethod
         ? composeAiPrompt(focus, optimizeTail(optimizeParams))
-        : composeAiPrompt(focus, rsiOptimizeTail(rsiParams));
+        : buildRsiOptimizePrompt(focus, rsiParams);
   const runnerId = tab === "evaluate" ? evaluatorId : optimizerId;
+  const wikiSkillAgentConflict =
+    tab === "optimize" && isWikiSkill && !wikiSkillAgentPairValid(optimizerId, wikiSkillTargetId);
   // A toolkit other than the default takes no round limit and no target: its budget is its own.
   const ready =
     runnerId !== null &&
-    testAgentId !== "" &&
+    ((tab === "optimize" && isWikiSkill) || testAgentId !== "") &&
     runsValue !== null &&
+    !wikiSkillAgentConflict &&
     (tab === "evaluate" || !isDefaultMethod || (roundsValue !== null && targetValue !== null));
 
   const go = () => {
-    if (runnerId === null) return;
+    if (!ready || runnerId === null) return;
     const ref = modelRef ?? defaultModel;
     openAiChat({
       agentId: runnerId,
@@ -418,7 +433,19 @@ export function UseBenchmarkModal({
               </>
             )}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {testedAgentSelect(S.benchmark.testedAgentHint)}
+              {isWikiSkill ? (
+                <Select
+                  label={S.benchmark.testedAgent}
+                  hint={S.benchmark.wikiskillTargetHint}
+                  value={wikiSkillTargetId}
+                  onChange={(e) => setWikiSkillTargetId(e.target.value)}
+                >
+                  <option value="">{S.benchmark.wikiskillManagedTarget}</option>
+                  {agentOptions}
+                </Select>
+              ) : (
+                testedAgentSelect(S.benchmark.testedAgentHint)
+              )}
               <Select
                 label={S.benchmark.optimizerAgent}
                 hint={
@@ -431,14 +458,15 @@ export function UseBenchmarkModal({
               >
                 {agentOptions}
               </Select>
-              {/* Evaluations run on the model the baseline was recorded on; a toolkit other than
-                  the default with no baseline to follow measures on this conversation's own
-                  model instead, as the Evaluate tab does. */}
+              {/* WikiSkill resolves and freezes the actual Session runtime. Other methods keep
+                  their baseline model, or this conversation's model without a baseline. */}
               {modelField(
                 S.benchmark.sessionModel,
-                isDefaultMethod || baselineRuntime !== null
-                  ? S.benchmark.sessionModelHint
-                  : S.benchmark.evaluateSessionModelHint,
+                isWikiSkill
+                  ? S.benchmark.wikiskillSessionModelHint
+                  : isDefaultMethod || baselineRuntime !== null
+                    ? S.benchmark.sessionModelHint
+                    : S.benchmark.evaluateSessionModelHint,
               )}
             </div>
             {missingSkillStrip(
@@ -447,8 +475,11 @@ export function UseBenchmarkModal({
                 ? S.benchmark.optimizerMissingSkill
                 : S.benchmark.methodMissingSkill(toolkit?.plugin ?? "", optimizerSkill),
             )}
+            {missingSkillStrip(wikiSkillAgentConflict, S.benchmark.wikiskillSeparateTarget)}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              {runsInput(S.benchmark.optimizeRunsHint)}
+              {runsInput(
+                isWikiSkill ? S.benchmark.wikiskillRunsHint : S.benchmark.optimizeRunsHint,
+              )}
               {isDefaultMethod ? (
                 <>
                   <Input
@@ -473,13 +504,15 @@ export function UseBenchmarkModal({
                 </>
               ) : (
                 <p className="text-xs text-gray-500 sm:col-span-2 sm:self-center dark:text-gray-400">
-                  {S.benchmark.methodBudgetHint}
+                  {isWikiSkill ? S.benchmark.wikiskillBudgetHint : S.benchmark.methodBudgetHint}
                 </p>
               )}
             </div>
             <Textarea
               label={S.benchmark.focusField}
-              placeholder={S.benchmark.focusPlaceholder}
+              placeholder={
+                isWikiSkill ? S.benchmark.wikiskillFocusPlaceholder : S.benchmark.focusPlaceholder
+              }
               rows={3}
               value={focus}
               onChange={(e) => setFocus(e.target.value)}

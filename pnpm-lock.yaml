@@ -147,6 +147,9 @@ importers:
       '@penguinharness/use-firecrawl':
         specifier: workspace:*
         version: link:../../plugins/use-firecrawl
+      '@penguinharness/wikiskill-rsi-toolkit':
+        specifier: workspace:*
+        version: link:../../plugins/wikiskill-rsi-toolkit
       '@prismshadow/mmsp':
         specifier: ^0.5.2
         version: 0.5.2(supports-color@10.2.2)(ws@8.21.0)(zod@4.4.3)
@@ -253,6 +256,9 @@ importers:
       '@penguinharness/use-firecrawl':
         specifier: workspace:*
         version: link:../../plugins/use-firecrawl
+      '@penguinharness/wikiskill-rsi-toolkit':
+        specifier: workspace:*
+        version: link:../../plugins/wikiskill-rsi-toolkit
       '@prismshadow/mmsp':
         specifier: ^0.5.2
         version: 0.5.2(supports-color@10.2.2)(ws@8.21.0)(zod@4.4.3)
@@ -353,6 +359,9 @@ importers:
       '@penguinharness/use-firecrawl':
         specifier: workspace:*
         version: link:../../plugins/use-firecrawl
+      '@penguinharness/wikiskill-rsi-toolkit':
+        specifier: workspace:*
+        version: link:../../plugins/wikiskill-rsi-toolkit
     devDependencies:
       '@prismshadow/penguin-cli':
         specifier: workspace:*
@@ -891,6 +900,8 @@ importers:
   plugins/use-claude-code: {}
 
   plugins/use-firecrawl: {}
+
+  plugins/wikiskill-rsi-toolkit: {}
 
 packages:
 
@@ -1894,6 +1905,9 @@ packages:
 
   '@penguinharness/use-firecrawl@file:plugins/use-firecrawl':
     resolution: {directory: plugins/use-firecrawl, type: directory}
+
+  '@penguinharness/wikiskill-rsi-toolkit@file:plugins/wikiskill-rsi-toolkit':
+    resolution: {directory: plugins/wikiskill-rsi-toolkit, type: directory}
 
   '@pkgjs/parseargs@0.11.0':
     resolution: {integrity: sha512-+1VkjdD0QBLPodGrJUeqarH8VAIvQODIbwh9XpP5Syisf7YoQgsJKPNFoqqLQlu+VQ/tVSshMR6loPMn8U+dPg==}
@@ -6466,6 +6480,8 @@ snapshots:
 
   '@penguinharness/use-firecrawl@file:plugins/use-firecrawl': {}
 
+  '@penguinharness/wikiskill-rsi-toolkit@file:plugins/wikiskill-rsi-toolkit': {}
+
   '@pkgjs/parseargs@0.11.0':
     optional: true
 
@@ -6528,6 +6544,7 @@ snapshots:
       '@penguinharness/use-bento-slides': file:plugins/use-bento-slides
       '@penguinharness/use-claude-code': file:plugins/use-claude-code
       '@penguinharness/use-firecrawl': file:plugins/use-firecrawl
+      '@penguinharness/wikiskill-rsi-toolkit': file:plugins/wikiskill-rsi-toolkit
       '@prismshadow/mmsp': 0.5.2(supports-color@10.2.2)(ws@8.21.0)
       '@prismshadow/penguin-core': file:packages/core(supports-color@10.2.2)(ws@8.21.0)
       '@prismshadow/penguin-server': file:packages/server(supports-color@10.2.2)
@@ -6568,6 +6585,7 @@ snapshots:
       '@penguinharness/use-bento-slides': file:plugins/use-bento-slides
       '@penguinharness/use-claude-code': file:plugins/use-claude-code
       '@penguinharness/use-firecrawl': file:plugins/use-firecrawl
+      '@penguinharness/wikiskill-rsi-toolkit': file:plugins/wikiskill-rsi-toolkit
       '@prismshadow/mmsp': 0.5.2(supports-color@10.2.2)(ws@8.21.0)
       arktype: 2.2.3
       smol-toml: 1.6.1
@@ -6603,6 +6621,7 @@ snapshots:
       '@penguinharness/use-bento-slides': file:plugins/use-bento-slides
       '@penguinharness/use-claude-code': file:plugins/use-claude-code
       '@penguinharness/use-firecrawl': file:plugins/use-firecrawl
+      '@penguinharness/wikiskill-rsi-toolkit': file:plugins/wikiskill-rsi-toolkit
       '@prismshadow/mmsp': 0.5.2(supports-color@10.2.2)(ws@8.21.0)(zod@4.4.3)
       arktype: 2.2.3
       smol-toml: 1.6.1

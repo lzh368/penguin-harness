@@ -1,0 +1,43 @@
+{
+  "name": "@penguinharness/wikiskill-rsi-toolkit",
+  "version": "0.2.15",
+  "description": "WikiSkill RSI Toolkit: compile training trajectories into a persistent wiki and reusable skills, retain only improvements on a held-out validation set, and evaluate the final skill set on isolated test tasks.",
+  "keywords": [
+    "penguin-plugin",
+    "penguinharness",
+    "skills",
+    "rsi",
+    "wikiskill"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Prism-Shadow/penguin-harness.git",
+    "directory": "plugins/wikiskill-rsi-toolkit"
+  },
+  "files": [
+    "icon.svg",
+    "skills",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "penguin": {
+    "title": "WikiSkill RSI Toolkit",
+    "title_zh": "WikiSkill RSI 工具包",
+    "description_zh": "WikiSkill RSI 工具包：将训练轨迹整理为持久 Wiki 和可复用技能，仅保留在独立验证集上提升的技能包，并在隔离的测试任务上评估最终技能包。",
+    "short_description": "Evolve reusable skills from a persistent training wiki.",
+    "short_description_zh": "从持久训练 Wiki 迭代生成可复用技能。",
+    "category": "rsi",
+    "icon": "icon.svg",
+    "preinstall": false,
+    "quick_start": {
+      "prompt": "Use the `rsi-wikiskill` Skill in this fresh conversation to prepare an experiment with my selected benchmark, model/provider, runtime and budget. Act as Controller and create or verify only this experiment’s dedicated Target through Penguin’s native commands; I do not need to create Agents manually. Check the training/validation split, evaluation boundaries and adapter. Report readiness and the next action; start task execution only when I request it. Preserve existing experiments and results.",
+      "prompt_zh": "在这个新对话中使用 `rsi-wikiskill` 技能，按我选择的 Benchmark、模型与服务商、运行环境和预算准备实验。你作为 Controller，通过 Penguin 原生命令按需创建或核验本次专用 Target，无需我手工创建智能体。检查训练/验证划分、评测边界和适配器，报告就绪情况与下一步；我要求执行时才启动做题。保留已有实验与结果。",
+      "skills": [
+        "rsi-wikiskill"
+      ]
+    }
+  }
+}

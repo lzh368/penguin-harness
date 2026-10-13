@@ -80,6 +80,7 @@
     "@penguinharness/software-development": "workspace:*",
     "@penguinharness/use-bento-slides": "workspace:*",
     "@penguinharness/use-firecrawl": "workspace:*",
+    "@penguinharness/wikiskill-rsi-toolkit": "workspace:*",
     "@penguinharness/use-claude-code": "workspace:*",
     "@prismshadow/mmsp": "^0.5.2",
     "arktype": "^2.2.3",

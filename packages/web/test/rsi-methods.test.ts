@@ -16,6 +16,8 @@
  * - Given the toolkits this repository ships, then every one is offered, the default first, each
  *   running a Skill its own plugin ships, and the evaluator the default loop measures through
  *   ships in the library too.
+ * - Given the shipped WikiSkill plugin, then its quick-start Skill is selectable under the
+ *   plugin display name in both languages, without a static method or dashboard title table.
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -218,6 +220,22 @@ describe("the toolkits this repository ships", () => {
   const all = readdirSync(PLUGINS, { withFileTypes: true })
     .filter((e) => e.isDirectory() && existsSync(join(PLUGINS, e.name, "package.json")))
     .map((e) => shipped(e.name));
+
+  it("offers WikiSkill by its localized plugin name and selects its differently named Skill", () => {
+    const toolkits = all.filter((p) => p.category === RSI_CATEGORY).map((p) => p.item);
+    for (const [locale, label] of [
+      ["zh", "WikiSkill RSI 工具包"],
+      ["en", "WikiSkill RSI Toolkit"],
+    ] as const) {
+      const method = pickRsiMethod(rsiMethods(toolkits, locale), "wikiskill-rsi-toolkit");
+      expect(method).toMatchObject({
+        plugin: "wikiskill-rsi-toolkit",
+        kind: "paper",
+        skill: "rsi-wikiskill",
+        label,
+      });
+    }
+  });
 
   it("offers every one, the default first, each running a Skill its own plugin ships", () => {
     const toolkits = all.filter((p) => p.category === RSI_CATEGORY).map((p) => p.item);

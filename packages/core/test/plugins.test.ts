@@ -8,6 +8,7 @@
  * The shipped library, as it is in the repo:
  * - Every shipped package.json reads with no warning: a description, both short descriptions, a
  *   known category, a safe icon — and no plugin.json is shipped or left on disk.
+ * - WikiSkill loads its separate evaluation resources and is not preinstalled on task agents.
  *
  * Versions, on a fixture library a temp host package carries (usePushedPluginLibrary):
  * - A plugin's version is the npm version of its package.json.
@@ -89,7 +90,14 @@ describe("loadLibraryPlugins", () => {
   it("loads every plugin directory sorted by name: its npm version, a category, and a dated version on every part", async () => {
     const plugins = loadLibraryPlugins();
     expect(plugins.map((p) => p.name)).toEqual([...plugins.map((p) => p.name)].sort());
-    expect(plugins.length).toBe(20);
+    const host = JSON.parse(
+      await fs.readFile(path.resolve(import.meta.dirname, "../package.json"), "utf8"),
+    ) as { dependencies: Record<string, string> };
+    const declared = Object.keys(host.dependencies)
+      .filter((name) => name.startsWith("@penguinharness/"))
+      .map((name) => name.slice("@penguinharness/".length))
+      .sort();
+    expect(plugins.map((plugin) => plugin.name)).toEqual(declared);
     for (const plugin of plugins) {
       const pkg = JSON.parse(
         await fs.readFile(path.join(pluginsRoot, plugin.name, "package.json"), "utf8"),
@@ -203,11 +211,11 @@ describe("loadLibraryPlugins", () => {
     expect(Object.keys(files).some((rel) => rel.startsWith("reference/"))).toBe(true);
   });
 
-  it("every RSI toolkit other than the default ships the same evaluation reference", () => {
-    // Each algorithm toolkit evaluates through its own copy of one reference, so that it needs
-    // no other plugin; the copies must not drift apart.
-    const toolkits = loadLibraryPlugins().filter(
-      (p) => p.category === "rsi" && p.name !== "default-rsi-toolkit",
+  it("OPRO, APE, ACE and AWM ship the same evaluation reference", () => {
+    // These four toolkits share one evaluation protocol. WikiSkill has a separate protocol
+    // that withholds validation and test task contents from its Controller.
+    const toolkits = ["opro", "ape", "ace", "awm"].map((algorithm) =>
+      libraryPlugin(`${algorithm}-rsi-toolkit`)!,
     );
     expect(toolkits.length).toBeGreaterThan(1);
     const references = toolkits.map((plugin) => {
@@ -222,6 +230,18 @@ describe("loadLibraryPlugins", () => {
       expect(reference.length, toolkits[i]!.name).toBeGreaterThan(0);
       expect(reference, `${toolkits[i]!.name} vs ${toolkits[0]!.name}`).toBe(references[0]);
     }
+  });
+
+  it("loads WikiSkill with its separate evaluation helpers instead of the shared RSI protocol", () => {
+    const plugin = libraryPlugin("wikiskill-rsi-toolkit");
+    expect(plugin?.quickStart?.skills).toEqual(["rsi-wikiskill"]);
+    const skill = plugin?.skills.find((s) => s.name === "rsi-wikiskill");
+    expect(skill?.files).toHaveProperty("references/harbor.md");
+    expect(skill?.files).toHaveProperty("references/gdpevo.md");
+    expect(skill?.files).toHaveProperty("scripts/harbor_result.py");
+    expect(skill?.files).toHaveProperty("scripts/state.py");
+    expect(skill?.files).not.toHaveProperty("references/evaluation.md");
+    expect(plugin?.preinstall).toBe(false);
   });
 
   it("a hook plugin carries a manifest naming its scripts and the hooks/ files to install; goal's start runs only when the host starts a goal", async () => {
@@ -326,6 +346,7 @@ describe("groupPlugins / loadPluginGroups", () => {
       "awm-rsi-toolkit",
       "default-rsi-toolkit",
       "opro-rsi-toolkit",
+      "wikiskill-rsi-toolkit",
     ]);
     expect(names("office-productivity")).toEqual([
       "a2ui",
