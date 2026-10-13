@@ -2,12 +2,14 @@
 
 - **Date:** 2026-10-13
 - **Type:** fix
-- **Scope:** `web`, `core`, `skills`
+- **Scope:** `web`, `core`, `skills`, `landing`
 - **PR:** [lzh368/penguin-harness #1](https://github.com/lzh368/penguin-harness/pull/1)
 
 [English](2026-10-13-wikiskill-main-integration.md)
 
 将 WikiSkill 接入从插件清单发现工具包的算法选择器。快捷入口选择 `rsi-wikiskill`，算法列表显示对应语言的插件名称，无需静态注册表。
+
+在官网的算法目录中补充了 WikiSkill 及其论文链接。
 
 ## 实验交接
 

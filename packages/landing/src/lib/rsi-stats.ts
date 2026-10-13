@@ -33,6 +33,7 @@ export const RSI_TOOLKITS = [
   { plugin: "ape-rsi-toolkit", label: "APE", href: "https://arxiv.org/abs/2211.01910" },
   { plugin: "ace-rsi-toolkit", label: "ACE", href: "https://arxiv.org/abs/2510.04618" },
   { plugin: "awm-rsi-toolkit", label: "AWM", href: "https://arxiv.org/abs/2409.07429" },
+  { plugin: "wikiskill-rsi-toolkit", label: "WikiSkill", href: "https://arxiv.org/abs/2608.27454" },
 ] as const satisfies ReadonlyArray<{ plugin: string; label: string; href: string | null }>;
 
 /**
