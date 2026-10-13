@@ -61,7 +61,7 @@ profile 文件放在 campaign 目录之外；`campaign.py init` 会创建新的 
 
 ## 三次独立执行
 
-每个 replica 使用独立 OUT、专用 Controller 与 Target、空技能和空 Wiki；三者共享隔离的宿主 Penguin 数据根与模型配置，以及只读 benchmark 与安装 bundle。学习状态和会话互不共享，详见 [campaign.md](campaign.md)。每格全新容器与 Session。固定配置相同，真实执行、轨迹、Wiki、候选、验证与最终结果各自独立。
+每个 replica 使用独立 OUT、专用 Target、新的 Controller Session、空技能和空 Wiki；三者共享隔离的宿主 Penguin 数据根与模型配置，以及只读 benchmark 与安装 bundle。Controller 定义可以复用，但不能携带其他重复实验的记忆或对话；可选 campaign 工具另约定三个专用 Controller ID。只在执行当前 replica 时准备它的身份，由 Controller 通过本技能创建或核验 Target。学习状态和会话互不共享，详见 [campaign.md](campaign.md)。每格全新容器与 Session。固定配置相同，真实执行、轨迹、Wiki、候选、验证与最终结果各自独立。
 
 1. 冻结基础 Target 为 H0，运行 6 validation，严格聚合后以实测基线初始化 state。
 2. 用当前 accepted 跑全部 24 train；审计通过后更新 Wiki、提出单技能改动。

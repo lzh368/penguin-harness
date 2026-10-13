@@ -4948,8 +4948,11 @@ Benchmark：
     wikiskillSessionModelHint:
       "新实验默认所有角色使用此对话的模型，也可在优化重点中指定角色模型；已有实验沿用其记录的配置",
     wikiskillRunsHint: "每次测量中每道题的运行次数；独立实验重复次数另行配置",
+    wikiskillManagedTarget: "由技能创建专用 Target",
+    wikiskillTargetHint:
+      "默认由技能按需准备实验 Target；也可选择已有 Target，技能会先核验实验身份与隔离状态。无需提前创建多组智能体。",
     wikiskillSeparateTarget:
-      "优化智能体与被测智能体必须分别选择。WikiSkill 优化方会读取 Wiki，被测智能体不能接收它。",
+      "已有 Target 必须与优化智能体不同；也可选择由技能创建专用 Target。优化方会读取 Wiki，被测智能体不能接收它。",
     wikiskillBudgetHint:
       "在优化重点中指定验证与测试划分、实验目录和预算，或粘贴已检查的工作区草稿。缺失项在评测前补齐。",
     wikiskillFocusPlaceholder:
@@ -5001,7 +5004,9 @@ Benchmark：
       runs: number;
     }): string =>
       "请使用 `rsi-wikiskill` 技能，执行上文要求的 WikiSkill 实验。\n\n" +
-      `- test_agent_id：\`${p.targetAgentId}\`\n` +
+      (p.targetAgentId === ""
+        ? "- target_setup：`skill-managed`（先解析上文及已有实验记录；新实验按需创建专用 Target，续跑核验后复用记录中的 Target，不提前创建所有重复实验的智能体）\n"
+        : `- test_agent_id：\`${p.targetAgentId}\`（已有 Target；先核验能否用于此实验，不覆盖已有状态）\n`) +
       `- train_benchmark_id：\`${p.benchmarkId}\`（Project 的 \`benchmarks/${p.benchmarkId}/\`；这是训练入口，不自动充当验证集或测试集）\n` +
       `- runs_per_case：\`${p.runs}\`（每道题的测量次数，不是独立实验重复次数）\n\n` +
       "核实本 Controller 与 Target 是不同智能体，且 Target 未加载优化或评测技能。" +

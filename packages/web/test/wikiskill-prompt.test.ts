@@ -9,7 +9,10 @@
  * - A supplied workspace draft stays before the WikiSkill instructions with its paths and
  *   preparation-only scope intact; blank Focus contributes nothing.
  * - Other RSI methods continue receiving their baseline runtime and per-case run count.
- * - A WikiSkill draft requires different, selected Controller and Target identities.
+ * - A WikiSkill draft needs a Controller; the Skill may prepare a Target, while an explicit
+ *   Target must differ from the Controller.
+ * - Both languages request preparation without inventing a Target identity, and preserve
+ *   explicit existing Targets for the Skill to verify before reuse.
  */
 import { describe, expect, it } from "vitest";
 import { defaultSystemConfig } from "@prismshadow/penguin-core";
@@ -30,12 +33,14 @@ const params = {
 };
 
 describe("WikiSkill's experiment handoff", () => {
-  it("requires a separate selected Target before allowing the optimization draft", () => {
+  it("allows the Skill to prepare a Target but rejects an explicit Controller as Target", () => {
     expect(wikiSkillAgentPairValid("controller", "target")).toBe(true);
     expect(wikiSkillAgentPairValid("default_agent", "default_agent")).toBe(false);
     expect(wikiSkillAgentPairValid(null, "target")).toBe(false);
     expect(wikiSkillAgentPairValid("", "target")).toBe(false);
-    expect(wikiSkillAgentPairValid("controller", "")).toBe(false);
+    expect(wikiSkillAgentPairValid("controller", "")).toBe(true);
+    expect(wikiSkillAgentPairValid(null, "")).toBe(false);
+    expect(wikiSkillAgentPairValid("", "")).toBe(false);
   });
 
   it("does not pin a historical baseline's runtime into a new experiment's prompt", () => {
@@ -67,8 +72,20 @@ describe("WikiSkill's experiment handoff", () => {
   };
 
   for (const [locale, dict] of Object.entries({ zh, en })) {
+    it(`${locale}: delegates Target preparation without claiming an Agent already exists`, () => {
+      const prompt = dict.benchmark.wikiskillOptimizeTail({ ...params, targetAgentId: "" });
+      expect(prompt).toMatch(/target_setup[：:] ?`skill-managed`/);
+      expect(prompt).not.toContain("test_agent_id");
+      expect(prompt).not.toContain("`target-reports`");
+      expect(prompt).toMatch(/已有实验记录|existing experiment records/);
+      expect(prompt).toMatch(/不提前创建|do not pre-create/);
+    });
+
     it(`${locale}: resolves the Session runtime and separates the training entry from held-out evaluation`, () => {
       const prompt = dict.benchmark.wikiskillOptimizeTail(params);
+      expect(prompt).toMatch(/test_agent_id[：:] ?`target-reports`/);
+      expect(prompt).not.toContain("target_setup");
+      expect(prompt).toMatch(/先核验能否用于此实验|verify that it can be used for this experiment/);
       for (const placeholder of ["{{PROVIDER}}", "{{MODEL_ID}}"])
         expect(prompt).toContain(`\`${environmentLabel(placeholder)}\``);
       expect(prompt).toContain("`rsi-wikiskill`");

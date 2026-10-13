@@ -4817,8 +4817,11 @@ Scenarios:
       "New experiments use this conversation's model for all roles unless you specify role models in Focus; an existing experiment keeps its recorded configuration",
     wikiskillRunsHint:
       "Runs per case within each measurement; independent experiment repeats are configured separately",
+    wikiskillManagedTarget: "Let the Skill create a dedicated Target",
+    wikiskillTargetHint:
+      "The Skill prepares the experiment Target when needed. You may select an existing Target; the Skill first checks its experiment identity and isolation. No need to create agent pairs in advance.",
     wikiskillSeparateTarget:
-      "Choose different optimizer and tested agents. The WikiSkill optimizer reads the Wiki; the tested agent must not receive it.",
+      "An existing Target must differ from the optimizer, or let the Skill create a dedicated Target. The optimizer reads the Wiki; the tested agent must not receive it.",
     wikiskillBudgetHint:
       "Specify the validation and test split, experiment directory and budget in Focus, or paste a checked workspace draft. Missing inputs are resolved before evaluation.",
     wikiskillFocusPlaceholder:
@@ -4861,7 +4864,9 @@ Scenarios:
       runs: number;
     }): string =>
       "Use the `rsi-wikiskill` Skill to carry out the WikiSkill experiment requested above.\n\n" +
-      `- test_agent_id: \`${p.targetAgentId}\`\n` +
+      (p.targetAgentId === ""
+        ? "- target_setup: `skill-managed` (resolve instructions above and existing experiment records first; create a dedicated Target when a new experiment needs it, or verify and reuse the recorded Target when resuming; do not pre-create agents for every repeat)\n"
+        : `- test_agent_id: \`${p.targetAgentId}\` (existing Target; verify that it can be used for this experiment without overwriting its state)\n`) +
       `- train_benchmark_id: \`${p.benchmarkId}\` (the Project's \`benchmarks/${p.benchmarkId}/\`; a training entry, not an automatic validation or test split)\n` +
       `- runs_per_case: \`${p.runs}\` (per-case measurements, not independent experiment repeats)\n\n` +
       "Verify that this Controller and the Target are different agents, and that the Target has no optimizer or evaluation skills. " +
