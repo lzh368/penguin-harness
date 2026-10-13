@@ -4,7 +4,7 @@
 
 ## Controller：接入和冻结
 
-需要现成可用的 Penguin CLI/Server、顶层 `run_subagent` / `input_subagent`、Linux/Unix 上的 Python 3.10+；本地接口另需 Workspace benchmark，GDPevo 另需其 Harbor 依赖。检查能力即可，不为一次实验自动安装服务或修改 core。本技能由 `wikiskill-rsi-toolkit` plugin 提供。创建专用 Controller 时选择该 plugin；现有项目也可通过 `penguin plugin install <plugin绝对目录>` 导入。技能源码留在 plugin 的 `skills/rsi-wikiskill/`，不要再维护第二份编辑副本。
+需要现成可用的 Penguin CLI/Server、顶层 `run_subagent` / `input_subagent`、Linux/Unix 上的 Python 3.10+；本地接口另需 Workspace benchmark，GDPevo 另需其 Harbor 依赖。检查能力即可，不为一次实验自动安装服务或修改 core。本技能由 `wikiskill-rsi-toolkit` plugin 提供。当前普通 Agent 加载本技能后即承担 Controller；不要求特殊 Agent 类型。现有项目可通过 `penguin plugin install <plugin绝对目录>` 导入。技能源码留在 plugin 的 `skills/rsi-wikiskill/`，不要再维护第二份编辑副本。
 
 从 Environment 的 App Data Dir 推导：
 
@@ -14,6 +14,48 @@ TARGET = PROJECT_DIR/agents/<target_id>
 STATE = TARGET/agent_state
 BENCHMARK = PROJECT_DIR/benchmarks/<benchmark_id>
 ```
+
+### 按需准备身份
+
+用户发出准备或执行 WikiSkill 实验的请求后，你负责准备身份，不把创建 Agent 的命令转交给用户逐项操作。只处理当前 smoke/replica；尚未开始的重复实验无需预建 Agent。普通 Web 入口可以让当前 Agent 做 Controller；可选 GDPevo campaign 工具会冻结专用 Controller ID，使用该工具时须从对应 Agent 的新 Session 启动，不能把当前身份冒写成冻结身份。
+
+1. 从 Environment 确认 App Data Dir、当前 Agent ID 和 Session ID；确认这是没有其他实验历史的新会话，且当前加载的用户/Workspace 记忆没有其他 replica 的 Wiki、技能或结果。新 Session 本身不会清除持久记忆。若已注入其他实验经验，不能宣称独立重复；换干净的 Controller/Workspace 后再开始，不删除用户的通用记忆。
+2. 解析本次实验清单。已有 `experiment.json` 或 campaign 时沿用其 `target_id` 和 OUT；页面的 `target_setup: skill-managed` 只表示由技能准备身份，不能覆盖清单中的具体 ID。新实验没有 Target ID 时生成 `wiki_target_<UUID的32位小写hex>`，以 `[a-z][a-z0-9_]{1,63}` 限制并检查不等于当前 Agent ID。按用户给定 OUT，或在当前用户工作区的独立实验子目录中分配 OUT，记录创建意图及身份；OUT 不能位于 Target State、任何做题 Workspace 内，也不能复用其他实验目录。
+3. 用现有 CLI 查询项目，按结果判断是否需要创建。命令中的 `PROJECT_ID` 从当前 Session 的项目身份核实；不要切换到别的 Penguin 数据根。不要输出完整环境变量。
+
+```bash
+PROJECT_ID="<已核实的项目ID>"
+TARGET_ID="<本次已记录的Target ID>"
+penguin agent ls --project-id "$PROJECT_ID" --json
+```
+
+4. 如果 ID 不存在，由你调用原生创建命令，不传 `--plugins`、不导入快照、不复制 Controller 的 State、技能、记忆或对话：
+
+```bash
+penguin agent create --project-id "$PROJECT_ID" \
+  --agent-id "$TARGET_ID" --name "$TARGET_ID" \
+  --description "Dedicated WikiSkill experiment Target" --json
+```
+
+非 `default_agent` 的普通新 Agent 在未指定 plugin 时技能为空；仍以返回值和实际 State 检查为准。若返回 ID 已占用，不覆盖、删除或盲目换号；先查询并核对它是否属于本次准备事务。没有归属证据的碰撞保留原 Agent，新实验另分配 ID 并记录；已冻结身份发生冲突则停止，不能改写冻结清单。
+
+5. 创建后或用户明确选了已有 Target 时，再执行：
+
+```bash
+penguin agent ls --project-id "$PROJECT_ID" --json
+penguin session ls --project-id "$PROJECT_ID" \
+  --agent-id "$TARGET_ID" --all --json
+```
+
+`agent ls` 的 `activeSessionCount`、`sessionCount`、`skillCount`、`memoryCount` 提供初筛；`memoryCount` 不统计各作用域的 `MEMORY.md` 索引，不能仅凭计数为零判定空记忆。核对规范路径、无符号链接越界，以及该 Target 的非敏感 State 和记忆索引内容。**新实验**要求零历史 Session、零活动 Session、空技能与记忆、无 Wiki/旧注入段/学到的业务规则；已有未使用的预建 Target 满足同样条件即可沿用，不必删除重建。不把其他实验曾使用的 Target 清空后充作新身份。**续跑**允许历史 Session 和已接受技能，但要求属于本实验，配置、版本和注入 hash 与冻结清单及部署账本吻合；有运行中的 cell 时先确认其状态，不能重复启动或重置。
+
+6. 在 `experiment.json` 记录实际 Controller ID/Session ID、Target ID、创建/复用依据、OUT 及所选 runtime，再按下一节冻结基础 Target。先完成本次身份准备，再调用评测角色。准备过程中不执行 `penguin run` 给 Target 发送试探消息，也不伪造 baseline。
+
+这些命令使用当前 Session 的原生 CLI 控制环境和项目访问权限。`agent create` 无需开启 Agent 对外 API；CLI 自行处理内部鉴权，模型不读取 `.project_config.toml`、`.vault.toml`、token 文件或打印 Key。若 CLI 不可用、项目访问被拒或命令审批受限，报告具体阻塞，让操作者修复环境；不创建第二个服务或绕过审批。
+
+Controller 的复用只复用定义：每次独立重复从新 Session、新 Workspace 开始，禁止读取其他实验的 scratchpad、trace、Wiki 或结果。不能将一个 replica 的完整父对话传给下一次。Evaluator、Maintainer、Proposer、Auditor 是本次 Controller 的叶子 `run_subagent` 会话，不出现在需手工维护的持久 Agent 清单中。
+
+### 冻结运行配置
 
 模型绑定来自已选实验 profile；新实验按用户的网页选择或启动参数记录完整 `provider/model_id` 和 thinking。没有显式选择时可采用当前 Controller Environment 的完整模型对，并在实验配置中说明来源。Target `system_config.yaml` 的 `model` 块不含 provider/model ID，不能只凭它或卡片显示名确定绑定。可用现有 API/CLI 的脱敏模型元数据核对模型与 Key 配置状态；不直接读取凭证文件或回显 Key。
 

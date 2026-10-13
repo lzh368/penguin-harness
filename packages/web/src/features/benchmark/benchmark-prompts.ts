@@ -91,7 +91,7 @@ export function buildOptimizePrompt(focus: string, params: OptimizeParams): stri
 export interface RsiOptimizeParams {
   /** The toolkit's one Skill (rsi-methods.ts says which Skill of its plugin that is). */
   skill: string;
-  /** The Agent under test: the one the toolkit initializes and improves. */
+  /** The Agent under test; empty only when WikiSkill will prepare its own isolated Target. */
   targetAgentId: string;
   benchmarkId: string;
   /** Runs per case for every measurement. */
@@ -114,11 +114,9 @@ export function wikiskillOptimizeTail(params: EvaluateParams): string {
   return S.benchmark.wikiskillOptimizeTail(params);
 }
 
-/** The optimizer reads private learning state that its separate Target must never inherit. */
+/** Empty means the Skill prepares a Target; a selected Target must be separate from its optimizer. */
 export function wikiSkillAgentPairValid(controllerId: string | null, targetId: string): boolean {
-  return (
-    controllerId !== null && controllerId !== "" && targetId !== "" && controllerId !== targetId
-  );
+  return controllerId !== null && controllerId !== "" && controllerId !== targetId;
 }
 
 /**

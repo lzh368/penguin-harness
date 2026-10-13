@@ -123,6 +123,9 @@ export function UseBenchmarkModal({
   const [testAgentId, setTestAgentId] = useState(
     lastTested ?? currentAgent?.agentId ?? pickDefaultAgent(agents)?.agentId ?? "",
   );
+  // WikiSkill can prepare an isolated Target itself. Keep this choice separate so switching
+  // methods does not replace the tested Agent used by Evaluate or the other optimizers.
+  const [wikiSkillTargetId, setWikiSkillTargetId] = useState("");
   const baseline = latestScoreOfAgent(benchmark.evaluations, testAgentId);
   // The record that baseline is read from — the tested agent's newest scored evaluation, as
   // latestScoreOfAgent picks it. The default loop keeps the provider and model it was recorded
@@ -216,6 +219,7 @@ export function UseBenchmarkModal({
   };
   const rsiParams: RsiOptimizeParams = {
     ...evaluateParams,
+    ...(isWikiSkill ? { targetAgentId: wikiSkillTargetId } : {}),
     skill: optimizerSkill,
     ...(!isWikiSkill ? (baselineRuntime ?? {}) : {}),
   };
@@ -227,11 +231,11 @@ export function UseBenchmarkModal({
         : buildRsiOptimizePrompt(focus, rsiParams);
   const runnerId = tab === "evaluate" ? evaluatorId : optimizerId;
   const wikiSkillAgentConflict =
-    tab === "optimize" && isWikiSkill && !wikiSkillAgentPairValid(optimizerId, testAgentId);
+    tab === "optimize" && isWikiSkill && !wikiSkillAgentPairValid(optimizerId, wikiSkillTargetId);
   // A toolkit other than the default takes no round limit and no target: its budget is its own.
   const ready =
     runnerId !== null &&
-    testAgentId !== "" &&
+    ((tab === "optimize" && isWikiSkill) || testAgentId !== "") &&
     runsValue !== null &&
     !wikiSkillAgentConflict &&
     (tab === "evaluate" || !isDefaultMethod || (roundsValue !== null && targetValue !== null));
@@ -429,7 +433,19 @@ export function UseBenchmarkModal({
               </>
             )}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {testedAgentSelect(S.benchmark.testedAgentHint)}
+              {isWikiSkill ? (
+                <Select
+                  label={S.benchmark.testedAgent}
+                  hint={S.benchmark.wikiskillTargetHint}
+                  value={wikiSkillTargetId}
+                  onChange={(e) => setWikiSkillTargetId(e.target.value)}
+                >
+                  <option value="">{S.benchmark.wikiskillManagedTarget}</option>
+                  {agentOptions}
+                </Select>
+              ) : (
+                testedAgentSelect(S.benchmark.testedAgentHint)
+              )}
               <Select
                 label={S.benchmark.optimizerAgent}
                 hint={
