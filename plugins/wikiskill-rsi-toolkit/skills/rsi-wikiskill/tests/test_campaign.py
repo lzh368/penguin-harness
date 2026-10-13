@@ -15,13 +15,17 @@ Given / When / Then scenarios:
 - A source or campaign path is a symlink: no linked location is read or written.
 - Campaign and Penguin home overlap, or a project ID escapes its directory:
   initialization refuses the layout before writing any campaign files.
+- A normal Python invocation has no -B or cache environment settings: campaign
+  initialization succeeds without writing binary resources into the plugin.
 """
 from copy import deepcopy
 from decimal import Decimal
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -128,6 +132,21 @@ class CampaignCLITest(unittest.TestCase):
         self.assertFalse(list(self.campaign.rglob("*baseline*")))
         self.initialize(project="another_project", succeeds=False)
         self.assertEqual((self.campaign / "campaign.json").read_bytes(), frozen_bytes)
+
+    def test_plain_python_invocation_keeps_plugin_resources_unchanged(self):
+        scripts = self.root / "plugin-scripts"
+        shutil.copytree(SCRIPTS, scripts, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        before = {p.relative_to(scripts): p.read_bytes() for p in scripts.rglob("*") if p.is_file()}
+        env = os.environ.copy()
+        env.pop("PYTHONDONTWRITEBYTECODE", None)
+        env.pop("PYTHONPYCACHEPREFIX", None)
+        result = subprocess.run([sys.executable, str(scripts / "campaign.py"), "init",
+                                 "--profile", str(self.profile_path), "--out", str(self.campaign),
+                                 "--penguin-home", str(self.home), "--project-id", "default_project"],
+                                env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.campaign / "campaign.json").is_file())
+        self.assertEqual({p.relative_to(scripts): p.read_bytes() for p in scripts.rglob("*") if p.is_file()}, before)
 
     def test_unverified_corrupt_or_changed_experiments_cannot_initialize(self):
         bad = [deepcopy(self.unverified)]
