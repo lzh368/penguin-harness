@@ -48,11 +48,12 @@ describe("RSI_METHODS", () => {
     }
   });
 
-  it("labels and describes every method in both dictionaries", () => {
+  it("labels every method on the start page and describes it in the picker in both languages", () => {
     for (const dict of [zh, en]) {
       for (const m of RSI_METHODS) {
         expect(dict.benchmark.methods[m.id].label.trim()).not.toBe("");
         expect(dict.benchmark.methods[m.id].blurb.trim()).not.toBe("");
+        expect(dict.chat.start.toolkitTitle[m.id].trim()).not.toBe("");
       }
     }
   });

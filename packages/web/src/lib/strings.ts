@@ -3150,6 +3150,7 @@ export const zh = {
         ape: "APE",
         ace: "ACE",
         awm: "AWM",
+        wikiskill: "WikiSkill",
       } satisfies Record<RsiMethodId, string>,
       /** The menu over the toolkit tile's name: picking another one is what Start will start. */
       toolkitPick: "切换自进化算法",
