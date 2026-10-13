@@ -2,7 +2,7 @@
 
 - **Date:** 2026-10-13
 - **Type:** fix
-- **Scope:** `web`, `core`, `skills`, `landing`
+- **Scope:** `web`, `core`, `skills`, `landing`, `ui-gallery`
 - **PR:** [lzh368/penguin-harness #1](https://github.com/lzh368/penguin-harness/pull/1)
 
 [中文版](2026-10-13-wikiskill-main-integration.zh.md)
@@ -10,6 +10,7 @@
 Integrated WikiSkill with the method picker that discovers toolkits from plugin manifests. Its quick start selects `rsi-wikiskill`, and its localized plugin name appears in the method list without a static registry.
 
 Added WikiSkill and its paper link to the landing page's algorithm catalogue.
+The gallery's demo library also lists the toolkit with its manifest and Skill metadata.
 
 ## Experiment handoff
 

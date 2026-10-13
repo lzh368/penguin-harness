@@ -23,6 +23,8 @@ import defaultIcon from "../../../../../plugins/default-rsi-toolkit/icon.svg?raw
 import defaultPkg from "../../../../../plugins/default-rsi-toolkit/package.json";
 import oproIcon from "../../../../../plugins/opro-rsi-toolkit/icon.svg?raw";
 import oproPkg from "../../../../../plugins/opro-rsi-toolkit/package.json";
+import wikiskillIcon from "../../../../../plugins/wikiskill-rsi-toolkit/icon.svg?raw";
+import wikiskillPkg from "../../../../../plugins/wikiskill-rsi-toolkit/package.json";
 
 /** The fields of a plugin's package.json the library listing reads. */
 interface Manifest {
@@ -74,13 +76,13 @@ function libraryPlugin(manifest: Manifest, icon: string, skills: SkillMetadataIt
   };
 }
 
-/** The shipped Skills' frontmatter version, the same for every Skill below. */
+/** The original toolkits' shared frontmatter version; newer Skills pass their own version. */
 const SKILL_VERSION = "2026.10.12.1";
 
-const skill = (name: string, description: string): SkillMetadataItem => ({
+const skill = (name: string, description: string, version = SKILL_VERSION): SkillMetadataItem => ({
   name,
   description,
-  version: SKILL_VERSION,
+  version,
 });
 
 /** The library's self-evolution toolkits (the `rsi` category), in its order: by name. */
@@ -114,6 +116,13 @@ export function rsiToolkitPlugins(): PluginItem[] {
       skill(
         "opro-rsi-toolkit",
         "Reproduce OPRO (Large Language Models as Optimizers, Yang et al. 2023) on an agent and a frozen Benchmark, or on the precise-summary demo task shipped with this Skill: propose instructions from the scored history, measure each one, keep the best.",
+      ),
+    ]),
+    libraryPlugin(wikiskillPkg, wikiskillIcon, [
+      skill(
+        "rsi-wikiskill",
+        "Run or resume WikiSkill experiments in Penguin. Compile training traces into a persistent Wiki, propose one skill change per batch, and accept changes only when independent validation improves. Use for skill-based RSI with isolated evaluation, including GDPevo through Harbor.",
+        "2026.10.13.4",
       ),
     ]),
   ];
