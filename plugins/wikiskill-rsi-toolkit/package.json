@@ -33,8 +33,8 @@
     "icon": "icon.svg",
     "preinstall": false,
     "quick_start": {
-      "prompt": "Use the `rsi-wikiskill` Skill to prepare a WikiSkill experiment. Inspect the experiment configuration, the fixed Target and evaluator boundaries, and the benchmark adapter. Report what is ready and what remains to complete a one-case preflight before starting the three independent replicas.",
-      "prompt_zh": "使用 `rsi-wikiskill` 技能准备 WikiSkill 实验：检查实验配置、固定 Target、评测角色边界和 Benchmark 适配器，说明哪些已就绪、单题预检还缺什么，再开始三次独立重复实验。",
+      "prompt": "Use the `rsi-wikiskill` Skill to prepare an experiment with my selected benchmark, model/provider, runtime and budget. Check the training/validation split, dedicated Target, evaluation boundaries and adapter. Report readiness and draft the next action; start model calls only when I request execution. Keep existing experiment configuration and results intact.",
+      "prompt_zh": "使用 `rsi-wikiskill` 技能，按我选择的 Benchmark、模型与服务商、运行环境和预算准备实验。检查训练/验证划分、专用 Target、评测边界和适配器，报告就绪情况并准备下一步操作；我要求执行时才启动模型调用。保留已有实验配置和结果。",
       "skills": [
         "rsi-wikiskill"
       ]

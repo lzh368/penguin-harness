@@ -17,6 +17,9 @@ Given / When / Then scenarios:
   initialization refuses the layout before writing any campaign files.
 - A normal Python invocation has no -B or cache environment settings: campaign
   initialization succeeds without writing binary resources into the plugin.
+- A user chooses alternative runtimes and an Agent prefix: plans retain the
+  selected Target runtime and independent identities; cells from another runtime
+  fail aggregation, and reinitialization never overwrites an existing campaign.
 """
 from copy import deepcopy
 from decimal import Decimal
@@ -85,7 +88,8 @@ class CampaignCLITest(unittest.TestCase):
     def initialize(self, **kwargs):
         return self.cli("init", "--profile", self.profile_path, "--out", self.campaign,
                         "--penguin-home", kwargs.pop("home", self.home),
-                        "--project-id", kwargs.pop("project", "offline_project"), **kwargs)
+                        "--project-id", kwargs.pop("project", "offline_project"),
+                        "--agent-prefix", kwargs.pop("prefix", "wiki"), **kwargs)
 
     def plan(self, replica="r1", phase="test", label="test-H0", version=1, skill_hash=None, **kwargs):
         return self.cli("plan", "--campaign", self.campaign, "--replica", replica,
@@ -154,7 +158,8 @@ class CampaignCLITest(unittest.TestCase):
         corrupted["config"]["max_iterations"] = 3
         bad.append(corrupted)
         for edit in (
-                lambda p: p["config"]["role_models"]["target"].update(model_id="different-model"),
+                lambda p: p["config"]["role_models"]["target"].update(model_id=""),
+                lambda p: p["config"]["role_models"].pop("target"),
                 lambda p: p["config"].update(runs_per_case=2),
                 lambda p: p["config"].update(replicas=["r1", "r1", "r3"]),
                 lambda p: p["phases"]["train"]["tasks"].pop(),
@@ -169,6 +174,39 @@ class CampaignCLITest(unittest.TestCase):
                 self.profile_path.write_bytes(json_bytes(value))
                 self.initialize(succeeds=False)
                 self.assertFalse(self.campaign.exists())
+
+    def test_alternative_runtime_and_namespace_flow_through_plan_and_aggregation(self):
+        selected = deepcopy(self.verified)
+        runtime = {"provider": "openrouter", "model_id": "deepseek/deepseek-v4.1-flash", "thinking_level": "high"}
+        selected["config"]["role_models"] = {role: dict(runtime) for role in selected["config"]["role_models"]}
+        selected["config"]["role_models"]["controller"] = {
+            "provider": "custom", "model_id": "controller-model", "thinking_level": "low"}
+        self.profile_path.write_bytes(json_bytes(rehash(selected, "profile_sha256")))
+        config = self.initialize(prefix="wiki_alternative")
+        self.assertEqual(self.initialize(prefix="wiki_alternative"), config)
+        planned = self.plan(phase="validation", label="validation-H0")
+        self.cells(planned)
+        phase = json.loads(Path(planned["plan"]).read_bytes())
+        self.assertEqual({key: phase[key] for key in runtime}, runtime)
+        self.assertEqual(phase["agent_id"], "wiki_alternative_target_r1")
+        self.assertEqual(config["replicas"][2]["controller_agent_id"], "wiki_alternative_controller_r3")
+        aggregate = [sys.executable, "-B", str(SCRIPTS / "aggregate.py"),
+                     "--plan", planned["plan"], "--results", planned["cells"]]
+        result = subprocess.run(aggregate, capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(result.stdout)["cell_count"], 6)
+        first = Path(planned["cells"]) / "000.json"
+        wrong = json.loads(first.read_bytes())
+        wrong.update(provider="deepseek", model_id="deepseek-flash")
+        first.write_bytes(json_bytes(wrong))
+        refused = subprocess.run(aggregate, capture_output=True, text=True)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual(refused.stdout, "")
+
+        frozen = {name: (self.campaign / name).read_bytes() for name in ("campaign.json", "profile.json")}
+        self.initialize(prefix="wiki_different", succeeds=False)
+        self.profile_path.write_bytes(json_bytes(self.verified))
+        self.initialize(prefix="wiki_alternative", succeeds=False)
+        self.assertEqual({name: (self.campaign / name).read_bytes() for name in frozen}, frozen)
 
     def test_validation_plan_runs_through_existing_aggregate_and_cannot_be_overwritten(self):
         self.initialize()
@@ -303,6 +341,10 @@ class CampaignCLITest(unittest.TestCase):
         for home in (self.campaign, self.campaign / "home", self.root):
             with self.subTest(home=home):
                 self.initialize(home=home, succeeds=False)
+                self.assertFalse(self.campaign.exists())
+        for prefix in ("a", "A_prefix", "bad-prefix", "../escape", "a" * 41):
+            with self.subTest(prefix=prefix):
+                self.initialize(prefix=prefix, succeeds=False)
                 self.assertFalse(self.campaign.exists())
 
 

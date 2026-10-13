@@ -15,7 +15,9 @@ STATE = TARGET/agent_state
 BENCHMARK = PROJECT_DIR/benchmarks/<benchmark_id>
 ```
 
-明确固定 provider/model：用户指定优先，否则取 Controller Environment 的完整模型对。Target `system_config.yaml` 的 `model` 块不含 provider/model ID；不从 Project 默认值推断。缺完整模型对时问用户。不读 `.project_config.toml`、`.vault.toml`、`api-token`、`web.db`，不调用会展示密钥尾部的 `penguin config model list`。
+模型绑定来自已选实验 profile；新实验按用户的网页选择或启动参数记录完整 `provider/model_id` 和 thinking。没有显式选择时可采用当前 Controller Environment 的完整模型对，并在实验配置中说明来源。Target `system_config.yaml` 的 `model` 块不含 provider/model ID，不能只凭它或卡片显示名确定绑定。可用现有 API/CLI 的脱敏模型元数据核对模型与 Key 配置状态；不直接读取凭证文件或回显 Key。
+
+技能不要求特定服务商。使用官方端点或 OpenRouter 都按所选分组配置凭证，实验记录真实 provider、完整 model_id 及非敏感端点/路由参数。所选模型须支持运行器所需工具和参数；thinking 不受支持时在新实验开始前选择可用设置，不在失败后静默降级。续跑仅接受原配置，改选则新建独立实验。
 
 使用独立 Target。冻结 `system_config.yaml`（除递增的顶层 version）、基础 `AGENTS.md`、工具/hooks、模型参数、固定任务提示、依赖版本及 benchmark。无运行中的 Target Session 才能切换技能。Target 自动记忆、跨 Session 的可变产物和网络持久状态也可能携带经验：禁用此类跨 cell 输入，或提供明确的隔离/恢复策略。无法清除任务环境残留时停止该 benchmark 接入。
 
@@ -47,10 +49,14 @@ Controller 只读取 split 清单和指纹；validation/test 内容指纹由数�
 
 以下原生 worker 请求、CLI 和轨迹路径仅用于 Workspace。GDPevo 复用八字段请求和 aggregate 结果格式，按 Harbor 文档派发 worker；逻辑 phase 额外通过冻结的 plan 绑定。
 
-顶层 Controller 为每个 phase 生成完整 plan，结构见 [state.md](state.md)。每个 cell 调一次叶子 evaluator：
+顶层 Controller 为每个 phase 生成完整 plan，结构见 [state.md](state.md)。Controller Session 自身使用 `role_models.controller`；启动 Evaluator、Wiki Maintainer、Skill Proposer、Companion Auditor 时，按相应 `role_models` 条目向 `run_subagent` 显式传入 `provider`、`model_id`、`thinking_level`。不能只在提示词中声明模型或依赖默认继承。每个 cell 调一次叶子 evaluator；其工具参数绑定 Evaluator，而提示词内八字段请求绑定 Target：
 
 ```text
-run_subagent(prompt="读取 <本文件绝对路径> 的‘Evaluator’段并严格执行。
+run_subagent(
+  provider="<role_models.evaluator.provider>",
+  model_id="<role_models.evaluator.model_id>",
+  thinking_level="<role_models.evaluator.thinking_level>",
+  prompt="读取 <本文件绝对路径> 的‘Evaluator’段并严格执行。
 只评测以下一个 cell，最后仅返回协议 JSON：
 protocol_version: 1
 case_id: <id>
@@ -58,8 +64,8 @@ run: <正整数标签>
 expected_version: <冻结的State版本>
 test_agent_id: <target>
 benchmark_id: <本phase的benchmark>
-provider: <固定provider>
-model_id: <固定model>")
+provider: <role_models.target.provider>
+model_id: <role_models.target.model_id>")
 ```
 
 不把整段父对话传给 worker。先按串行运行；提高并发时仍需独立 Workspace 和不变 State。所有 worker 真正结束后才可部署/回滚技能。叶子 evaluator 通过 CLI 启动 Target，不能再调用 `run_subagent`。

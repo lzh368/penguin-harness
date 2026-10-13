@@ -1,4 +1,13 @@
-"""Offline tests of the fixed split and local source/output guards."""
+"""Offline tests of the fixed split and local source/output guards.
+
+Runtime selection scenarios:
+- A user selects a provider and slash-containing model ID: the CLI freezes those
+  values for all roles without changing the split, and refuses a later overwrite.
+- A user supplies six different role runtimes: the CLI preserves each selection.
+- A runtime is incomplete, contains credentials, or conflicts with CLI flags:
+  profile generation fails before creating its output.
+"""
+from copy import deepcopy
 import hashlib
 import importlib.util
 import json
@@ -79,6 +88,69 @@ class ProfileTests(unittest.TestCase):
         for value in (0, -1, True, 1.0, "2", None):
             with self.subTest(value=value), self.assertRaises(profile.InvalidProfile):
                 profile.build_profile(value)
+
+    def test_selected_runtimes_change_identity_without_changing_the_split(self):
+        original = profile.build_profile()
+        runtimes = {role: {"provider": "openrouter", "model_id": "deepseek/deepseek-v4.1-flash",
+                           "thinking_level": "high"} for role in profile.ROLES}
+        selected = profile.build_profile(role_models=runtimes)
+        self.assertEqual(selected["phases"], original["phases"])
+        self.assertEqual(selected["config"]["role_models"], runtimes)
+        self.assertNotEqual(selected["profile_sha256"], original["profile_sha256"])
+        runtimes["controller"]["provider"] = "changed-after-freeze"
+        self.assertEqual(selected["config"]["role_models"]["controller"]["provider"], "openrouter")
+
+    def test_invalid_or_secret_bearing_runtime_configuration_is_refused(self):
+        original = profile.build_profile()["config"]["role_models"]
+        for edit in (
+                lambda roles: roles.pop("controller"),
+                lambda roles: roles.update(unexpected=roles["target"]),
+                lambda roles: roles["target"].update(provider=""),
+                lambda roles: roles["target"].update(provider="open/router"),
+                lambda roles: roles["target"].update(model_id="model\nname"),
+                lambda roles: roles["target"].update(model_id="--flag"),
+                lambda roles: roles["target"].update(model_id=None),
+                lambda roles: roles["target"].update(thinking_level="off"),
+                lambda roles: roles["target"].update(api_key="synthetic-secret")):
+            selected = deepcopy(original)
+            edit(selected)
+            with self.subTest(runtime=selected), self.assertRaises(profile.InvalidProfile):
+                profile.build_profile(role_models=selected)
+
+    def test_cli_selects_one_runtime_or_explicit_roles_and_refuses_conflicts(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output = root / "profile.json"
+            command = [sys.executable, "-B", str(SCRIPT), "--out", str(output)]
+            runtime_args = ["--provider", "openrouter", "--model-id", "deepseek/deepseek-v4.1-flash",
+                            "--thinking", "high"]
+            subprocess.run(command + runtime_args, check=True, capture_output=True)
+            frozen = output.read_bytes()
+            selected = json.loads(frozen)
+            runtime = {"provider": "openrouter", "model_id": "deepseek/deepseek-v4.1-flash", "thinking_level": "high"}
+            self.assertTrue(all(value == runtime for value in selected["config"]["role_models"].values()))
+            refused = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertEqual(output.read_bytes(), frozen)
+
+            roles = deepcopy(selected["config"]["role_models"])
+            roles["controller"] = {"provider": "custom", "model_id": "another/model", "thinking_level": "low"}
+            role_file = root / "roles.json"
+            role_file.write_text(json.dumps(roles))
+            separate = root / "separate.json"
+            base = [sys.executable, "-B", str(SCRIPT), "--out", str(separate)]
+            subprocess.run(base + ["--role-models", str(role_file)], check=True, capture_output=True)
+            self.assertEqual(json.loads(separate.read_bytes())["config"]["role_models"], roles)
+            separate.unlink()
+            for args in (["--provider", "openrouter"], ["--thinking", "high"],
+                         ["--role-models", str(role_file), *runtime_args]):
+                refused = subprocess.run(base + args, capture_output=True, text=True)
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertFalse(separate.exists())
+            role_file.write_text('{"controller":{},"controller":{}}')
+            refused = subprocess.run(base + ["--role-models", str(role_file)], capture_output=True, text=True)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertFalse(separate.exists())
 
     def test_output_is_idempotent_and_refuses_overwrite(self):
         with tempfile.TemporaryDirectory() as folder:
