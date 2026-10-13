@@ -4939,7 +4939,20 @@ Benchmark：
       ape: { label: "APE", blurb: "从输入 / 输出示例归纳指令（Zhou 等，2022）" },
       ace: { label: "ACE", blurb: "从训练轨迹进化规则手册（Zhang 等，2025）" },
       awm: { label: "AWM", blurb: "从成功轨迹归纳工作流记忆（Wang 等，2024）" },
+      wikiskill: {
+        label: "WikiSkill",
+        blurb: "持续积累训练 Wiki，仅在独立验证分数提升时保留技能改动",
+      },
     } satisfies Record<RsiMethodId, { label: string; blurb: string }>,
+    wikiskillSessionModelHint:
+      "新实验默认所有角色使用此对话的模型，也可在优化重点中指定角色模型；已有实验沿用其记录的配置",
+    wikiskillRunsHint: "每次测量中每道题的运行次数；独立实验重复次数另行配置",
+    wikiskillSeparateTarget:
+      "优化智能体与被测智能体必须分别选择。WikiSkill 优化方会读取 Wiki，被测智能体不能接收它。",
+    wikiskillBudgetHint:
+      "在优化重点中指定验证与测试划分、实验目录和预算，或粘贴已检查的工作区草稿。缺失项在评测前补齐。",
+    wikiskillFocusPlaceholder:
+      "验证 / 测试评估集、实验目录、迭代预算和独立重复次数；也可粘贴工作区生成的实验草稿",
     /**
      * Shown where the default's round limit and target score are: any other toolkit sets its own
      * budget.
@@ -4981,6 +4994,28 @@ Benchmark：
         "结束时报告基线分、最终分、保留的版本与方法改了什么。"
       );
     },
+    wikiskillOptimizeTail: (p: {
+      targetAgentId: string;
+      benchmarkId: string;
+      runs: number;
+    }): string =>
+      "请使用 `rsi-wikiskill` 技能，执行上文要求的 WikiSkill 实验。\n\n" +
+      `- test_agent_id：\`${p.targetAgentId}\`\n` +
+      `- train_benchmark_id：\`${p.benchmarkId}\`（Project 的 \`benchmarks/${p.benchmarkId}/\`；这是训练入口，不自动充当验证集或测试集）\n` +
+      `- runs_per_case：\`${p.runs}\`（每道题的测量次数，不是独立实验重复次数）\n\n` +
+      "核实本 Controller 与 Target 是不同智能体，且 Target 未加载优化或评测技能。" +
+      "执行时从本 Session 的 Environment 读取 `Provider` 和 `Model ID`，以对话编辑器最终选择的模型为准。" +
+      "除非提供的实验配置明确指定各角色模型，否则所有角色采用该模型对。评测前记录各角色的 provider、model_id 和支持的 thinking level，并在本次实验内保持固定。" +
+      "不要从该 Benchmark 的 scoreboard 继承其他实验的基线模型。检查所选 provider 的调用配置，不复制或打印 API Key。" +
+      "评测前确定训练、独立验证和可选最终测试的题目身份、数据指纹、迭代预算、独立重复次数，以及位于 Target State 和做题 Workspace 之外的 OUT 目录。" +
+      "只检查划分元数据，不向本 Controller 读入 validation/test 题面、答案、私有 rubric 或轨迹；这些材料也不得进入学习角色，技能接受只使用 validation 汇总分数。" +
+      "GDPevo 优先采用已提供的 Benchmark 适配器、profile 和 campaign，不按包名自行重分数据。" +
+      "上文若提供工作区生成的草稿，保留其中的预检、身份、隔离和续跑检查；任何评测前先核对它的运行配置与实际 Session。" +
+      "已有实验配置不兼容时，可以使用原运行配置续跑，或另建独立新实验；保留原文件和结果，不能静默覆盖，也不能把不同运行配置的分数混在一起。" +
+      "运行前只补齐缺失或冲突项；如果用户只要求准备，就停在可运行草稿。" +
+      "按技能执行批量训练、持久 Wiki、单技能提案和严格验证接受；以实验记录和适配器输出作为证据，不能用通用 scoreboard 条目替代私有验证记录。" +
+      "冻结已接受技能后才运行最终 test，不再根据 test 结果修改技能。" +
+      "报告就绪情况或实测 validation/test 结果、保留技能的 hash、逐轮决策和实验路径；尚未实际执行的检查应明确说明。",
     // Import and export: the Evaluation Center's import dialog and the Benchmark page's Export.
     /** The header button and the dialog's title: the one place the page uses the user's own word for a Benchmark. */
     importBenchmark: "导入评估集",

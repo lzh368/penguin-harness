@@ -24,7 +24,6 @@ from uuid import UUID
 
 BENCHMARK_REVISION = "e5d58d230bda928d9a98ae775c54c159af8f8363"
 PENGUIN_VERSION = "0.2.13"
-MODEL = "deepseek/deepseek-flash"
 GROUPS = ("003", "005", "010", "014", "018", "024")
 REQUEST_FIELDS = {"protocol_version", "case_id", "run", "expected_version",
                   "test_agent_id", "benchmark_id", "provider", "model_id"}
@@ -132,8 +131,12 @@ def receipt_check(receipt, directory):
     integer(request["expected_version"], "expected_version")
     require(isinstance(request["test_agent_id"], str) and IDENTIFIER.fullmatch(request["test_agent_id"]),
             "invalid test_agent_id")
-    require(request["provider"] == "deepseek" and request["model_id"] == "deepseek-flash",
-            "this experiment requires deepseek/deepseek-flash")
+    for key in ("provider", "model_id"):
+        value = request[key]
+        require(isinstance(value, str) and value and not value.startswith("-") and
+                all(character.isprintable() and not character.isspace() for character in value),
+                f"invalid request {key}")
+    require("/" not in request["provider"], "provider ID cannot contain a slash")
     require(receipt["thinking_level"] in ("low", "medium", "high", "xhigh", "max"),
             "invalid thinking_level")
     task = receipt["task_name"]
@@ -273,8 +276,9 @@ def convert(result_path, receipt_path):
     require(isinstance(metadata.get("session_id"), str) and metadata["session_id"].strip(),
             "missing inner Penguin Session identity")
     usage = agent.get("model_usage")
-    require(isinstance(usage, dict) and set(usage) == {MODEL} and isinstance(usage[MODEL], dict),
-            "model_usage must contain exactly deepseek/deepseek-flash")
+    model = f"{request['provider']}/{request['model_id']}"
+    require(isinstance(usage, dict) and set(usage) == {model} and isinstance(usage[model], dict),
+            "model_usage must contain exactly the runtime bound by the phase plan")
     require(not any(record.get(key) for record in (metadata, agent) for key in ("error", "errors")),
             "adapter reports an error")
 

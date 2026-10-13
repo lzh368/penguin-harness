@@ -21,6 +21,7 @@ GROUPS = (("003", "CRM"), ("005", "ERP"), ("010", "Finance"),
           ("014", "Healthcare"), ("018", "Legal"), ("024", "Dataanalysis"))
 ROLES = ("controller", "target", "evaluator", "wiki_maintainer",
          "skill_proposer", "companion_auditor")
+THINKING_LEVELS = ("low", "medium", "high", "xhigh", "max")
 TASK_FILES = ("task.toml", "instruction.md", "environment/Dockerfile",
               "environment/docker-compose.yaml", "environment/start.sh",
               "environment/workspace/environment_access.md",
@@ -173,11 +174,37 @@ def verify_source(benchmark_root, phases):
             "source_tree_sha256": hashlib.sha256(canonical_bytes(records)).hexdigest()}
 
 
-def build_profile(iterations=2, benchmark_root=None):
+def validate_role_models(value):
+    """Validate user-selected runtimes without imposing a vendor or model."""
+    require(isinstance(value, dict) and set(value) == set(ROLES),
+            "role_models must specify exactly the six experiment roles")
+    result = {}
+    for role, runtime in value.items():
+        require(isinstance(runtime, dict) and
+                set(runtime) == {"provider", "model_id", "thinking_level"},
+                f"{role} runtime must contain provider, model_id and thinking_level only")
+        for key in ("provider", "model_id"):
+            item = runtime[key]
+            require(isinstance(item, str) and item and not item.startswith("-") and
+                    all(character.isprintable() and not character.isspace() for character in item),
+                    f"{role} {key} must be a nonempty ID without whitespace or control characters")
+        require("/" not in runtime["provider"], "provider ID cannot contain a slash")
+        require(runtime["thinking_level"] in THINKING_LEVELS,
+                f"{role} thinking_level must be supported by the Harbor adapter")
+        result[role] = dict(runtime)
+    return result
+
+
+def build_profile(iterations=2, benchmark_root=None, role_models=None):
     require(type(iterations) is int and iterations >= 1, "iterations must be a positive integer")
+    # Preserve existing example profiles byte-for-byte. This is a default, not a
+    # constraint: explicit runtimes are retained in the experiment's own hash.
+    if role_models is None:
+        model = {"provider": "deepseek", "model_id": "deepseek-flash", "thinking_level": "medium"}
+        role_models = {role: dict(model) for role in ROLES}
+    role_models = validate_role_models(role_models)
     phases = split_tasks()
     verification = verify_source(benchmark_root, phases) if benchmark_root is not None else None
-    model = {"provider": "deepseek", "model_id": "deepseek-flash", "thinking_level": "medium"}
     profile = {
         "schema_version": 1, "algorithm": "wikiskill", "benchmark": "GDPevo",
         "source_refs": {"benchmark_commit": BENCHMARK_COMMIT, "host_rsi_commit": HOST_RSI_COMMIT},
@@ -187,7 +214,7 @@ def build_profile(iterations=2, benchmark_root=None):
                    "runs_per_case": 1, "replicas": ["r1", "r2", "r3"],
                    "independent_replicas": True, "initial_skills": "empty", "initial_wiki": "empty",
                    "share_learned_state": False,
-                   "role_models": {role: dict(model) for role in ROLES}},
+                   "role_models": role_models},
         "phases": phases,
     }
     profile["profile_sha256"] = hashlib.sha256(canonical_bytes(profile)).hexdigest()
@@ -224,15 +251,39 @@ def main():
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--benchmark-root", type=Path)
     parser.add_argument("--iterations", type=int, default=2)
+    parser.add_argument("--role-models", type=Path, help="JSON object with all six role runtimes")
+    parser.add_argument("--provider", help="Penguin provider group for all roles")
+    parser.add_argument("--model-id", help="Exact model ID in that provider group")
+    parser.add_argument("--thinking", choices=THINKING_LEVELS)
     args = parser.parse_args()
+    explicit = any(item is not None for item in (args.provider, args.model_id, args.thinking))
+    if args.role_models is not None and explicit:
+        parser.error("--role-models cannot be combined with --provider, --model-id or --thinking")
+    if explicit and (args.provider is None or args.model_id is None):
+        parser.error("--provider and --model-id must be supplied together")
     try:
-        profile = build_profile(args.iterations, args.benchmark_root)
+        role_models = None
+        if args.role_models is not None:
+            def unique_keys(pairs):
+                value = {}
+                for key, item in pairs:
+                    require(key not in value, "duplicate JSON key in role_models")
+                    value[key] = item
+                return value
+            role_models = json.loads(no_symlink_components(args.role_models).read_text(encoding="utf-8"),
+                                     object_pairs_hook=unique_keys)
+            validate_role_models(role_models)
+        elif explicit:
+            runtime = {"provider": args.provider, "model_id": args.model_id,
+                       "thinking_level": args.thinking or "medium"}
+            role_models = {role: dict(runtime) for role in ROLES}
+        profile = build_profile(args.iterations, args.benchmark_root, role_models)
         if args.benchmark_root is not None:
             root = Path(args.benchmark_root).resolve()
             require(not no_symlink_components(args.out).resolve().is_relative_to(root),
                     "output must be outside the benchmark checkout")
         write_profile(args.out, profile)
-    except (InvalidProfile, OSError, UnicodeError) as exc:
+    except (InvalidProfile, OSError, UnicodeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     print(json.dumps({"out": str(args.out), "profile_sha256": profile["profile_sha256"],

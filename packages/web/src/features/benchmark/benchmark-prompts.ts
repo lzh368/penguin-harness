@@ -5,7 +5,9 @@
  * target score — so a novice's one-line wish arrives as a request the Skill can act on without
  * asking anything back. An RSI toolkit other than the default gets a shorter tail: its own Skill,
  * the three inputs every toolkit takes, and its paper's budget left to it rather than a round
- * limit and a target. The two "Ask AI" tails are the same shape pointed the other way: they
+ * limit and a target. WikiSkill has a separate tail for its training / validation split and
+ * persistent experiment state; it reads the runtime of the conversation actually sent instead
+ * of inheriting another experiment's baseline. The two "Ask AI" tails point the other way: they
  * name no Skill and ask for no change, carrying the facts already on screen — an evaluation's
  * scores and Session ids, or a case's two material paths — so the answer is read out of the
  * files rather than guessed. The wording lives in the dictionaries; this module only assembles it.
@@ -87,7 +89,7 @@ export function buildOptimizePrompt(focus: string, params: OptimizeParams): stri
 
 /** What the Optimize tab hands an RSI toolkit other than the default (see rsi-methods.ts). */
 export interface RsiOptimizeParams {
-  /** The toolkit's one Skill, named like its plugin. */
+  /** The toolkit's one Skill. */
   skill: string;
   /** The method as the select labels it, e.g. "OPRO". */
   label: string;
@@ -107,6 +109,29 @@ export interface RsiOptimizeParams {
 
 export function rsiOptimizeTail(params: RsiOptimizeParams): string {
   return S.benchmark.rsiOptimizeTail(params);
+}
+
+/** WikiSkill freezes the actual Session runtime and resolves its evaluation splits before work. */
+export function wikiskillOptimizeTail(params: EvaluateParams): string {
+  return S.benchmark.wikiskillOptimizeTail(params);
+}
+
+/** The optimizer reads private learning state that its separate Target must never inherit. */
+export function wikiSkillAgentPairValid(controllerId: string | null, targetId: string): boolean {
+  return (
+    controllerId !== null && controllerId !== "" && targetId !== "" && controllerId !== targetId
+  );
+}
+
+/**
+ * The Optimize dialog's non-default method prompt. WikiSkill starts its own experiment and must
+ * not inherit a different experiment's baseline model; the other methods keep their usual tail.
+ */
+export function buildRsiOptimizePrompt(focus: string, params: RsiOptimizeParams): string {
+  return composeAiPrompt(
+    focus,
+    params.skill === "rsi-wikiskill" ? wikiskillOptimizeTail(params) : rsiOptimizeTail(params),
+  );
 }
 
 /** One case's line in the evaluation question: as the dialog prints it, plus every run's Session id. */

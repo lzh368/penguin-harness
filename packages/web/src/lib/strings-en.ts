@@ -4800,7 +4800,22 @@ Scenarios:
         label: "AWM",
         blurb: "Induces workflow memory from successful trajectories (Wang et al., 2024)",
       },
+      wikiskill: {
+        label: "WikiSkill",
+        blurb:
+          "Keeps a training wiki and retains skill changes only when held-out validation improves",
+      },
     },
+    wikiskillSessionModelHint:
+      "New experiments use this conversation's model for all roles unless you specify role models in Focus; an existing experiment keeps its recorded configuration",
+    wikiskillRunsHint:
+      "Runs per case within each measurement; independent experiment repeats are configured separately",
+    wikiskillSeparateTarget:
+      "Choose different optimizer and tested agents. The WikiSkill optimizer reads the Wiki; the tested agent must not receive it.",
+    wikiskillBudgetHint:
+      "Specify the validation and test split, experiment directory and budget in Focus, or paste a checked workspace draft. Missing inputs are resolved before evaluation.",
+    wikiskillFocusPlaceholder:
+      "Validation / test benchmarks, experiment directory, iteration budget and independent repeats; or paste a workspace-generated experiment draft",
     methodBudgetHint:
       "This method sets its own budget: the paper's defaults reduced to a smoke profile, unless Focus says otherwise",
     methodOptimizerHint: (skill: string): string =>
@@ -4833,6 +4848,28 @@ Scenarios:
         "and finish by reporting the baseline score, the final score, the retained version and what the method changed."
       );
     },
+    wikiskillOptimizeTail: (p: {
+      targetAgentId: string;
+      benchmarkId: string;
+      runs: number;
+    }): string =>
+      "Use the `rsi-wikiskill` Skill to carry out the WikiSkill experiment requested above.\n\n" +
+      `- test_agent_id: \`${p.targetAgentId}\`\n` +
+      `- train_benchmark_id: \`${p.benchmarkId}\` (the Project's \`benchmarks/${p.benchmarkId}/\`; a training entry, not an automatic validation or test split)\n` +
+      `- runs_per_case: \`${p.runs}\` (per-case measurements, not independent experiment repeats)\n\n` +
+      "Verify that this Controller and the Target are different agents, and that the Target has no optimizer or evaluation skills. " +
+      "At execution time read `Provider` and `Model ID` from this Session's Environment, so a model changed in the composer is respected. " +
+      "Use that pair for all roles unless the supplied experiment configuration explicitly assigns role models. Record each role's provider, model_id and supported thinking level before evaluation; keep them fixed within the experiment. " +
+      "Do not inherit another experiment's baseline runtime from this Benchmark's scoreboard. Check access through each selected provider; never copy or print API keys. " +
+      "Before evaluation, resolve the training, independent validation and optional final test case identities, dataset fingerprints, iteration budget, independent repeat count and an OUT directory outside the Target State and task workspaces. " +
+      "Inspect split metadata without reading validation/test questions, answers, private rubrics or traces into this Controller. Keep those materials out of learning roles; only aggregate validation scores may inform skill acceptance. " +
+      "For GDPevo, use the existing benchmark adapter, profile and campaign when supplied; do not invent a new split from package names. " +
+      "If a workspace-generated draft is supplied above, retain its preflight, identity, isolation and resume checks. Compare its runtime with the actual Session before any evaluation. " +
+      "An incompatible recorded experiment can be continued with its recorded runtime or replaced by a separate new experiment; preserve its files and results. Never silently overwrite it or combine its scores with a different runtime. " +
+      "Resolve only missing or conflicting inputs before running; a preparation-only request must stop at a runnable draft. " +
+      "Follow the Skill's batch training, persistent Wiki, single-skill proposal and strict validation acceptance procedure. Use its experiment records and adapter outputs as evidence; a generic scoreboard entry cannot replace private validation records. " +
+      "Only evaluate final test cases after freezing the accepted skills, and never use test results for further skill changes. " +
+      "Report readiness or measured validation/test results, retained skill hashes, per-round decisions and the experiment paths; identify checks that have not actually run.",
     // Import and export: the Evaluation Center's import dialog and the Benchmark page's Export.
     importBenchmark: "Import benchmark",
     importChatTitle: "Recommended: import it by chatting with the agent",

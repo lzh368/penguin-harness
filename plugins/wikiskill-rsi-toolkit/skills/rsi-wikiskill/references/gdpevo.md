@@ -1,6 +1,6 @@
-# GDPevo：固定实验方案
+# GDPevo：本项目实验配置
 
-本文件用于这次已确认的 WikiSkill 适配。先生成清单，再按 [harbor.md](harbor.md) 执行；数据、模型和预算在首个真实 cell 前冻结。
+本文件规定本项目已确认的数据与重复实验方案，不是 WikiSkill 的通用参数。先选择模型并生成清单，再按 [harbor.md](harbor.md) 执行；数据、模型和预算在首个真实 cell 前冻结。
 
 ## 数据与版本
 
@@ -10,9 +10,13 @@
 | 宿主 Penguin 接口参考 | PR #1034，`4c9c1797156921525b420f7f6d4bfab788059ae7` |
 | Harbor | `0.23.0` |
 | 容器 Penguin 包参考 | `@prismshadow/penguin-cli@0.2.13`，单独记录实际安装包/离线 bundle hash |
-| 模型 | 所有模型角色 `provider=deepseek`、`model_id=deepseek-flash` |
-| 初步探索默认值 | thinking=`medium`、2 轮、每格一次、串行；这些是工程默认，可在开跑前统一调整 |
+| 模型 | 用户选择 provider/model_id/thinking，写入 profile；可统一配置，也可分别指定六个角色 |
+| 初步探索默认值 | 2 轮、每格一次、串行；thinking 使用所选模型支持的设置并记录在 profile |
 | 复现方式 | r1、r2、r3 独立初始化、独立进化；固定相同配置，不能共享学习状态 |
+
+最初的工作区 profile 选用了 `deepseek/deepseek-flash`、thinking=`medium`；这是历史配置，不限制新的模型选择。使用 OpenRouter 时填写该分组中实际可用的完整 model ID，并配置对应分组的 Key。模型清单只用于核对绑定与可用性，密钥不进入 profile、技能或报告。
+
+已有 profile/campaign 内容不可覆盖。尚未执行也可保留原目录，按新选择另存 profile 并初始化独立 campaign；已执行的结果继续绑定原配置。换渠道后重新验证凭证可用、实际端点、网络放行和模型参数，完成独立 smoke。不同渠道的结果可分别报告，不能把它们混为同一配置下的三次重复。
 
 宿主源码 commit 不代表容器已经使用相同代码：上游离线 bundle 脚本下载 npm 包，不打包本地 fork。安装时记录宿主 commit、容器 package version 和 bundle hash；需自建容器包时先验证协议，重新冻结全套配置。
 
@@ -29,10 +33,12 @@
 
 train 包和 test 包的 CASE 序号分别从 001 开始。例如 `CASE-010-tg005-train-005` 是 **validation**，Harbor task 名仍为 `tg005-train-005`。不重命名上游目录，不用文件名中的 train 字样推断权限。原数据包共 30 train、30 test；本实验从前者留出 6 validation，最终 24/6/30。
 
-生成可审核清单（不启动模型）：
+生成可审核清单（不启动模型）；将所选模型通过工具支持的参数写入 profile，不把下面的占位符作为值：
 
 ```bash
-python3 <skill>/scripts/gdpevo_profile.py --out <campaign>/profile.json --iterations 2
+python3 <skill>/scripts/gdpevo_profile.py --out <profiles>/selected.json \
+  --provider <所选provider> --model-id <所选model-id> \
+  --thinking <所选thinking> --iterations 2
 ```
 
 没有 checkout 时输出 `source_verified=false`，只能规划。正式运行前另存经源码核对的清单：
@@ -40,8 +46,14 @@ python3 <skill>/scripts/gdpevo_profile.py --out <campaign>/profile.json --iterat
 ```bash
 python3 <skill>/scripts/gdpevo_profile.py \
   --benchmark-root <固定commit的完整benchmark-checkout> \
-  --out <campaign>/profile-verified.json --iterations 2
+  --out <profiles>/selected-verified.json \
+  --provider <所选provider> --model-id <所选model-id> \
+  --thinking <所选thinking> --iterations 2
 ```
+
+需要不同角色使用不同模型时，将六个角色的 `provider`、`model_id`、`thinking_level` 写成 JSON 对象，以 `--role-models <roles.json>` 替代三个统一模型参数；角色名为 `controller`、`target`、`evaluator`、`wiki_maintainer`、`skill_proposer`、`companion_auditor`。调度时按 [penguin.md](penguin.md) 显式绑定各角色，不能只把配置写入文件后仍让子会话默认继承。
+
+profile 文件放在 campaign 目录之外；`campaign.py init` 会创建新的 campaign 目录并保存冻结副本，不要先为它创建目录。
 
 工具检查 commit、受版本控制的文件及 task/case 完整性；只用文件 hash，不输出题面/答案。相同输出可幂等运行，内容不同拒绝覆盖。三次实验绑定同一个经验证清单的 `profile_sha256`。工具不替代容器网络、技能注入与权限预检。
 

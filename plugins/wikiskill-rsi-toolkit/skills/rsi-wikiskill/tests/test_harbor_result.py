@@ -2,6 +2,12 @@
 
 No live model/container runs or benchmark answers. Audit reports are explicitly
 fixture attestations, not evidence of a real execution or of isolation.
+
+Runtime-selection scenarios:
+- The plan, receipt, adapter metadata and usage all name an alternative runtime:
+  conversion preserves its identity and the cell can be aggregated.
+- Only the receipt or only the adapter changes runtime: conversion refuses the
+  inconsistent evidence rather than treating the changed model as interchangeable.
 """
 import copy
 from decimal import Decimal
@@ -72,7 +78,7 @@ class HarborResultTest(unittest.TestCase):
                        "task_id": {"path": "/checkout/benchmarks/gdpevo/tasks/tg003-train-001"},
                        "exception_info": None, "step_results": None,
                        "agent_result": {"cost_usd": 0.018507,
-                                        "model_usage": {converter.MODEL: {"n_input_tokens": 100, "n_output_tokens": 10}},
+                                        "model_usage": {"deepseek/deepseek-flash": {"n_input_tokens": 100, "n_output_tokens": 10}},
                                         "metadata": {"penguin_version": "0.2.13", "agent_state": "custom", "provider": "deepseek", "model_id": "deepseek-flash",
                                                      "thinking": "medium", "status": "completed", "requests": 24,
                                                      "server_ready": True, "timed_out": False, "session_id": "inner-penguin-session"}},
@@ -112,6 +118,33 @@ class HarborResultTest(unittest.TestCase):
         self.result["agent_result"]["metadata"].update(status="timeout", timed_out=True)
         self.result["verifier_result"]["rewards"]["reward"] = 0
         self.assertEqual(self.convert()["score"], 0)
+
+    def test_alternative_model_is_bound_to_plan_adapter_and_usage(self):
+        self.request.update(provider="openrouter", model_id="deepseek/deepseek-v4.1-flash")
+        # A receipt alone must not override the phase plan.
+        self.invalid()
+        self.plan.update(provider=self.request["provider"], model_id=self.request["model_id"])
+        # The original adapter execution still names another runtime.
+        self.invalid()
+        self.result["agent_result"]["metadata"].update(provider=self.request["provider"], model_id=self.request["model_id"])
+        self.invalid()
+        usage = self.result["agent_result"]["model_usage"].pop("deepseek/deepseek-flash")
+        self.result["agent_result"]["model_usage"]["openrouter/deepseek/deepseek-v4.1-flash"] = usage
+        cell = self.convert()
+        self.assertEqual((cell["provider"], cell["model_id"]), ("openrouter", "deepseek/deepseek-v4.1-flash"))
+        results = self.root / "cells"
+        results.mkdir()
+        (results / "one.json").write_text(converter.cell_json(cell))
+        self.assertEqual(aggregator.aggregate(self.private / "plan.json", results)["score"], "75.56")
+
+    def test_malformed_runtime_ids_are_rejected_without_emitting_cells(self):
+        for key, value in (("provider", ""), ("provider", "provider/other"),
+                           ("model_id", None), ("model_id", "model\nname"), ("model_id", "--flag")):
+            with self.subTest(key=key, value=value):
+                original = self.request[key]
+                self.request[key] = value
+                self.invalid()
+                self.request[key] = original
 
     def test_cost_null_remains_null_and_precision_is_preserved(self):
         self.result["agent_result"]["cost_usd"] = None

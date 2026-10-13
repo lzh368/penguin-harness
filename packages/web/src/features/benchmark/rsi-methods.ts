@@ -4,7 +4,7 @@
  *
  * The default toolkit comes first: it is the select's first option, and its two Skills are the
  * ones the Use dialog has always preselected — the evaluator on the Evaluate tab, the optimizer
- * beside it on the Optimize tab. Every other toolkit is one plugin with one Skill named like it,
+ * beside it on the Optimize tab. Every other toolkit names the Skill its plugin ships,
  * which initializes, measures and records on its own. Labels and blurbs live in the dictionaries,
  * under `S.benchmark.methods[id]`.
  */
@@ -19,6 +19,7 @@ export const RSI_METHODS = [
   { id: "ape", plugin: "ape-rsi-toolkit", skill: "ape-rsi-toolkit" },
   { id: "ace", plugin: "ace-rsi-toolkit", skill: "ace-rsi-toolkit" },
   { id: "awm", plugin: "awm-rsi-toolkit", skill: "awm-rsi-toolkit" },
+  { id: "wikiskill", plugin: "wikiskill-rsi-toolkit", skill: "rsi-wikiskill" },
 ] as const;
 
 export type RsiMethod = (typeof RSI_METHODS)[number];

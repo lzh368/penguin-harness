@@ -87,27 +87,31 @@ def validate_profile(value):
     config = value.get("config")
     require(isinstance(config, dict), "profile configuration is missing")
     positive(config.get("max_iterations"), "iteration budget")
-    expected = profile_tool.build_profile(config["max_iterations"])
+    role_models = profile_tool.validate_role_models(config.get("role_models"))
+    expected = profile_tool.build_profile(config["max_iterations"], role_models=role_models)
     expected["source_verified"] = True
     expected["source_verification"] = verification
     expected = with_hash({key: item for key, item in expected.items() if key != "profile_sha256"}, "profile_sha256")
     require(encoded(value) == encoded(expected),
-            "profile differs from the fixed splits, models, replicas, runs, or source refs")
+            "profile differs from the fixed splits, selected runtimes, replicas, runs, or source refs")
     return value
 
 
-def campaign_config(root, profile, penguin_home, project_id):
+def campaign_config(root, profile, penguin_home, project_id, agent_prefix="wiki"):
     require(isinstance(project_id, str) and IDENTIFIER.fullmatch(project_id),
             "project ID must contain 2..64 lowercase ASCII letters, digits or underscores and start with a letter")
     require(root != penguin_home and not root.is_relative_to(penguin_home) and
             not penguin_home.is_relative_to(root),
             "campaign and Penguin home must be separate, non-nested directories")
+    require(isinstance(agent_prefix, str) and re.fullmatch(r"[a-z][a-z0-9_]{1,39}", agent_prefix),
+            "Agent prefix must contain 2..40 lowercase letters, digits or underscores and start with a letter")
     return with_hash({
         "schema_version": 1, "campaign_root": str(root),
         "profile_sha256": profile["profile_sha256"], "profile_file_sha256": sha(encoded(profile)),
         "penguin_home": str(penguin_home), "project_id": project_id,
-        "replicas": [{"id": replica, "controller_agent_id": f"wiki_controller_{replica}",
-                      "target_id": f"wiki_target_{replica}",
+        **({"agent_prefix": agent_prefix} if agent_prefix != "wiki" else {}),
+        "replicas": [{"id": replica, "controller_agent_id": f"{agent_prefix}_controller_{replica}",
+                      "target_id": f"{agent_prefix}_target_{replica}",
                       "out": str(root / "replicas" / replica / "out"),
                       "plans": str(root / "replicas" / replica / "plans")}
                      for replica in REPLICAS],
@@ -122,7 +126,8 @@ def load_campaign(campaign):
     require(isinstance(config, dict), "campaign configuration must be an object")
     require(actual_hash == config.get("profile_file_sha256"), "frozen profile file hash mismatch")
     require(isinstance(config.get("penguin_home"), str), "campaign Penguin home is missing")
-    expected = campaign_config(root, profile, path(config["penguin_home"]), config.get("project_id"))
+    expected = campaign_config(root, profile, path(config["penguin_home"]), config.get("project_id"),
+                               config.get("agent_prefix", "wiki"))
     require(encoded(config) == encoded(expected), "frozen campaign configuration mismatch")
     for replica in config["replicas"]:
         require(path(replica["plans"]).is_dir(), f"missing plan directory for {replica['id']}")
@@ -135,11 +140,11 @@ def write_new(filename, value):
         stream.write(encoded(value))
 
 
-def initialize(profile_path, out, penguin_home, project_id):
+def initialize(profile_path, out, penguin_home, project_id, agent_prefix="wiki"):
     profile, _ = read_json(profile_path)
     validate_profile(profile)
     root, home = path(out), path(penguin_home)
-    config = campaign_config(root, profile, home, project_id)
+    config = campaign_config(root, profile, home, project_id, agent_prefix)
     if root.exists():
         _, previous, _ = load_campaign(root)
         require(encoded(previous) == encoded(config), "existing campaign has different initialization settings")
@@ -274,6 +279,7 @@ def main(argv=None):
     init.add_argument("--out", required=True, type=Path)
     init.add_argument("--penguin-home", required=True, type=Path)
     init.add_argument("--project-id", required=True)
+    init.add_argument("--agent-prefix", default="wiki")
     plan = commands.add_parser("plan")
     plan.add_argument("--campaign", required=True, type=Path)
     plan.add_argument("--replica", required=True, choices=REPLICAS)
@@ -286,7 +292,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         if args.command == "init":
-            result = initialize(args.profile, args.out, args.penguin_home, args.project_id)
+            result = initialize(args.profile, args.out, args.penguin_home, args.project_id, args.agent_prefix)
         elif args.command == "plan":
             result = create_plan(args.campaign, args.replica, args.phase, args.label, args.version, args.skill_hash)
         else:

@@ -33,7 +33,7 @@
 - **伴生审计**：检查读取路径、状态漂移、证据和候选范围，是 Penguin 适配增加的可审计措施；不等同于论文新增优化器，也不等同于安全 sandbox。
 - **运行环境**：提供本地 Workspace 接口与固定 GDPevo/Harbor 接口、计划生成和结果转换工具。没有复现论文五种环境；本次改动仅做本地合成检查，真实 Harbor 加载、隔离和效果尚未验证。
 - **GDPevo 划分**：经用户确认，每组原 train 的 001–004 用于训练、005 用于 validation，原 test 全留：24/6/30。它是本项目的适配方案，不是 WikiSkill 原论文的数据划分，也不同于 GDPevo 原始 30-train 协议。
-- **重复和模型**：三次独立初始化、独立进化，最终 test 分数取均值；所有模型角色固定 DeepSeek Flash。Wiki/候选不能跨三次实验继承。GDPevo 沿用原始 verifier 的 0..1 reward，转换为 0..100、半向上保留两位小数后聚合，不由 LLM rubric 重评分。
+- **GDPevo 重复和模型**：本项目做三次独立初始化、独立进化，最终 test 分数取均值；模型与服务商由用户选择并在 profile 中冻结，最初的 DeepSeek 官方配置不是算法要求。Wiki/候选不能跨三次实验继承。GDPevo 沿用原始 verifier 的 0..1 reward，转换为 0..100、半向上保留两位小数后聚合，不由 LLM rubric 重评分。
 
 ## Penguin 参考版本
 

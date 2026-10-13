@@ -1,6 +1,6 @@
 # GDPevo 的 Harbor cell 接口
 
-仅用于 [gdpevo.md](gdpevo.md) 固定版本。Controller 编排 WikiSkill；每个叶子 Evaluator 执行一个 Harbor trial，使用原始 verifier，并输出与 `aggregate.py` 兼容的 cell。当前提供的是执行约定和离线校验工具，真实容器预检仍需完成。
+仅用于 [gdpevo.md](gdpevo.md) 指定的数据和接口版本。Controller 编排 WikiSkill；每个叶子 Evaluator 执行一个 Harbor trial，使用原始 verifier，并输出与 `aggregate.py` 兼容的 cell。当前提供的是执行约定和离线校验工具，真实容器预检仍需完成。
 
 ## 首次启动前
 
@@ -22,15 +22,15 @@ GDPevo Target 为容器内非特权 agent，在 `/app` 做任务，通过 loopba
 
 ## 单格命令模板
 
-变量来自冻结配置；`TASK_NAME` 必须由当前 phase 的 case 映射取得。`EXPERIMENT_HOME` 是独立 Penguin 数据根，不能复用个人生产 Agent。
+变量来自冻结配置；`MODEL_REF` 为所选 `provider/model_id`，model_id 本身可能含斜杠，必须完整保留。`THINKING_LEVEL` 取 profile。`TASK_NAME` 必须由当前 phase 的 case 映射取得。`EXPERIMENT_HOME` 是独立 Penguin 数据根，不能复用个人生产 Agent。
 
 ```bash
-API_HOST="$(python3 "$BENCH/tools/agent_host.py" -m deepseek/deepseek-flash \
+API_HOST="$(python3 "$BENCH/tools/agent_host.py" -m "$MODEL_REF" \
   --host-penguin-home "$EXPERIMENT_HOME" --host-project-id "$PROJECT_ID")"
 PYTHONPATH="$BENCH/agents" uvx --from harbor==0.23.0 harbor run \
   -p "$BENCH/benchmarks/gdpevo/tasks" -i "$TASK_NAME" \
-  -a penguin_agent:PenguinAgent -m deepseek/deepseek-flash \
-  --ak thinking=medium --ak penguin_version=0.2.13 \
+  -a penguin_agent:PenguinAgent -m "$MODEL_REF" \
+  --ak thinking="$THINKING_LEVEL" --ak penguin_version=0.2.13 \
   --ak run_timeout=15m \
   --ak host_penguin_home="$EXPERIMENT_HOME" --ak host_project_id="$PROJECT_ID" \
   --ak agent_id="$TARGET_ID" --ak agent_state_tar="$STATE_ARCHIVE" \
@@ -39,7 +39,7 @@ PYTHONPATH="$BENCH/agents" uvx --from harbor==0.23.0 harbor run \
   --job-name "$UNIQUE_JOB" -o "$JOBS_DIR" -y
 ```
 
-`API_HOST` 必须非空且符合冻结端点；失败即停止，不用默认全网。模板使用适配器默认的容器 project；若显式设置 `--ak project_id`，同步修改预期容器路径。宿主 `host_project_id` 不等于容器 project。`thinking=medium` 必须与 plan/State 相同。`-k 1 -n 1` 对应一个 task、一次 attempt，三次 replica 由 Controller 外层调度。
+`API_HOST` 必须非空且符合冻结端点；失败即停止，不用默认全网。模板使用适配器默认的容器 project；若显式设置 `--ak project_id`，同步修改预期容器路径。宿主 `host_project_id` 不等于容器 project。实际 thinking 必须与 plan/State 相同。`-k 1 -n 1` 对应一个 task、一次 attempt，三次 replica 由 Controller 外层调度。
 
 以上超时/turns 是初步配置；宿主并发默认 1。任何变更在开始前冻结，不能失败后改网络或扩大预算直到过题。超时发生后确认适配器 abort/清理完成，不在容器仍运行时重启同一格。真实已执行任务的失败可以由 verifier 给 0；server/config/setup/评分器失败、没有模型请求、缺 reward 都不是合法 0 分。
 
