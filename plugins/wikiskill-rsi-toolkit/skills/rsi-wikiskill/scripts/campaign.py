@@ -13,6 +13,10 @@ from pathlib import Path
 import re
 import sys
 
+# Direct CLI use must not leave binary resources in the text-only plugin tree.
+# The workspace launcher also suppresses bytecode before importing this module.
+sys.dont_write_bytecode = True
+
 
 def sibling(name):
     spec = importlib.util.spec_from_file_location("campaign_" + name, Path(__file__).with_name(name + ".py"))
