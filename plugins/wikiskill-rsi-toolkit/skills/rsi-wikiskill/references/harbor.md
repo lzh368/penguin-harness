@@ -80,6 +80,8 @@ python3 -B <skill>/scripts/harbor_receipt.py \
 
 生成器不创建审计 pass；任何现有审计非 pass 或数据不一致即失败，不覆盖旧 receipt。`runtime-observation.json` 只保存分片 hash、身份、路径和注入 hash，不包含题面、答案、prompt。转换器每次重新读取原始 trace，核对全部 root shards 的注入、模型、路径及已记录子会话是否有导出文件，不能只比较两份输入声明。实际版本和 thinking 继续按部署/adapter 核查，不能说 trace 提供了它没有记录的字段。
 
+固定的容器 Penguin `0.2.13` 使用 `--source benchmark` 时，原始 trace 的 `session_meta.source` 为 `benchmark`；较新 CLI 改记为 `cli`。观察器接受 `cli`，并只为 metadata 中版本为 `0.2.13` 的旧运行接受 `benchmark`；同一根会话各分片的来源必须一致。其他或缺失的根来源仍拒绝；实际版本、模型、State、完整 trace 与隔离审计照常核验。不要把旧 trace 的 source 改成 cli，也不要为绕过校验升级 bundle 或使用 schema-1 历史模式；会话来源兼容与回执 schema 版本是两件事。宿主升级不自动更新容器 bundle，新实验应使用本技能完整版本；已有实验保留原始证据和配置。
+
 ```bash
 python3 -B <skill>/scripts/harbor_result.py \
   --result <trial>/result.json \

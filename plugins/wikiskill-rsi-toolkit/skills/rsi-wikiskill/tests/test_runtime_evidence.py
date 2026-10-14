@@ -60,6 +60,58 @@ class RuntimeEvidenceTest(unittest.TestCase):
             converter.convert(self.result_path, self.receipt_path)
         self.assertEqual(converter.convert(self.result_path, self.receipt_path, True)["status"], "ok")
 
+    def test_pinned_benchmark_source_converts_without_rewriting_trace_bytes(self):
+        self.prepare()
+        self.payload["source"] = "benchmark"
+        self.put_shard(self.shard)
+        second = self.traces / "root-001.jsonl"
+        self.put_shard(second)
+        originals = {p: p.read_bytes() for p in (self.shard, second)}
+        self.observe()
+        observed = json.loads((self.private / "runtime-observation.json").read_bytes())
+        self.assertEqual(len(observed["root_shards"]), 2)
+        self.assertEqual(converter.convert(self.result_path, self.receipt_path)["score"], Decimal("75.56"))
+        for path, raw in originals.items():
+            self.assertEqual(path.read_bytes(), raw)
+            entry = next(row for row in observed["trace_files"] if row["path"].endswith(path.name))
+            self.assertEqual(entry["sha256"], sha(raw))
+
+    def test_other_root_sources_and_unpinned_benchmark_runtime_are_rejected(self):
+        self.prepare()
+        for source in (None, "", "user", "subagent", "api", "schedule", "company", "Benchmark", 1, [], {}):
+            with self.subTest(source=source):
+                self.put_shard(self.shard, {**self.payload, "source": source})
+                with self.assertRaisesRegex(ValueError, "Target root"):
+                    trace.observe(self.result_path)
+        self.put_shard(self.shard, {key: value for key, value in self.payload.items() if key != "source"})
+        with self.assertRaisesRegex(ValueError, "Target root"):
+            trace.observe(self.result_path)
+        self.put_shard(self.shard, {**self.payload, "source": "benchmark"})
+        for version in (None, "", "0.2.12", "0.2.15"):
+            with self.subTest(version=version):
+                self.result["agent_result"]["metadata"]["penguin_version"] = version
+                self.write()
+                with self.assertRaisesRegex(ValueError, "Target root"):
+                    trace.observe(self.result_path)
+
+    def test_benchmark_source_still_requires_actual_injection_and_model_binding(self):
+        self.prepare()
+        self.payload["source"] = "benchmark"
+        self.put_shard(self.shard, {**self.payload, "model_id": "other"})
+        with self.assertRaisesRegex(ValueError, "model drift"):
+            trace.observe(self.result_path)
+        self.payload["system_prompt"] = self.block.replace("synthetic skill", "wrong skill")
+        self.put_shard(self.shard)
+        self.observe()
+        with self.assertRaisesRegex(ValueError, "binding mismatch"):
+            converter.convert(self.result_path, self.receipt_path)
+
+    def test_root_shards_cannot_mix_legacy_and_current_source_labels(self):
+        self.prepare()
+        self.put_shard(self.traces / "root-001.jsonl", {**self.payload, "source": "benchmark"})
+        with self.assertRaisesRegex(ValueError, "source changes"):
+            trace.observe(self.result_path)
+
     def test_copied_expected_hash_cannot_pass_wrong_injection(self):
         self.prepare()
         self.payload["system_prompt"] = self.block.replace("synthetic skill", "wrong skill")
@@ -168,6 +220,16 @@ class RuntimeEvidenceTest(unittest.TestCase):
         self.assertEqual(converter.convert(self.result_path, self.receipt_path)["status"], "ok")
         with self.assertRaises(ValueError):
             builder.build(*args)
+
+    def test_builder_supports_pinned_benchmark_source_with_schema_two(self):
+        args = self.builder_inputs()
+        self.payload["source"] = "benchmark"
+        self.put_shard(self.shard)
+        original = self.shard.read_bytes()
+        output = builder.build(*args)
+        self.assertEqual(output["schema_version"], 2)
+        self.assertEqual(converter.convert(self.result_path, self.receipt_path)["status"], "ok")
+        self.assertEqual(self.shard.read_bytes(), original)
 
     def test_builder_never_upgrades_unknown_audit_to_pass(self):
         args = self.builder_inputs()

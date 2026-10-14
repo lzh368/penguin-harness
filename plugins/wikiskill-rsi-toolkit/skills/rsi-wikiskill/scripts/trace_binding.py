@@ -16,6 +16,9 @@ import sys
 sys.dont_write_bytecode = True
 BEGIN = "<!-- WIKISKILL_DERIVED_BEGIN -->"
 END = "<!-- WIKISKILL_DERIVED_END -->"
+# The pinned Harbor runtime predates Penguin's benchmark -> cli source rename.
+# This is read-time compatibility, never a rewrite of the original trace bytes.
+LEGACY_BENCHMARK_VERSION = "0.2.13"
 
 
 def require(condition, message):
@@ -74,6 +77,7 @@ def observe(result_path):
     trace_root = safe_path(result_path.parent / "agent/penguin/traces")
     require(trace_root.is_dir(), "missing complete trace export")
     inventory, roots, sessions, edges = [], [], set(), {}
+    root_sources = set()
     def walk_error(error):
         raise error
 
@@ -122,7 +126,12 @@ def observe(result_path):
             relative = path.relative_to(trace_root).as_posix()
             inventory.append({"path": relative, "sha256": sha(raw), "bytes": len(raw), "session_id": sid})
             if sid == root_id:
-                require(payload.get("source") == "cli", "Target root is not a CLI session")
+                source = payload.get("source")
+                require(source == "cli" or
+                        (source == "benchmark" and meta.get("penguin_version") == LEGACY_BENCHMARK_VERSION),
+                        "Target root is not a CLI session or a supported legacy benchmark session")
+                root_sources.add(source)
+                require(len(root_sources) == 1, "Target root source changes across trace shards")
                 require(payload.get("provider") == meta.get("provider") and
                         payload.get("model_id") == meta.get("model_id"), "trace/adapter model drift")
                 roots.append({"path": relative, "session_id": sid,

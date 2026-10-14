@@ -133,6 +133,22 @@ class TrainViewsTest(unittest.TestCase):
         self.assertIn("FINAL ARTIFACT WRITTEN", view)
         self.assertLessEqual(len(view), 15_000)
 
+    def test_full_pinned_benchmark_batch_reaches_learning_with_original_bytes(self):
+        self.matrix(count=24)
+        for fixture in self.fixtures:
+            fixture.payload["source"] = "benchmark"
+        self.refresh()
+        originals = {fixture.payload["session_id"]: fixture.shard.read_bytes() for fixture in self.fixtures}
+        manifest = self.build()
+        self.assertEqual(len(manifest["entries"]), 24)
+        for entry in manifest["entries"]:
+            raw = entry["raw_files"][0]
+            self.assertEqual((self.out / raw["path"]).read_bytes(), originals[raw["session_id"]])
+            self.assertEqual(raw["sha256"], sha(originals[raw["session_id"]]))
+            view = (self.out / entry["view"]).read_text()
+            self.assertIn("SYNTHETIC INPUT OBSERVED", view)
+            self.assertIn("FINAL ARTIFACT WRITTEN", view)
+
     def test_long_behavior_is_marked_as_excerpt_and_keeps_final_action(self):
         self.matrix()
         fixture = self.fixtures[0]
