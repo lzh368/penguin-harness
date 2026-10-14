@@ -1,7 +1,7 @@
 ---
 name: rsi-wikiskill
 description: Run or resume WikiSkill experiments in Penguin. Compile training traces into a persistent Wiki, propose one skill change per batch, and accept changes only when independent validation improves. Use for skill-based RSI with isolated evaluation, including GDPevo through Harbor.
-version: 2026.10.14.3
+version: 2026.10.14.4
 ---
 
 # WikiSkill 自进化
@@ -14,15 +14,17 @@ version: 2026.10.14.3
 
 - 用户只要求设计、编写或审核 skill：交付文件和检查结果，不启动模型实验。
 - 用户明确要求离线演练：只在独立临时 OUT 使用标明合成的轨迹与评分，执行本地工具链；不要求虚构 App Data Dir/真实 Session。报告为 fixture 检查，实际加载、角色隔离和模型效果均标未验证，模拟记录不能混入正式实验。
-- 用户要求运行：读取 [penguin.md](references/penguin.md)，核对参数、实验权限和运行条件。使用本项目 GDPevo 配置时还须先读 [gdpevo.md](references/gdpevo.md) 的实验方案，并通过 [harbor.md](references/harbor.md) 执行 cell。
+- 用户要求运行：先按 [experiment-spec.md](references/experiment-spec.md) 区分实验方案与执行适配，再读取 [penguin.md](references/penguin.md)，核对参数、实验权限和运行条件。使用本项目 GDPevo 配置时还须先读 [gdpevo.md](references/gdpevo.md) 的实验方案，并通过 [harbor.md](references/harbor.md) 执行 cell。
 - 用户要求续跑：已有 `state.json` 时先执行 `state.py verify`；尚处准备、smoke 或基线评测阶段时，核对创建记录、`experiment.json`、H0 部署和既有 Session/trial，恢复原事务。缺少 `state.json` 不代表应该重建 Target 或重跑已启动的题。恢复事务时读 [state.md](references/state.md)，不要重新初始化、补造分数或默认从下一轮开始。
 - 用户要求无人值守接力、费用监控或提速：读取 [operations.md](references/operations.md)，使用本包的运行检查工具；不得在临时脚本里重新实现预算停止、收尾通过和回执校验。正在运行的实验继续使用其冻结版本，新协议另开实验，不替换现有证据。
 
-加载本技能的当前普通 Agent 就是 **Controller**，无需用户另建专门的 Controller。Controller 按 [penguin.md](references/penguin.md) 在准备阶段自行创建或核验本次实验的专用 **Target**；用户无需逐个创建 Agent，也无需预先创建三次实验的全部身份。Target 不能加载本技能、评测 skill 或 Wiki。模型、服务商和 thinking 由用户选择，技能不限定 DeepSeek 官方、OpenRouter 或其他渠道。已提供本地 Workspace 和 GDPevo/Harbor 两种执行接口；新环境须先适配执行、评分与隔离接口。
+加载本技能的当前普通 Agent 就是 **Controller**，无需用户另建专门的 Controller。Controller 按 [penguin.md](references/penguin.md) 在准备阶段自行创建或核验本次实验的专用 **Target**；用户无需逐个创建 Agent，也无需预先创建全部重复实验的身份。Target 不能加载本技能、评测 skill 或 Wiki。模型、服务商和 thinking 由用户选择，技能不限定 DeepSeek 官方、OpenRouter 或其他渠道。已提供本地 Workspace 和 GDPevo/Harbor 两种执行接口；新环境须先适配执行、评分与隔离接口。
 
 模型选择与算法分开：优先使用用户指定的实验 profile；创建新实验时采用用户在网页或启动参数中选择的模型，记录各角色实际配置。显示名相同不证明版本、端点或服务行为相同，绑定与核查使用 `provider`、`model_id` 和 thinking。续跑保持已冻结配置；用户改选时新建 profile/campaign，保留原实验及结果，不静默覆盖或混算。
 
-本项目 GDPevo 方案是 **24 train / 6 validation / 30 test、三次独立进化**，不是 WikiSkill 对所有 benchmark 的要求。数据划分、身份、预算及工具见 [gdpevo.md](references/gdpevo.md) 和 [campaign.md](references/campaign.md)。工作区的 `scripts/rsi.py` 是该 GDPevo 方案的可选环境检查与启动入口，不是其他 WikiSkill 实验的依赖；算法编排由本技能负责。首次接入执行环境时先用独立 smoke Target 跑一个 train cell，确认注入、评分及隔离；其记录不进入正式训练或 baseline。
+算法消费预先确定的 train/validation/test 清单，不规定某个数据集、划分比例、领域组合、重复次数或并发数。具体任务名单与运行参数放在工作区的独立实验目录；哪些任务共享 Wiki/Skill 也由实验方案明确。插件可以附带方案校验和数据集适配工具，不因此把某个实验的选择变成算法要求。规划与执行的边界见 [experiment-spec.md](references/experiment-spec.md)。
+
+本项目 GDPevo 的固定方案与专用工具见 [gdpevo.md](references/gdpevo.md) 和 [campaign.md](references/campaign.md)。工作区的 `scripts/rsi.py` 是该方案的可选检查与启动入口，不是其他 WikiSkill 实验的依赖。首次接入执行环境时先用独立 smoke Target 跑一个 train cell，确认注入、评分及隔离；其记录不进入正式训练或 baseline。只有规划清单、尚未验证执行适配时不能开始正式实验。
 
 ## 准备实验
 
@@ -30,15 +32,15 @@ version: 2026.10.14.3
 
 只准备当前要执行的 smoke 或 replica。创建身份、记录配置不执行做题模型；用户仅要求准备时，完成检查并报告下一步。用户已要求开始且预算、权限齐全时继续执行，不为每个 Agent 重复索要许可。遇到权限不足，说明具体失败命令和缺少的能力，不读取凭证或扩大权限。
 
-Wiki Maintainer、Skill Proposer、Evaluator、Companion Auditor 都由顶层 Controller 通过 `run_subagent` 开启临时叶子会话，不创建同名持久 Agent。三次独立实验各用新的 Controller Session、独立 Target 和 OUT，从空 Wiki/技能起步；可以复用干净的 Controller 定义，但不能复用上一轮实验的对话或注入其记忆。使用已冻结 campaign 时保留其中的 Controller/Target ID 约定。
+Wiki Maintainer、Skill Proposer、Evaluator、Companion Auditor 都由顶层 Controller 通过 `run_subagent` 开启临时叶子会话，不创建同名持久 Agent。按实验计划指定的重复次数，每次独立重复各用新的 Controller Session、独立 Target 和 OUT，从空 Wiki/技能起步；可以复用干净的 Controller 定义，但不能复用上一次重复实验的对话或注入其记忆。使用已冻结 campaign 时保留其中的 Controller/Target ID 约定。
 
 ## 实验配置
 
 在首次评测前写入 `experiment.json`，至少包含：
 
 - App Data Dir、Controller ID 与本次 Session ID、专用 Target ID、创建或核验记录、独立 OUT 绝对路径；OUT 在 Target State 和所有做题 Workspace 之外。
-- train / validation / test 的 benchmark ID、case ID 列表和内容指纹；划分按原始题目身份去重，不能仅靠换 ID。通用探索可暂不指定 test，此时只称验证实验；GDPevo 正式三次实验必须保留完整 30 题 test。
-- 用户选择的 Target `provider`、`model_id`、thinking level，以及优化/评测角色的实际模型配置；角色可以按实验设计分别配置，调度时显式绑定，不能只在提示词里声明。记录非敏感端点或路由设置以便复现，不保存 API Key。一次实验中的 H0、候选和最终比较保持同一配置；切换渠道建立新实验，并在报告中区分条件。GDPevo 使用原始确定性 verifier 打分，Evaluator 的模型不替代评分器。
+- train / validation / test 的 benchmark ID、case ID 列表和内容指纹；划分按原始题目身份去重，不能仅靠换 ID。通用探索可暂不指定 test，此时只称验证实验；具体 benchmark 方案可以提出更严格的要求。记录本实验共享 Wiki/Skill 的学习单元；若按领域分别学习，每个单元另用独立方案和 OUT，不暗中共享记忆。
+- 用户选择的 Target `provider`、`model_id`、thinking level，以及优化/评测角色的实际模型配置；角色可以按实验设计分别配置，调度时显式绑定，不能只在提示词里声明。记录非敏感端点或路由设置以便复现，不保存 API Key。一次实验中的 H0、候选和最终比较保持同一配置；切换渠道建立新实验，并在报告中区分条件。使用实验预先声明的评分器与聚合规则，不能为提高分数更换评分方式。
 - `max_iterations`、每题 `runs_per_case`、并发数和停止预算。用户未指定时，初步探索可采用 **2 轮、每题 1 次、串行**，注明这是初步探索配置。预估 Target 次数为 `Nval*R + K*(Ntrain+Nval)*R`，最终测试另计；预算不允许完整一轮时不启动它。
 - `train_feedback_mode: score_only`（默认）或 `with_labels`；后者只用用户明确提供的训练标签出口，不读取私有 rubric 来造标签。
 - `skill_provisioning: full_injection`、`isolation_mode`、冻结的基础 Agent State 指纹及工具/提示词/版本。默认从空技能集合、空 Wiki 开始，专用 Target 不继承其他业务技能。

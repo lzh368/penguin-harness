@@ -2,6 +2,8 @@
 
 `scripts/campaign.py` 负责本项目 GDPevo 配置的身份冻结、评测矩阵及复算汇总；真实执行仍按本技能与 Harbor 接口。这是可选的实验管理工具；普通 Web 实验可以由当前 Controller 按本技能直接准备 Target 和清单，不依赖工作区的 `rsi.py`。工具从所选 profile 读取模型，不限定某个服务商，也不创建 Penguin Agent、模型 Session、baseline 分数或审计 pass。
 
+本工具验证固定的 GDPevo profile，不是通用 benchmark 入口。[experiment_spec.py](../scripts/experiment_spec.py) 只生成另一种 `planning_only` 规划文件，不能传给这里的 `init`，也不能替代既有 profile/campaign。不要放宽旧工具的任务 allowlist 来接入新的数据集。
+
 ```bash
 python3 <skill>/scripts/campaign.py init \
   --profile <source-verified-profile.json> --out <campaign> \

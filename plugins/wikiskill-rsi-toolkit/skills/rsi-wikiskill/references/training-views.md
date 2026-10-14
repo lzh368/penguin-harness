@@ -2,6 +2,8 @@
 
 本接口用于 GDPevo/Harbor，连接评测产物与 Wiki/Proposer，不调用模型、不生成技能、不改变评分。先完成本轮全部 train cell 的运行、审计和转换；不能边跑边更新 Wiki。通用 Workspace 接口仍按下述信息边界准备等价输入，不伪造 Harbor 回执。
 
+`train_views.py` 复用固定 GDPevo 的回执转换器，因此目前不是任意 Harbor benchmark 的导出器。更换数据集须先验证对应的执行与证据适配；不能修改 case 名或绕过原校验来制造兼容。
+
 ## Controller 的导出步骤
 
 只由 Controller/Evaluator 接触私有回执。在 `<OUT>/private/` 写 `train-r0001-sources.json`，数组每项恰好四个字段，覆盖该 train plan 的完整 Case × Run 矩阵：

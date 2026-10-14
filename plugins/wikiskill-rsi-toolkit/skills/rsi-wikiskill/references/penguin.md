@@ -2,6 +2,8 @@
 
 供 Controller 和单次 evaluator 使用。基础 State/技能注入规则两种接口共用；本文件的 cell 启动、原生 Session 路径和 rubric 打分只适用于本地 Workspace。GDPevo 改读 [gdpevo.md](gdpevo.md) 和 [harbor.md](harbor.md)，使用 Harbor 容器、trial 与原始 verifier。不要同时加载另一份存在冲突的评测指令。
 
+先按 [experiment-spec.md](experiment-spec.md) 确认任务清单、学习单元和所选执行接口。网页上能选择一个 benchmark，或规划工具接受其 ID，都不能证明它已有 WikiSkill 执行适配；未接入的 runner 先完成适配与预检，不能退回普通 Workspace 只发题面来代替真实环境。
+
 ## Controller：接入和冻结
 
 需要现成可用的 Penguin CLI/Server、顶层 `run_subagent` / `input_subagent`、Linux/Unix 上的 Python 3.10+；本地接口另需 Workspace benchmark，GDPevo 另需其 Harbor 依赖。检查能力即可，不为一次实验自动安装服务或修改 core。本技能由 `wikiskill-rsi-toolkit` plugin 提供。当前普通 Agent 加载本技能后即承担 Controller；不要求特殊 Agent 类型。现有项目可通过 `penguin plugin install <plugin绝对目录>` 导入。技能源码留在 plugin 的 `skills/rsi-wikiskill/`，不要再维护第二份编辑副本。

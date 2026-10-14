@@ -2,6 +2,8 @@
 
 仅用于 [gdpevo.md](gdpevo.md) 指定的数据和接口版本。Controller 编排 WikiSkill；每个叶子 Evaluator 执行一个 Harbor trial，使用原始 verifier，并输出与 `aggregate.py` 兼容的 cell。当前提供的是执行约定和离线校验工具，真实容器预检仍需完成。
 
+这里的命令、`harbor_receipt.py` 与 `harbor_result.py` 都属于固定 GDPevo 适配；同样由 Harbor 运行的其他 benchmark 也不能直接套用。新实验规范通过规划校验不代表任务环境、评分器或结果转换已接好，接口边界见 [experiment-spec.md](experiment-spec.md)。
+
 ## 首次启动前
 
 确认 Docker、Harbor 0.23.0、完整 benchmark checkout、可用的 Penguin 安装 bundle 和模型配置。目录结构必须完整，Docker build 依赖共享环境 build context，不能只复制某个 task 子目录。模型密钥经现有 Penguin 配置交给适配器，不写入命令参数、skill、job 配置或审计报告；只允许适配器读取所需模型配置并在容器内按受限权限存放，不回显凭证。
