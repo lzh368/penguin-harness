@@ -7,7 +7,7 @@
 | Controller | 实验清单、公开协议结果、train 证据、Wiki、proposal、技能 | 实验账本；调用脚本；部署技能；接受决策；不亲自从逐题 validation 结果归纳技能 |
 | Target | 当前任务题面/资源、固定基础提示词、全部活跃 SKILL 内容、当前 Workspace | 当前任务产物；不读 Wiki、历史轨迹、PURPOSE、其他题目或 rubric |
 | Evaluator | 指定 cell 的 rubric、Target 产物、该执行的 trace | 私有评分，返回固定协议；不改 Target 或 benchmark |
-| Wiki Maintainer | Wiki、当轮抽样 train 视图及训练反馈 | 仅 `wiki/index.md`、`wiki/patterns/*.md`、追加 `wiki/logs.md` |
+| Wiki Maintainer | Wiki、当轮抽样 train 视图、采样清单及训练反馈 | 仅 `wiki/index.md`、`wiki/patterns/*.md`、追加 `wiki/logs.md` |
 | Skill Proposer | Wiki、accepted skills、训练结果清单、按需读取 train 原始轨迹 | 仅 proposal 文件和所读证据清单；不直接改技能、Wiki 或分数 |
 | Companion Auditor | proposal、技能 diff、train 证据、允许路径清单、脱敏后的运行访问记录 | 结构化发现；不改候选，不读 val/test 答案，不评分 |
 
@@ -19,21 +19,23 @@ GDPevo 的 `tgXXX-train-005` 在本实验属于 **validation**，即使其源目
 
 ## Wiki Maintainer 的委托提示
 
-向新会话发以下内容并代入实际路径：
+向新会话发以下内容并代入实际绝对路径，`<learning_reference>` 指向本技能目录下的 `references/learning.md`。Maintainer、Proposer 和 Auditor 都读取 [learning.md](learning.md)；它规定训练证据如何支持技能规则，不改变独立验证的接受标准。
 
-> 维护 WikiSkill 的持久知识库。读取 `<wiki>`、本轮 `<sample_manifest>` 中的训练视图及允许的训练反馈。输出可跨题复用的条件、原因、操作步骤和反例，区分观察事实与待验证假设。合并重复模式；新证据可纠正旧结论，但保留来源与演变记录。每条模式链接 train 证据的相对路径，并说明适用范围和失败情形。更新完整 index、模式文件，向 logs 追加本轮摘要。即使没有新模式也更新本轮日志。不得修改 raw、skills、skill-impact 或评分数据；不访问 validation/test。结束只报告改动路径、关键模式 ID 和未解决问题。
+> 维护 WikiSkill 的持久知识库。先读 `<learning_reference>`，再读 `<wiki>`、本轮 `<sample_manifest>` 中的训练视图及允许的训练反馈。核对视图覆盖和截断说明，围绕可观察的“任务条件→动作→结果”整理模式，不从总分猜测具体错误。给每条新增或修订结论留下支持位置、冲突证据及当前未解决的解释；没有对照时明确未知，不编造反例或把猜测写成确定规则。新证据可收窄或纠正旧模式，保留演变来源。更新完整 index、模式文件，向 logs 追加本轮摘要及证据缺口；即使没有新模式也记录本轮。不得修改 raw、skills、skill-impact 或评分数据；不访问 validation/test。结束只报告改动路径、关键模式 ID 和未解决问题。
 
-模式文件建议只包含：标题/适用条件、证据、解释、建议动作、反例/置信度、关联技能。不要把逐题标准答案、整段工具输出堆进 Wiki。原始证据留在 raw。
+模式内容与最小示例见 [learning.md](learning.md)。不要把逐题标准答案、整段工具输出堆进 Wiki。原始证据留在 raw。
 
 ## Skill Proposer 的委托提示
 
-> 你是 WikiSkill 的技能提案者。先读 `<wiki>/index.md`、`skill-impact.md`、`<train_summary>` 和 `<accepted_skills>`。基于 Wiki 中的模式，按需检查相关训练轨迹；提出改动前至少完整阅读四条来自本轮、同一 accepted 快照下不同训练任务的轨迹，把读取证据列在输出中。历史轨迹可补充但不抵这四条；多个 trace shard 属于同一次执行，只算一条轨迹。优先局部修补已有技能，单次只创建或修改一个技能，实际 SKILL 正文必须改变；让步骤、使用条件和例外足够具体。把为什么修改、来源模式和演化历史写入 PURPOSE。历史被拒方案需要新的证据或明确修正，不能原样重提。不要把答案、题目 ID、评分器路径、任务特定绝对路径写成通用技能。不修改固定基础提示词、角色指令、工具或模型，只通过 proposal 修改目标技能。只向 `<proposal_path>` 写符合协议的 JSON。没有可靠改动时输出 no_action。只读允许路径；不读取 validation/test 题面、逐题分数、输出、轨迹或 rubric。
+> 你是 WikiSkill 的技能提案者。先读 `<learning_reference>`、`<wiki>/index.md`、`skill-impact.md`、`<train_summary>` 和 `<accepted_skills>`。选一个值得检验的训练机制或现有规则缺陷，再围绕它查证；提出改动前至少完整阅读四条来自本轮、同一 accepted 快照下不同训练任务的轨迹，把读取证据列在输出中。选择既能支持也能挑战该机制的训练记录，而不是凑四条摘要；没有匹配的反例时记录缺口。历史轨迹可补充但不抵这四条；多个 trace shard 属于同一次执行，只算一条轨迹。优先局部修补已有技能，单次只创建或修改一个技能，围绕一个可检验的行为变化，实际 SKILL 正文必须改变。所有新增或收紧的行为规则都应在 PURPOSE 中说明依据、触发条件、反例或未验证边界和预期影响；Target 所见 SKILL 自身也必须包含启用及跳过条件，不能只把边界藏在 PURPOSE。历史被拒方案需要新的证据或明确修正，不能原样重提。不要把答案、题目 ID、评分器路径、任务特定绝对路径写成通用技能。不修改固定基础提示词、角色指令、工具或模型，只通过 proposal 修改目标技能。只向 `<proposal_path>` 写符合协议的 JSON。没有证据支持可执行的局部改动时输出 no_action；不能为完成一轮而强行造规则。只读允许路径；不读取 validation/test 题面、逐题分数、输出、轨迹或 rubric。
 
-训练摘要包含每个训练任务的成功/失败、预测、分数和轨迹路径。`with_labels` 时追加明确提供的训练标签；`score_only` 时明确标签缺失，不能凭想象补充。`PURPOSE.md` 是优化器侧的来源说明，运行时 Target 仅收到 `SKILL.md`。
+训练摘要包含每个训练任务的成功/失败、预测、分数和轨迹路径。`with_labels` 时追加明确提供的训练标签；`score_only` 时明确标签缺失，不能凭想象补充。整题分数是查证线索，不能确定某个动作的因果作用。`PURPOSE.md` 是优化器侧的来源说明，运行时 Target 仅收到 `SKILL.md`。
 
 ### Proposal JSON
 
 为便于确定性验证，本适配使用以下协议，不逐字复制论文 prompt。所有字符串使用合法 JSON 转义；文件路径相对 OUT。`evidence` 引用 `raw/` 下保存的单次完整轨迹入口文件，每个入口列出该 session 的全部分片/子轨迹。Controller 检查至少四个不同 train case，并核对角色实际读取记录；脚本只能检查文件存在与数量。
+
+以下为合成格式示例，轨迹文件和观察位置仅用于说明，不得复制为正式证据。真实 PURPOSE 必须引用本轮实际读取的内容。
 
 创建：
 
@@ -43,8 +45,8 @@ GDPevo 的 `tgXXX-train-005` 在本实验属于 **validation**，即使其源目
   "skill": "verify-table-edits",
   "rationale": "把多次训练中发现的未校验表格修改整理为可复用步骤；来源 patterns/table-integrity.md",
   "evidence": ["raw/r0001/a.md", "raw/r0001/b.md", "raw/r0001/c.md", "raw/r0001/d.md"],
-  "skill_md": "---\nname: verify-table-edits\ndescription: 修改表格数据后校验结构和计算结果。\n---\n\n# 校验表格修改\n\n先记录被改区域及关键公式，保存后重新打开，检查类型、公式引用与预期结果。\n",
-  "purpose_md": "# 来源与演化\n\n根据 wiki/patterns/table-integrity.md 及本次 evidence 创建；适用于表格写入后的完整性检查。\n"
+  "skill_md": "---\nname: verify-table-edits\ndescription: 修改并保存表格后校验受影响区域。\n---\n\n# 校验表格修改\n\n仅在当前任务要求修改并保存表格时使用；只读分析跳过，不为执行本技能而写文件。\n\n先记录被改区域及其关键公式，保存后重新打开，检查这些区域的类型、公式引用与任务要求是否一致。只修复有依据的偏差，不改未涉及的区域。\n",
+  "purpose_md": "# 来源与演化\n\n假设：保存后定向复查可发现写入引入的偏差；来源 wiki/patterns/table-integrity.md。raw/r0001/a.md 的保存后工具结果显示引用偏移，b.md 的重开检查发现类型变化，支持增加这一步；c.md 为无写入的成功分析，限定本规则不适用于只读任务。d.md 写入后未出现偏差，不能因此声称所有保存都会损坏内容。预计改善写入后检查，额外读取有时间成本；尚无对照证明提分，交固定 validation 检验。\n"
 }
 ```
 
@@ -54,11 +56,11 @@ GDPevo 的 `tgXXX-train-005` 在本实验属于 **validation**，即使其源目
 {
   "action": "patch",
   "skill": "verify-table-edits",
-  "rationale": "补上只读场景例外，并记录新训练证据",
+  "rationale": "收窄仅修改显示格式时的检查动作，并记录新训练证据",
   "evidence": ["raw/r0002/a.md", "raw/r0002/b.md", "raw/r0002/c.md", "raw/r0002/d.md"],
   "edits": [
-    {"file": "SKILL.md", "op": "insert_after", "old": "# 校验表格修改", "text": "\n\n仅分析且未写入文件时，不执行保存后复查。"},
-    {"file": "PURPOSE.md", "op": "append", "text": "\n第二轮：依据 patterns/read-only.md 加入只读场景边界。\n"}
+    {"file": "SKILL.md", "op": "insert_after", "old": "# 校验表格修改", "text": "\n\n仅调整显示格式且未改值或公式时，复核变更的显示效果，不额外改公式。"},
+    {"file": "PURPOSE.md", "op": "append", "text": "\n第二轮：a.md 中纯格式任务不必要的公式修改造成偏差，b.md 保持公式只改格式完成要求；c.md、d.md 的值/公式修改仍需原检查。以上均为 raw/r0002/ 的完整训练轨迹。假设：按修改类型缩小动作范围能减少越界改动；只改变格式分支，不削弱数据写入分支，保留未覆盖格式场景的不确定性。\n"}
   ]
 }
 ```
@@ -67,6 +69,6 @@ GDPevo 的 `tgXXX-train-005` 在本实验属于 **validation**，即使其源目
 
 ## Companion Auditor 的委托提示
 
-> 审计本轮执行/提案。只检查所给训练证据、候选、允许路径和访问记录；不打开 validation/test 内容或 rubric。核实实际技能装载与候选 hash 一致，运行期其他 State 未变；Target/其子会话未读取 Wiki、PURPOSE、其他 Workspace、评分路径或优化器文件；学习角色没有获取 val/test 私有数据。检查提案是否只改一个技能、确实阅读至少四个不同训练任务的轨迹、PURPOSE 可追溯、步骤可复用，是否夹带答案或特定题目硬编码。返回 JSON：`{"status":"pass|fail|unverified","findings":[{"severity":"error|warning","evidence":"路径/记录","detail":"具体事实"}]}`。证据不足写 unverified，不以自我保证代替检查。你不负责验证候选性能，不调用模型做题，不创造改进内容。
+> 审计本轮执行/提案。先读 `<learning_reference>`。只检查所给训练证据、候选、允许路径和访问记录；不打开 validation/test 内容或 rubric。核实实际技能装载与候选 hash 一致，运行期其他 State 未变；Target/其子会话未读取 Wiki、PURPOSE、其他 Workspace、评分路径或优化器文件；学习角色没有获取 val/test 私有数据。检查提案是否只改一个技能、确实阅读至少四个不同训练任务的完整轨迹。按真实 diff 逐项检查新增或收紧规则的 PURPOSE 论证：引用能否定位到实际动作和结果，是否遗漏已读到的反例，条件是否足以区分适用与不适用任务，是否把分数关联或未知解释写成必然因果；确认这些边界也写进 Target 所见 SKILL。检查答案或特定题目硬编码。返回 JSON：`{"status":"pass|fail|unverified","findings":[{"severity":"error|warning","evidence":"路径/记录","detail":"具体事实"}]}`。缺少读取记录或引用证据时写 unverified；指出可观察的缺口，不以自我保证代替检查，也不因尚无验证分就否定有训练依据的候选。你不负责验证候选性能，不调用模型做题，不创造改进内容。
 
-语义上的“未泄漏”不能靠脚本或单个 reviewer 证明。`fail` 时停止对应轮次；`unverified` 要报告缺失证据，严格隔离实验不得继续。改动合法性可在 stage 前审核，stage 后再次核对真实 diff；这样修复不会留下无法评测的 pending。
+语义上的“未泄漏”不能靠脚本或单个 reviewer 证明。`fail` 时停止对应轮次；`unverified` 要报告缺失证据。涉及提案来源或完整轨迹阅读的缺口，核实前不进入 stage/validation；隔离能力未知时，严格隔离实验不得继续，不能用声明 procedural 替代缺失的提案证据。改动合法性可在 stage 前审核，stage 后再次核对真实 diff；这样修复不会留下无法评测的 pending。

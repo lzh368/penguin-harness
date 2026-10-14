@@ -118,7 +118,7 @@ model_id: <role_models.target.model_id>")
 
 根据成功协议中的 `session_id` 取训练 root Session，归档 `TARGET/traces/<date>/<session_id>_<index>.jsonl` 的全部分片（包含压缩前后）。验证 session_meta 的 canonical workspace、agent_state、provider、model。沿 subagent 事件引用补充 Target 的直接关联子 Session 及其分片；如有更深实际链路，完整追踪，不能混入 evaluator Session。
 
-在 `raw/rXXXX/<case>-<run>.md` 建不可变入口，列出 case 身份、原始文件 hash、全部分片及子轨迹路径、预测与反馈。Proposer 必须读取入口所指完整轨迹，入口本身的几行摘要不等于完成阅读。原始文件置于同一轮 raw 子目录，写入后只读并登记 hash。后续轮次加新目录，不覆盖旧文件。
+通用 Workspace 在 `raw/rXXXX/<case>-<run>.md` 建不可变入口，列出 case 身份、原始文件 hash、全部分片及子轨迹路径、预测与反馈。GDPevo/Harbor 使用 [training-views.md](training-views.md) 导出器生成 `raw/rXXXX/items/<编号>/index.md` 及完整原始分片，不另外手工导出或截断 JSON。Proposer 必须读取入口所指完整轨迹，入口本身的几行摘要不等于完成阅读。原始文件置于同一轮 raw 子目录，写入后只读并登记 hash。后续轮次加新目录，不覆盖旧文件。
 
 伴生审计接收经过筛选的工具访问路径/调用元数据；validation/test 输出与评分内容仍不共享。Controller 不为了审计而打开 validation/test trace：由对应 evaluator 就地审计访问范围，异常按 evaluation_failed 返回并在私有审计档案留证。只有 train 的完整 trace 可供优化器读取。
 

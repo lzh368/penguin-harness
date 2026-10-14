@@ -1,7 +1,7 @@
 ---
 name: rsi-wikiskill
 description: Run or resume WikiSkill experiments in Penguin. Compile training traces into a persistent Wiki, propose one skill change per batch, and accept changes only when independent validation improves. Use for skill-based RSI with isolated evaluation, including GDPevo through Harbor.
-version: 2026.10.14.2
+version: 2026.10.14.3
 ---
 
 # WikiSkill 自进化
@@ -57,7 +57,7 @@ App Data Dir、数据划分、可用模型对或预算授权无法确定时，�
 
 ## 执行一轮
 
-先读 [roles.md](references/roles.md) 分发角色，再读 [state.md](references/state.md) 使用本地状态工具。Penguin 中只有顶层 Controller 编排 `run_subagent`；各子角色是独立叶子会话，不再启动子 Agent。
+先读 [roles.md](references/roles.md) 分发角色，再读 [state.md](references/state.md) 使用本地状态工具。学习和提案审计角色须读 [learning.md](references/learning.md)，按训练证据写出有适用边界的规则。Penguin 中只有顶层 Controller 编排 `run_subagent`；各子角色是独立叶子会话，不再启动子 Agent。
 
 ### 0. 空技能基线
 
@@ -69,13 +69,15 @@ App Data Dir、数据划分、可用模型对或预算授权无法确定时，�
 
 检查 State/benchmark 指纹和实际模型绑定；伴生审计角色核查数据访问边界及加载内容。如果发现泄漏、运行中状态变化或注入失败，本轮无效，停止排查，不生成“改进”。
 
+GDPevo/Harbor 用 [training-views.md](references/training-views.md) 的 `train_views.py` 将整轮已审计结果导出到新的 `raw/rNNNN/`，同时保存完整原始分片、轨迹入口与采样 manifest；不要先用原始 JSON 前缀手工造摘要。其他执行接口须保留同等来源、完整轨迹与视图限制记录。
+
 ### 2. Wiki Maintainer
 
-从当轮训练记录分层抽样，最多 5 条失败、3 条成功；每条给 Maintainer 的轨迹视图最多 15,000 字符，记录采样种子/ID及截断方式，保留原文件。让 Maintainer 整合共性原因、成功策略与反例，更新 `wiki/patterns/`、完整 `index.md` 并追加 `logs.md`。已有模式应合并或修正，不强凑条数。
+从当轮训练记录分层抽样，最多 5 条失败、3 条成功；每条给 Maintainer 的轨迹视图最多 15,000 字符，记录采样种子/ID及截断方式，保留原文件。Harbor 使用导出 manifest 的 selected 视图，不另行挑选。让 Maintainer 区分观察和解释，记录条件、动作、结果、反例与未知之处，更新 `wiki/patterns/`、完整 `index.md` 并追加 `logs.md`。新证据削弱旧模式时同时修正索引中的结论，不把互相冲突的建议一直累加。
 
 ### 3. Skill Proposer
 
-开启新会话，只给角色指令、允许的路径和训练清单。它从 Wiki 索引、历史 `skill-impact.md`、训练结果摘要和当前技能开始，按需读取训练轨迹，输出一个结构化 proposal。格式见角色文档。
+开启新会话，只给角色指令、允许的路径和训练清单。它从 Wiki 索引、历史 `skill-impact.md`、训练结果摘要和当前技能开始，至少读四个不同训练任务的完整轨迹，围绕一个可检验的行为变化输出一个结构化 proposal。每条新规则在 PURPOSE 留下证据和反例/未知范围，Target 所见 SKILL 正文写明启用及跳过条件；不能把局部经验升级为无条件的业务规定。具体准则与格式见学习指南和角色文档。
 
 `no_action`：记录理由，保留 Wiki 和技能，消耗一轮，跳过重复 validation。本规则是工程约定。格式错误可在同一角色会话修正；不要向它透露 validation 私有细节。修正仍不合法时停止本轮，不把错误伪装成算法拒绝。
 
