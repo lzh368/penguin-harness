@@ -20,7 +20,7 @@ python3 -B <skill>/scripts/run_guard.py --guard <replica>/guard.json check \
 | 字段 | 来源与要求 |
 |---|---|
 | `captured_at` | UTC ISO 时间，观测不超过 120 秒；采样失败不能仅更新时间 |
-| `sessions` | 原生 Session 列表 JSON 数组，保留身份、status、pendingFollowUpCount、原生 backgroundTasks；叶子 running、compacting 或状态未知时不发 nudge |
+| `sessions` | 原生 Session 列表 JSON 数组，保留身份、status、pendingFollowUpCount、原生 backgroundTasks；根或叶子尚有队列/后台任务，以及叶子 running、compacting 或状态未知时不发 nudge |
 | `host_cost` | 当前 Controller 及其叶子的原生 `penguin cost --agent-id ... --json` 输出；`summary.total.hasUncosted=false` 且 cost 已知；原生空账本 requests=0、total=0、cost=null 可识别为零，已产生请求却无费用则不行；确认查询时间范围覆盖整个实验 |
 | `inventory_complete` | 与执行前记录的全部启动账本对齐后才为 true，不能仅扫描已有成功 result |
 | `attempts` | 所有 Target 尝试，包括失败和重试；每项恰为 `{launch_id,status,result}`。active 时 result=null；finished 时为本机真实 trial/result.json 绝对路径，不是 job 层汇总 |
@@ -28,7 +28,9 @@ python3 -B <skill>/scripts/run_guard.py --guard <replica>/guard.json check \
 
 容器调用不在宿主费用里。工具汇总每个已结束 trial 的 `agent_result.cost_usd`，拒绝缺费用、重复 trial、时间过期、费用倒退或不完整快照。调度前先记启动账本，任务不明或结果丢失时不能伪称清单完整。
 
-已知费用的下界达到阈值就持久停止，即使其他费用/会话观测仍未知；不完整观测只能阻止继续，不能遮住已确认的超额。根 Session 的后台任务字段可能在进程重载后消失，字段缺省不能代替操作者核查真实进程和子任务。
+guard 持久保存已观察到的启动清单：后续快照不得漏掉已见的 launch，不得把 finished 改回 active，也不得替换已绑定的结果路径或内容。其他费用或会话信息缺失时，仍保留有效的启动观测；修复采集器后用完整清单重查，不能通过删条目恢复调度。旧 guard 缺少此清单时从首次有效观测建立，因此不能证明此前没有遗漏。
+
+已知费用的下界达到阈值就持久停止，即使该快照已过期或其他费用/会话观测仍未知；过期快照只能提供停止依据，不能授权继续。根和叶子 Session 的后台任务字段可能在进程重载后消失，字段缺省不能代替操作者核查真实进程和子任务。
 
 - `action=continue`：可在既定授权/并发内调度；只有 `may_nudge=true` 才可向返回的根 `sessionId` 投递续跑消息。它不是启动许可的替代品。
 - `action=wait` 或退出码 2：暂停新调度和 nudge，保留在途工作，修复观测后重查。

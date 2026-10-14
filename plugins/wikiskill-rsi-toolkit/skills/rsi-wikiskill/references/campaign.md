@@ -34,6 +34,8 @@ python3 <skill>/scripts/campaign.py summary --campaign <campaign>
 
 自动进入下一副本之前另用 `campaign.py verify-replica --campaign <campaign> --replica r1`：它从 `state.json` 和原始矩阵复算 `validation-H0`、`train-rNNNN`、存在候选的 `validation-rNNNN`、`test-H0/test-final`，核对 accepted/candidate 技能 hash、决策分数与 evaluation ID。`no_action` 轮不应重复验证。缺失/额外计划、pending、未到停止条件或分数/决策不一致时返回非零，监督器必须停止接力。文件命名与本节约定不同的旧实验先人工映射审核，不为通过校验覆盖原件。运行状态和费用门见 [operations.md](operations.md)。
 
+复算同时检查部署版本：一个版本只能对应一个技能集合，训练与验证随进化不能回退版本；测试使用的版本不能早于进化末版。连续 phase 未换 State 可以复用版本，恢复旧技能必须递增版本。两套 test 均在技能冻结后执行，不限定彼此先后；版本检查只证明账本一致，实际部署仍由 Harbor 回执与 trace 审计证明。决策记录中的 `previous_best` 也须与重放的历史最好分一致。
+
 本工具约定三个不同的 Controller/Target ID，共享一个隔离的宿主 Penguin 数据根和模型配置，各自 OUT、Wiki、技能、会话、容器和学习历史互不共享。专用 Controller ID 是这个工具的约定，WikiSkill 通用入口只要求干净的 Controller 定义及每次全新的 Session。smoke 另用 `<前缀>_controller_smoke` / `<前缀>_target_smoke` 和独立目录；smoke 不写正式 campaign，不导入它的轨迹或成绩。
 
 工作区的 `rsi.py bootstrap [smoke|r1|r2|r3]` 仅是可选便利命令，按当前选择准备一个 Controller；`rsi.py run` 会准备本次需要的 Controller。Target 始终由执行本技能的 Controller 按需准备。已存在的八个预建 Agent 保留，运行对应实验时核验后使用，不批量删除或重建。

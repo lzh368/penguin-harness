@@ -263,9 +263,9 @@ def verify_replica(campaign, replica_id):
         require(state["round"] == profile["config"]["max_iterations"] or Decimal(state["best_score"]) == 100,
                 "evolution is incomplete; an early operator stop is not completed wrapup")
         empty_hash = states.tree_info({})["sha256"]
-        used_sessions, verified_labels = set(), set()
+        used_sessions, verified_labels, version_skills = set(), set(), {}
 
-        def phase(label, name, skill_hash):
+        def phase(label, name, skill_hash, minimum_version=1):
             folder = path(Path(replica["plans"]) / label)
             actual, plan_hash = read_json(folder / "plan.json")
             binding, _ = read_json(folder / "deployment.json")
@@ -274,6 +274,10 @@ def verify_replica(campaign, replica_id):
             require(encoded(actual) == encoded(expected), "phase differs from complete frozen matrix")
             require(encoded(binding) == encoded(deployment(config, replica, name, label, version, skill_hash, expected)),
                     "phase deployment is not the expected skill set")
+            require(version >= minimum_version, "Target deployment version went backwards")
+            require(version not in version_skills or version_skills[version] == skill_hash,
+                    "Target deployment version identifies different skill sets")
+            version_skills[version] = skill_hash
             result = evaluation.aggregate(folder / "plan.json", folder / "cells")
             require(result["plan_sha256"] == plan_hash, "phase plan changed")
             for entry in result["cell_sha256"]:
@@ -282,29 +286,31 @@ def verify_replica(campaign, replica_id):
                 require(cell["session_id"] not in used_sessions, "Target session reused across phases")
                 used_sessions.add(cell["session_id"])
             verified_labels.add(label)
-            return result
+            return result, version
 
-        baseline = phase("validation-H0", "validation", empty_hash)
+        baseline, version = phase("validation-H0", "validation", empty_hash)
         require(Decimal(baseline["score"]) == Decimal(state["baseline_score"]), "baseline score differs from cells")
         decisions = {row["candidate_id"]: row for row in state["decisions"]}
         candidates = {store.json(f"candidates/{cid}/meta.json")["round"]: cid for cid in state["candidates"]}
         accepted = empty_hash
         for round_number in range(1, state["round"] + 1):
-            phase(f"train-r{round_number:04d}", "train", accepted)
+            _, version = phase(f"train-r{round_number:04d}", "train", accepted, version)
             candidate = candidates.get(round_number)
             if candidate is None:  # load_verified has already checked no_action rounds.
                 continue
             meta = store.json(f"candidates/{candidate}/meta.json")
             require(meta["base"]["sha256"] == accepted, "candidate was not based on accepted skills")
-            result = phase(f"validation-r{round_number:04d}", "validation", meta["content"]["sha256"])
+            result, version = phase(f"validation-r{round_number:04d}", "validation", meta["content"]["sha256"], version)
             decision = decisions[candidate]
             require(result["evaluation_id"] == decision["evaluation_id"] and
                     Decimal(result["score"]) == Decimal(decision["score"]), "decision differs from validation evidence")
             if decision["accepted"]:
                 accepted = meta["content"]["sha256"]
         require(accepted == state["accepted"]["sha256"], "final accepted skill differs from round history")
-        h0 = phase("test-H0", "test", empty_hash)
-        final = phase("test-final", "test", accepted)
+        # Both tests follow evolution, but the protocol does not order them
+        # relative to each other. An unchanged deployment may be reused.
+        h0, _ = phase("test-H0", "test", empty_hash, version)
+        final, _ = phase("test-final", "test", accepted, version)
         require({p.name for p in path(replica["plans"]).iterdir()} == verified_labels,
                 "unexpected/unverified phase plan remains")
         with localcontext() as context:

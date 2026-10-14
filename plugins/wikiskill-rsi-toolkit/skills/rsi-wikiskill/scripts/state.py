@@ -313,6 +313,8 @@ def load_verified(store):
         require(evaluation_id not in seen, "duplicate evaluation id")
         seen.add(evaluation_id)
         value = score(decision["score"], maximum)
+        require(score(decision.get("previous_best"), maximum) == best,
+                "decision previous_best disagrees with history")
         improves = value > best
         require(decision["accepted"] is improves, "decision disagrees with strict improvement")
         candidate = decision["candidate_id"]

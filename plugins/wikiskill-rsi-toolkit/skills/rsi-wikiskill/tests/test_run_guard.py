@@ -29,7 +29,8 @@ class RunGuardTest(unittest.TestCase):
                          "global_cost_complete": True, "global_spent_usd": 1}
 
     def test_sessionId_and_pinned_identity_win_over_newer_leaf(self):
-        self.snapshot["sessions"].insert(0, {**self.identity, "sessionId": "leaf", "source": "subagent", "status": "idle"})
+        self.snapshot["sessions"].insert(0, {**self.identity, "sessionId": "leaf", "source": "subagent",
+                                             "status": "idle", "pendingFollowUpCount": 0})
         result = guard.check(self.state, self.snapshot, self.now)
         self.assertEqual(result["sessionId"], "root-session")
         self.assertTrue(result["may_nudge"])
@@ -88,6 +89,7 @@ class RunGuardTest(unittest.TestCase):
         result = guard.check(self.state, self.snapshot, self.now)
         self.assertEqual(result["action"], "continue")
         self.assertFalse(result["may_nudge"])
+        self.state = guard.initial(self.identity, "25", "75")
         self.snapshot["attempts"] = []
         self.snapshot["sessions"][0]["pendingFollowUpCount"] = 1
         self.assertFalse(guard.check(self.state, self.snapshot, self.now)["may_nudge"])
@@ -96,7 +98,8 @@ class RunGuardTest(unittest.TestCase):
         self.snapshot["sessions"][0]["backgroundTasks"] = {"processes": 0, "subagents": 1}
         self.assertFalse(guard.check(self.state, self.snapshot, self.now)["may_nudge"])
         del self.snapshot["sessions"][0]["backgroundTasks"]
-        self.snapshot["sessions"].append({**self.identity, "sessionId": "leaf", "source": "subagent", "status": "running"})
+        self.snapshot["sessions"].append({**self.identity, "sessionId": "leaf", "source": "subagent",
+                                         "status": "running", "pendingFollowUpCount": 0})
         self.assertFalse(guard.check(self.state, self.snapshot, self.now)["may_nudge"])
         for status in ("compacting", None):
             self.snapshot["sessions"][-1]["status"] = status
@@ -166,6 +169,126 @@ class RunGuardTest(unittest.TestCase):
         self.assertEqual(json.loads(state.read_text())["reason"], "wrapup_failed")
         check = subprocess.run([*command, "check", "--snapshot", str(snapshot)], capture_output=True, text=True)
         self.assertEqual(json.loads(check.stdout)["action"], "stop")
+
+    def cli_guard(self, name):
+        folder = self.root / name
+        folder.mkdir()
+        identity, snapshot, state = (folder / name for name in ("identity.json", "snapshot.json", "guard.json"))
+        identity.write_text(json.dumps(self.identity))
+        command = [sys.executable, "-B", str(ROOT / "scripts/run_guard.py"), "--guard", str(state)]
+
+        def call(*args):
+            return subprocess.run([*command, *map(str, args)], capture_output=True, text=True)
+
+        self.assertEqual(call("init", "--identity", identity, "--cap", "25", "--global-cap", "75").returncode, 0)
+
+        def observe(value, finish=False):
+            snapshot.write_text(json.dumps(value))
+            args = ["finish", "--campaign", folder / "missing-campaign", "--replica", "r1"] if finish else ["check"]
+            result = call(*args, "--snapshot", snapshot)
+            self.assertIn(result.returncode, (0, 3), result.stderr)
+            return json.loads(result.stdout)
+
+        return state, observe
+
+    def test_cli_old_known_excess_is_terminal_but_old_under_budget_cannot_continue(self):
+        for label, field, value in (("local", "local", 26), ("global", "global", 75)):
+            with self.subTest(label=label):
+                state, observe = self.cli_guard(label)
+                snapshot = copy.deepcopy(self.snapshot)
+                snapshot["captured_at"] = (self.now - timedelta(minutes=3)).isoformat()
+                if field == "local":
+                    snapshot["host_cost"]["summary"]["total"]["cost"] = value
+                else:
+                    snapshot["global_spent_usd"] = value
+                self.assertEqual(observe(snapshot)["action"], "stop")
+                self.assertEqual(json.loads(state.read_text())["reason"], "spending_threshold")
+                self.assertEqual(observe(self.snapshot)["action"], "stop")
+        _, observe = self.cli_guard("old-under-budget")
+        snapshot = copy.deepcopy(self.snapshot)
+        snapshot["captured_at"] = (self.now - timedelta(minutes=3)).isoformat()
+        self.assertEqual(observe(snapshot)["action"], "wait")
+
+    def test_idle_leaf_queue_and_background_work_prevent_nudge_and_finish(self):
+        for label, activity in (
+            ("queue", {"pendingFollowUpCount": 1}),
+            ("process", {"backgroundTasks": {"processes": 1, "subagents": 0}}),
+            ("subagent", {"backgroundTasks": {"processes": 0, "subagents": 1}}),
+        ):
+            with self.subTest(label=label):
+                state, observe = self.cli_guard("leaf-" + label)
+                snapshot = copy.deepcopy(self.snapshot)
+                snapshot["sessions"].append({**self.identity, "sessionId": "leaf", "source": "subagent",
+                                             "status": "idle", "pendingFollowUpCount": 0, **activity})
+                decision = observe(snapshot)
+                self.assertEqual(decision["action"], "continue")
+                self.assertFalse(decision["may_nudge"])
+                self.assertEqual(observe(snapshot, finish=True)["action"], "wait")
+                self.assertEqual(json.loads(state.read_text())["status"], "active")
+
+    def test_unknown_idle_leaf_queue_or_background_activity_never_authorizes_nudge(self):
+        for activity in ({"pendingFollowUpCount": None}, {"backgroundTasks": {"processes": None, "subagents": 0}}):
+            snapshot = copy.deepcopy(self.snapshot)
+            snapshot["sessions"].append({**self.identity, "sessionId": "leaf", "source": "subagent",
+                                         "status": "idle", "pendingFollowUpCount": 0, **activity})
+            self.assertFalse(guard.check(self.state, snapshot, self.now)["may_nudge"])
+
+    def test_cli_seen_active_launch_survives_incomplete_observation_and_busy_finish(self):
+        for label in ("complete", "missing-sessions", "unknown-cost", "finish"):
+            with self.subTest(label=label):
+                state, observe = self.cli_guard("launch-" + label)
+                snapshot = copy.deepcopy(self.snapshot)
+                snapshot["attempts"] = [{"launch_id": "seen", "status": "active", "result": None}]
+                if label == "missing-sessions":
+                    snapshot["sessions"] = []
+                elif label == "unknown-cost":
+                    snapshot["host_cost"]["summary"]["total"]["cost"] = None
+                decision = observe(snapshot, finish=label == "finish")
+                self.assertFalse(decision["may_nudge"])
+                self.assertIn("seen", json.loads(state.read_text())["observed_attempts"])
+                self.assertEqual(observe(self.snapshot)["action"], "wait")
+
+    def test_cli_finished_launch_cannot_disappear_regress_or_change_result(self):
+        for label in ("disappear", "active", "path", "bytes"):
+            with self.subTest(label=label):
+                _, observe = self.cli_guard("finished-" + label)
+                result = self.root / (label + "-result.json")
+                result.write_text(json.dumps({"id": "paid-trial", "trial_name": "trial", "agent_result": {"cost_usd": 2}}))
+                snapshot = copy.deepcopy(self.snapshot)
+                snapshot["attempts"] = [{"launch_id": "paid", "status": "finished", "result": str(result)}]
+                snapshot["global_spent_usd"] = 3
+                self.assertEqual(observe(snapshot)["action"], "continue")
+                if label == "disappear":
+                    snapshot["attempts"] = []
+                    snapshot["host_cost"]["summary"]["total"]["cost"] = 3
+                elif label == "active":
+                    snapshot["attempts"][0].update(status="active", result=None)
+                    snapshot["host_cost"]["summary"]["total"]["cost"] = 3
+                elif label == "path":
+                    replacement = self.root / "replacement.json"
+                    replacement.write_bytes(result.read_bytes())
+                    snapshot["attempts"][0]["result"] = str(replacement)
+                else:
+                    changed = json.loads(result.read_text())
+                    changed["id"] = "replacement-trial"
+                    result.write_text(json.dumps(changed))
+                self.assertEqual(observe(snapshot)["action"], "wait")
+
+    def test_cli_legacy_guard_remembers_launch_and_accepts_real_completion(self):
+        state, observe = self.cli_guard("legacy")
+        legacy = json.loads(state.read_text())
+        del legacy["observed_attempts"]
+        state.write_text(json.dumps(legacy))
+        snapshot = copy.deepcopy(self.snapshot)
+        snapshot["attempts"] = [{"launch_id": "seen", "status": "active", "result": None}]
+        self.assertFalse(observe(snapshot)["may_nudge"])
+        result = self.root / "completed.json"
+        snapshot["attempts"][0].update(status="finished", result=str(result))
+        snapshot["global_spent_usd"] = 3
+        self.assertEqual(observe(snapshot)["action"], "wait")
+        result.write_text(json.dumps({"id": "completed-trial", "trial_name": "trial", "agent_result": {"cost_usd": 2}}))
+        self.assertTrue(observe(snapshot)["may_nudge"])
+        self.assertTrue(observe(snapshot)["may_nudge"])
 
 
 if __name__ == "__main__":

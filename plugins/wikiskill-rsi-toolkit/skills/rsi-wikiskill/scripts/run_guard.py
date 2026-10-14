@@ -85,26 +85,66 @@ def controller_session(sessions, identity):
     return row
 
 
-def target_cost(attempts):
+def remember_attempts(state, attempts):
+    """Remember a fresh, structurally complete inventory before other checks.
+
+    Missing session/cost data must not erase a launch we have already observed.
+    Old guards start with an empty inventory; only the operator can account for
+    launches that predate the first recorded observation.
+    """
     require(isinstance(attempts, list), "launch inventory unavailable")
-    total, seen, trial_ids, active = Decimal(0), set(), set(), 0
+    observed = {}
     for attempt in attempts:
         require(isinstance(attempt, dict) and set(attempt) == {"launch_id", "status", "result"}, "invalid attempt")
         launch = attempt["launch_id"]
-        require(isinstance(launch, str) and launch and launch not in seen, "duplicate launch")
-        seen.add(launch)
+        require(isinstance(launch, str) and launch and launch not in observed, "duplicate launch")
+        if attempt["status"] == "active":
+            require(attempt["result"] is None, "active attempt must not masquerade as settled")
+        else:
+            require(attempt["status"] == "finished" and isinstance(attempt["result"], str) and
+                    Path(attempt["result"]).is_absolute(), "unsettled attempt or non-absolute result")
+        observed[launch] = {"status": attempt["status"], "result": attempt["result"]}
+    previous = state.get("observed_attempts", {})
+    require(isinstance(previous, dict) and previous.keys() <= observed.keys(), "observed launch disappeared")
+    for launch, old in previous.items():
+        require(isinstance(old, dict) and old.get("status") in ("active", "finished"), "invalid saved launch")
+        current = observed[launch]
+        if old["status"] == "finished":
+            require(current["status"] == "finished" and current["result"] == old["result"],
+                    "finished launch changed")
+            if "result_sha256" in old:
+                current["result_sha256"] = old["result_sha256"]
+    state["observed_attempts"] = observed
+    return observed
+
+
+def target_cost(attempts, observed):
+    total, trial_ids, active = Decimal(0), set(), 0
+    for attempt in attempts:
         if attempt["status"] == "active":
             active += 1
-            require(attempt["result"] is None, "active attempt must not masquerade as settled")
             continue
-        require(attempt["status"] == "finished" and isinstance(attempt["result"], str), "unsettled attempt")
-        result = evidence.parse(evidence.read(attempt["result"]))
+        raw = evidence.read(attempt["result"])
+        result = evidence.parse(raw)
         require("trial_name" in result and isinstance(result.get("id"), str), "expected trial, not job-level cost")
         require(result["id"] not in trial_ids, "duplicate trial cost")
         trial_ids.add(result["id"])
         # Include failed/retried trials too. Missing/null cost is never zero.
         total += money((result.get("agent_result") or {}).get("cost_usd"))
+        saved = observed[attempt["launch_id"]]
+        digest = evidence.sha(raw)
+        require(saved.get("result_sha256", digest) == digest, "finished result bytes changed")
+        saved["result_sha256"] = digest
     return total, active
+
+
+def session_quiet(row):
+    queued = row.get("pendingFollowUpCount")
+    require(type(queued) is int and queued >= 0, "unknown pending follow-ups")
+    background = row.get("backgroundTasks", {"processes": 0, "subagents": 0})
+    require(isinstance(background, dict) and all(type(background.get(key)) is int and background[key] >= 0
+            for key in ("processes", "subagents")), "invalid background activity")
+    return row.get("status") == "idle" and queued == 0 and not any(background.values())
 
 
 def initial(identity, cap, global_cap):
@@ -115,7 +155,7 @@ def initial(identity, cap, global_cap):
     require(money(cap) > 0 and money(global_cap) >= money(cap), "invalid spending thresholds")
     return {"schema_version": 1, "status": "active", "identity": identity,
             "cap_usd": str(money(cap)), "global_cap_usd": str(money(global_cap)),
-            "last_spent_usd": "0", "last_global_usd": "0", "reason": None}
+            "last_spent_usd": "0", "last_global_usd": "0", "observed_attempts": {}, "reason": None}
 
 
 def check(state, snapshot, now=None):
@@ -125,17 +165,18 @@ def check(state, snapshot, now=None):
         return {"action": "stop", "reason": state["reason"] or state["status"],
                 "sessionId": state["identity"]["sessionId"]}
     try:
-        stamp = datetime.fromisoformat(snapshot["captured_at"].replace("Z", "+00:00"))
-        now = now or datetime.now(timezone.utc)
-        require(stamp.utcoffset() is not None and 0 <= (now - stamp).total_seconds() <= 120, "stale observation")
         known, global_known = known_spending(snapshot)
         if known >= money(state["cap_usd"]) or global_known >= money(state["global_cap_usd"]):
             state.update(status="stopped", reason="spending_threshold")
             return {"action": "stop", "reason": state["reason"], "sessionId": state["identity"]["sessionId"]}
+        stamp = datetime.fromisoformat(snapshot["captured_at"].replace("Z", "+00:00"))
+        now = now or datetime.now(timezone.utc)
+        require(stamp.utcoffset() is not None and 0 <= (now - stamp).total_seconds() <= 120, "stale observation")
+        require(snapshot["inventory_complete"] is True, "launch inventory incomplete")
+        observed = remember_attempts(state, snapshot["attempts"])
+        target, active = target_cost(snapshot["attempts"], observed)
         root = controller_session(snapshot["sessions"], state["identity"])
         host = snapshot["host_cost"]["summary"]["total"]
-        require(snapshot["inventory_complete"] is True, "launch inventory incomplete")
-        target, active = target_cost(snapshot["attempts"])
         spent = host_amount(host) + target
         require(snapshot["global_cost_complete"] is True, "global cost incomplete")
         global_spent = money(snapshot["global_spent_usd"])
@@ -147,17 +188,13 @@ def check(state, snapshot, now=None):
             state.update(status="stopped", reason="spending_threshold")
             return {"action": "stop", "reason": state["reason"], "sessionId": root["sessionId"]}
         # Nudge only this pinned root and only when no work/steering is outstanding.
-        idle = root.get("status") == "idle"
-        queued = root.get("pendingFollowUpCount")
-        require(type(queued) is int and queued >= 0, "unknown pending follow-ups")
-        background = root.get("backgroundTasks", {"processes": 0, "subagents": 0})
-        require(isinstance(background, dict) and all(type(background.get(key)) is int and background[key] >= 0
-                for key in ("processes", "subagents")), "invalid background activity")
-        leaf_running = any(row.get("projectId") == root["projectId"] and row.get("agentId") == root["agentId"] and
-                           row.get("source") == "subagent" and row.get("status") != "idle"
-                           for row in snapshot["sessions"] if isinstance(row, dict))
+        quiet = session_quiet(root)
+        leaves = [row for row in snapshot["sessions"] if isinstance(row, dict) and
+                  row.get("projectId") == root["projectId"] and row.get("agentId") == root["agentId"] and
+                  row.get("source") == "subagent"]
+        leaves_quiet = all(session_quiet(row) for row in leaves)
         return {"action": "continue", "sessionId": root["sessionId"],
-                "may_nudge": idle and active == 0 and queued == 0 and not leaf_running and not any(background.values()),
+                "may_nudge": quiet and active == 0 and leaves_quiet,
                 "active_trials": active, "spent_usd": str(spent),
                 "limit_kind": "soft_threshold; in_flight_cost_not_yet_settled"}
     except (OSError, ValueError, TypeError, KeyError, InvalidOperation, AttributeError):
@@ -225,15 +262,17 @@ def main():
                 if args.command in ("check", "finish"):
                     result = check(state, evidence.parse(evidence.read(args.snapshot)))
                     if args.command == "finish" and result["action"] == "continue":
-                        require(result["may_nudge"], "wait for root, trials and queued work to end")
-                        def verify():
-                            campaign = sibling("campaign")
-                            _, config, _ = campaign.load_campaign(args.campaign)
-                            replica = campaign.replica_config(config, args.replica)
-                            require(replica["controller_agent_id"] == state["identity"]["agentId"] and
-                                    config["project_id"] == state["identity"]["projectId"], "guard/campaign identity mismatch")
-                            return campaign.verify_replica(args.campaign, args.replica)
-                        result = finish(state, verify)
+                        if not result["may_nudge"]:
+                            result = {"action": "wait", "reason": "work_still_outstanding", "may_nudge": False}
+                        else:
+                            def verify():
+                                campaign = sibling("campaign")
+                                _, config, _ = campaign.load_campaign(args.campaign)
+                                replica = campaign.replica_config(config, args.replica)
+                                require(replica["controller_agent_id"] == state["identity"]["agentId"] and
+                                        config["project_id"] == state["identity"]["projectId"], "guard/campaign identity mismatch")
+                                return campaign.verify_replica(args.campaign, args.replica)
+                            result = finish(state, verify)
                 else:
                     state.update(status="stopped", reason=args.reason)
                     result = {"action": "stop", "reason": args.reason}
