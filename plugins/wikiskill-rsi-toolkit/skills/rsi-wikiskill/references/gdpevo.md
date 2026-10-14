@@ -2,6 +2,8 @@
 
 本文件规定本项目已确认的数据与重复实验方案，不是 WikiSkill 的通用参数。先选择模型并生成清单，再按 [harbor.md](harbor.md) 执行；数据、模型和预算在首个真实 cell 前冻结。
 
+这是 [experiment-spec.md](experiment-spec.md) 所区分的专用实验适配：`gdpevo_profile.py`、`campaign.py`、Harbor 回执/转换与训练视图工具共同校验这套固定协议。它们不接受任意 benchmark 清单；通用规划文件不能替换这里的 profile。既有 profile/campaign 保持原字节与 hash，新规划工具不迁移或重写历史实验。
+
 ## 数据与版本
 
 | 固定项 | 值 |
@@ -32,6 +34,8 @@
 | tg024 | Data analysis | 026–030 |
 
 train 包和 test 包的 CASE 序号分别从 001 开始。例如 `CASE-010-tg005-train-005` 是 **validation**，Harbor task 名仍为 `tg005-train-005`。不重命名上游目录，不用文件名中的 train 字样推断权限。原数据包共 30 train、30 test；本实验从前者留出 6 validation，最终 24/6/30。
+
+本方案中六组共享每个 replica 自己的一份 Wiki/Skill；这是实验选择，不是算法要求。正式三次实验保留完整 30 题 test，使用原始 GDPevo verifier 打分，Evaluator 模型不替代评分器。按组独立学习或更改划分属于新方案，需要新的适配与实验记录，不能靠改旧 profile 让当前工具接受。
 
 生成可审核清单（不启动模型）；将所选模型通过工具支持的参数写入 profile，不把下面的占位符作为值：
 

@@ -2,6 +2,8 @@
 
 仅用于 [gdpevo.md](gdpevo.md) 指定的数据和接口版本。Controller 编排 WikiSkill；每个叶子 Evaluator 执行一个 Harbor trial，使用原始 verifier，并输出与 `aggregate.py` 兼容的 cell。当前提供的是执行约定和离线校验工具，真实容器预检仍需完成。
 
+本页命令和任务约定属于固定 GDPevo 适配。Terminal-Bench 入口见 [terminal-bench.md](terminal-bench.md)，不要套用本页的题目路径、24/6/30、60 turns 或业务服务约定。共用的 `harbor_receipt.py` / `harbor_result.py` 通过 `--spec` 与 `--source-root` 切换到 schema-3 外部清单绑定；注入、四项审计和完整 trace 观测规则仍需遵守。
+
 ## 首次启动前
 
 确认 Docker、Harbor 0.23.0、完整 benchmark checkout、可用的 Penguin 安装 bundle 和模型配置。目录结构必须完整，Docker build 依赖共享环境 build context，不能只复制某个 task 子目录。模型密钥经现有 Penguin 配置交给适配器，不写入命令参数、skill、job 配置或审计报告；只允许适配器读取所需模型配置并在容器内按受限权限存放，不回显凭证。
@@ -41,15 +43,15 @@ PYTHONPATH="$BENCH/agents" uvx --from harbor==0.23.0 harbor run \
 
 `API_HOST` 必须非空且符合冻结端点；失败即停止，不用默认全网。模板使用适配器默认的容器 project；若显式设置 `--ak project_id`，同步修改预期容器路径。宿主 `host_project_id` 不等于容器 project。实际 thinking 必须与 plan/State 相同。`-k 1 -n 1` 对应一个 task、一次 attempt，三次 replica 由 Controller 外层调度。
 
-以上超时/turns 是初步配置；宿主并发默认 1。任何变更在开始前冻结，不能失败后改网络或扩大预算直到过题。超时发生后确认适配器 abort/清理完成，不在容器仍运行时重启同一格。真实已执行任务的失败可以由 verifier 给 0；server/config/setup/评分器失败、没有模型请求、缺 reward 都不是合法 0 分。
+以上超时/turns 是初步配置；宿主并发默认 1。需要提速时按 [operations.md](operations.md) 在同一 phase 内有限并发并记录授权和配置。不能失败后改网络或扩大预算直到过题。超时发生后确认适配器 abort/清理完成，不在容器仍运行时重启同一格。真实已执行任务的失败可以由 verifier 给 0；server/config/setup/评分器失败、没有模型请求、缺 reward 都不是合法 0 分。
 
 ## 结果、回执与分数
 
-Evaluator 私有保存 trial 的 `result.json`、原始 verifier 结果、adapter 日志和完整 Target trace；先审核，再写回执。回执恰含以下 11 个字段，未知字段拒绝；可运行的合成样例见 `tests/test_harbor_result.py` 的 `HarborResultTest.setUp`，不可将其虚构 hash/审计结论用于正式实验。
+Evaluator 私有保存 trial 的 `result.json`、原始 verifier 结果、adapter 日志和完整 Target trace；先审核，再写回执。新实验回执使用 schema 2，恰含以下 12 个字段，未知字段拒绝。使用 `scripts/harbor_receipt.py` 生成，不让 Controller 临时重写校验器。合成样例见 `tests/test_runtime_evidence.py`，不可将其虚构 hash/审计结论用于正式实验。
 
 | 字段 | 内容 |
 |---|---|
-| schema_version | 整数 1 |
+| schema_version | 整数 2 |
 | benchmark_revision | 固定 benchmark 完整 commit |
 | request | penguin.md 的八字段请求；使用真实 source package benchmark ID |
 | thinking_level | 与 State、plan、实际 adapter 相同 |
@@ -60,13 +62,28 @@ Evaluator 私有保存 trial 的 `result.json`、原始 verifier 结果、adapte
 | phase_plan | `{"artifact":"plan.json","sha256":"<真实hash>"}`；计划在 receipt 同目录 |
 | state_binding | expected、observed 两个对象，结构相同且实际值必须一致，见下文 |
 | audit | 四个对象，分别含 check、verdict=`pass`、artifact、artifact_sha256 |
+| runtime_evidence | `{"artifact":"runtime-observation.json","sha256":"<真实hash>"}`，由原始 trace 计算 |
 
-每个 State binding 对象恰含 `deployed_state_sha256`、`archive_sha256`、`injected_block_sha256`、`container_agent_state`、`container_workspace`、`state_version`。前三项是实际 hash；路径为容器规范绝对路径（Workspace 为 `/app`），version 等于请求。Agent State 路径形如 `/opt/penguin-bench/home/default_project/agents/wiki-target/agent_state`，其中 Target 必须与请求一致。expected 来自启动前冻结账本，observed 来自实际部署/trace 检查，不能直接复制 expected 伪造观测。
+每个 State binding 对象恰含 `deployed_state_sha256`、`archive_sha256`、`injected_block_sha256`、`container_agent_state`、`container_workspace`、`state_version`。前三项是实际 hash；路径为容器规范绝对路径（Workspace 为 `/app`），version 等于请求。Agent State 路径形如 `/opt/penguin-bench/home/default_project/agents/wiki-target/agent_state`，其中 Target 必须与请求一致。expected 来自启动前冻结账本。observed 的路径与注入 hash 从本次 root trace 自动提取；`deployed_state_sha256`、`archive_sha256`、`state_version` 由 Evaluator 的独立容器核查输入，不得复制 expected。后面三项仍是外部审计，不是 trace 工具自动证明的事实。特别是该 adapter 会删除上传到容器的归档，须在传输/部署阶段取证；缺历史证据时不能事后拿宿主归档 hash 冒充容器观测。
 
 `plan.json` 是 [state.md](state.md) 的九字段完整 phase plan；GDPevo validation 的 benchmark ID 仍为 `penguinharness-benchmark-gdpevo-train`。audit 的路径固定为 `audit/network.json`、`audit/actual_state_bound.json`、`audit/reward_validated.json`、`audit/trace_complete.json`。receipt、plan 和 audit 留在私有目录，不能放进聚合的 `cells/`。
 
+Evaluator 先保存 `request.json`、预先冻结的六字段 `expected-binding.json`、独立测得的三字段 `observed-state.json`，以及计划和四份真实审计。保留完整的 `<trial>/agent/penguin/traces/**/*.jsonl`，不可只选第一片或删去不匹配片。执行：
+
 ```bash
-python3 <skill>/scripts/harbor_result.py \
+python3 -B <skill>/scripts/harbor_receipt.py \
+  --result <trial>/result.json --private <private-cell> \
+  --request <private-cell>/request.json \
+  --expected <prelaunch>/expected-binding.json \
+  --observed-state <private-cell>/observed-state.json
+```
+
+生成器不创建审计 pass；任何现有审计非 pass 或数据不一致即失败，不覆盖旧 receipt。`runtime-observation.json` 只保存分片 hash、身份、路径和注入 hash，不包含题面、答案、prompt。转换器每次重新读取原始 trace，核对全部 root shards 的注入、模型、路径及已记录子会话是否有导出文件，不能只比较两份输入声明。实际版本和 thinking 继续按部署/adapter 核查，不能说 trace 提供了它没有记录的字段。
+
+固定的容器 Penguin `0.2.13` 使用 `--source benchmark` 时，原始 trace 的 `session_meta.source` 为 `benchmark`；较新 CLI 改记为 `cli`。观察器接受 `cli`，并只为 metadata 中版本为 `0.2.13` 的旧运行接受 `benchmark`；同一根会话各分片的来源必须一致。其他或缺失的根来源仍拒绝；实际版本、模型、State、完整 trace 与隔离审计照常核验。不要把旧 trace 的 source 改成 cli，也不要为绕过校验升级 bundle 或使用 schema-1 历史模式；会话来源兼容与回执 schema 版本是两件事。宿主升级不自动更新容器 bundle，新实验应使用本技能完整版本；已有实验保留原始证据和配置。
+
+```bash
+python3 -B <skill>/scripts/harbor_result.py \
   --result <trial>/result.json \
   --receipt <private-cell>/receipt.json \
   > <eval>/cells/<case>-1.json
@@ -83,8 +100,10 @@ python3 <skill>/scripts/harbor_result.py \
 | reward_validated | 原始 verifier 正常执行、reward 有限且 0..1；区别任务错误与基础设施错误 |
 | trace_complete | trial 对应的所有 root shards、关联 Target 子会话可追溯；不混入 evaluator 会话 |
 
-audit artifact 只放脱敏后的私有审计 JSON 对象，至少有 `check`、`verdict`，并用其他字段保存证据引用与核查结论；两字段必须与回执一致且 verdict 为 pass。使用回执目录内的固定相对路径及 SHA-256，不把答案内容粘进报告/回执。转换器验证身份、字段一致性和文件 hash，不输出报告内容，也不自动判断证据是否足够，更不能凭空生成 pass。Evaluator 提交的 hash 绑定不是数字签名或安全沙箱，仍需实际权限和独立审计。
+audit artifact 只放脱敏后的私有审计 JSON 对象，至少有 `check`、`verdict`，并用其他字段保存证据引用与核查结论；两字段必须与回执一致且 verdict 为 pass。使用回执目录内的固定相对路径及 SHA-256，不把答案内容粘进报告/回执。转换器验证身份、字段一致性、文件 hash 和已导出 trace 的注入/运行时事实。它不能证明导出前没有丢分片，不能证明容器文件没有被改，也不自动判断网络和隔离证据是否足够；这些仍须独立审计。Evaluator 提交的 hash 绑定不是数字签名或安全沙箱，仍需实际权限和独立审计。
 
 转换器输出的 cell 可交 Controller 聚合；receipt、validation/test trace 与报告留在私有评测区。只有逻辑 train 的 Target trace 可导出至 `raw/`，并保留 trial/root/subsession 的映射及所有文件 hash。`train-005` 的任何内容仍是 validation 私有资料。四条完整训练轨迹要求不因 Harbor 而降低。
 
 所有 cell 转换成功后按 [state.md](state.md) 聚合。Controller 对照 experiment/profile/部署账本再次核对 plan；单个转换器不证明跨 cell 的全矩阵完整性或计划没有被替换。
+
+历史 schema-1 回执只能通过显式 `--allow-legacy` 复核，报告注明未经过 schema-2 trace 重算，不用于新实验。保留旧原件，补证单独追加。

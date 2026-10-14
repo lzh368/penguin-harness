@@ -96,7 +96,7 @@ class HarborResultTest(unittest.TestCase):
 
     def convert(self):
         self.write()
-        return converter.convert(self.result_path, self.receipt_path)
+        return converter.convert(self.result_path, self.receipt_path, allow_legacy=True)
 
     def invalid(self):
         with self.assertRaises((converter.InvalidTrial, ValueError, OSError)):
@@ -159,7 +159,7 @@ class HarborResultTest(unittest.TestCase):
         self.result_path.write_text(raw)
         self.receipt["result_sha256"] = sha(self.result_path.read_bytes())
         self.receipt_path.write_text(json.dumps(self.receipt))
-        cell = converter.convert(self.result_path, self.receipt_path)
+        cell = converter.convert(self.result_path, self.receipt_path, allow_legacy=True)
         self.assertEqual(cell["cost"], Decimal("0.000000000000000000123456789"))
         self.assertIn('"cost":0.000000000000000000123456789', converter.cell_json(cell))
 
@@ -328,17 +328,17 @@ class HarborResultTest(unittest.TestCase):
         self.write()
         self.result_path.write_text(self.result_path.read_text() + "\n")
         with self.assertRaises(converter.InvalidTrial):
-            converter.convert(self.result_path, self.receipt_path)
+            converter.convert(self.result_path, self.receipt_path, allow_legacy=True)
         self.write()
         (self.private / "plan.json").write_text("{}")
         with self.assertRaises(converter.InvalidTrial):
-            converter.convert(self.result_path, self.receipt_path)
+            converter.convert(self.result_path, self.receipt_path, allow_legacy=True)
 
     def test_duplicate_json_keys_and_wrong_receipt_schema(self):
         self.write()
         self.receipt_path.write_text('{"schema_version":1,"schema_version":1}')
         with self.assertRaises(converter.InvalidTrial):
-            converter.convert(self.result_path, self.receipt_path)
+            converter.convert(self.result_path, self.receipt_path, allow_legacy=True)
         self.receipt["unexpected"] = "value"
         self.invalid()
 
@@ -352,7 +352,7 @@ class HarborResultTest(unittest.TestCase):
         self.result["verifier_result"] = None
         self.write()
         execution = subprocess.run([sys.executable, "-B", str(ROOT / "scripts" / "harbor_result.py"),
-                                    "--result", str(self.result_path), "--receipt", str(self.receipt_path)],
+                                    "--result", str(self.result_path), "--receipt", str(self.receipt_path), "--allow-legacy"],
                                    capture_output=True, text=True)
         self.assertEqual(execution.returncode, 2)
         self.assertEqual(execution.stdout, "")
