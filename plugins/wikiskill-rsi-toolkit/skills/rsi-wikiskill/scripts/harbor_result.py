@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Convert one audited GDPevo Harbor 0.23.0 trial into a Penguin cell JSON.
 
-Reads only result.json, an evaluator's receipt, its plan.json and four named,
-redacted audit reports. No model/container calls, credentials, gold, or traces.
-Receipt assertions attest an independent audit; this converter checks their
-consistency and hashes, not the truth of the audit or enforcement of isolation.
+Reads result.json, a receipt, plan, audits and the private exported Target traces.
+No model/container calls, credentials or gold. Schema 2 recomputes injection and
+runtime facts from all exported root shards. File deployment, export completeness
+and isolation still require independent audits; hashes are not attestations.
 The supported source is a single-step local task from the pinned benchmark.
 """
 from __future__ import annotations
@@ -13,6 +13,7 @@ import argparse
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -20,6 +21,15 @@ import re
 import stat
 import sys
 from uuid import UUID
+
+sys.dont_write_bytecode = True
+
+
+def trace_tool():
+    spec = importlib.util.spec_from_file_location("wikiskill_trace_binding", Path(__file__).with_name("trace_binding.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 BENCHMARK_REVISION = "e5d58d230bda928d9a98ae775c54c159af8f8363"
@@ -118,10 +128,11 @@ def checked_artifact(directory, entry, filename):
     return data
 
 
-def receipt_check(receipt, directory):
-    exact(receipt, RECEIPT_FIELDS, "receipt")
-    require(type(receipt["schema_version"]) is int and receipt["schema_version"] == 1,
-            "unsupported receipt version")
+def receipt_check(receipt, directory, allow_legacy=False):
+    version = receipt.get("schema_version")
+    require(type(version) is int and version in (1, 2), "unsupported receipt version")
+    require(version == 2 or allow_legacy, "legacy receipt requires explicit --allow-legacy (historical review only)")
+    exact(receipt, RECEIPT_FIELDS | ({"runtime_evidence"} if version == 2 else set()), "receipt")
     require(receipt["benchmark_revision"] == BENCHMARK_REVISION, "benchmark revision mismatch")
     request = receipt["request"]
     exact(request, REQUEST_FIELDS, "request")
@@ -228,11 +239,11 @@ def duration_ms(execution):
     return int((Decimal(microseconds) / 1000).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
-def convert(result_path, receipt_path):
+def convert(result_path, receipt_path, allow_legacy=False):
     result_path, receipt_path = Path(result_path), Path(receipt_path)
     require(result_path.name == "result.json", "expected a trial/result.json")
     receipt = json_bytes(file_bytes(receipt_path))
-    request = receipt_check(receipt, receipt_path.absolute().parent)
+    request = receipt_check(receipt, receipt_path.absolute().parent, allow_legacy)
     raw = file_bytes(result_path)
     require(sha256(raw) == receipt["result_sha256"], "result does not match the audited bytes")
     result = json_bytes(raw)
@@ -282,6 +293,14 @@ def convert(result_path, receipt_path):
     require(not any(record.get(key) for record in (metadata, agent) for key in ("error", "errors")),
             "adapter reports an error")
 
+    if receipt["schema_version"] == 2:
+        observation = json_bytes(checked_artifact(receipt_path.absolute().parent,
+                                 receipt["runtime_evidence"], "runtime-observation.json"))
+        trace = trace_tool()
+        # This is intentionally recomputed, not trusted because a report says pass.
+        require(observation == trace.observe(result_path), "runtime observation differs from exported traces")
+        trace.check_binding(observation, receipt["state_binding"]["expected"], request)
+
     verifier = result.get("verifier_result")
     exact(verifier, {"rewards"}, "verifier_result")
     rewards = verifier.get("rewards")
@@ -317,9 +336,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--result", type=Path, required=True)
     parser.add_argument("--receipt", type=Path, required=True)
+    parser.add_argument("--allow-legacy", action="store_true",
+                        help="review schema-1 historical receipts without claiming runtime verification")
     args = parser.parse_args()
     try:
-        output = convert(args.result, args.receipt)
+        output = convert(args.result, args.receipt, args.allow_legacy)
         print(cell_json(output))
     except (InvalidTrial, InvalidOperation, OSError, ValueError, TypeError, KeyError) as error:
         # Error messages identify failed checks only; never dump source records.

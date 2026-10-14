@@ -1,7 +1,7 @@
 ---
 name: rsi-wikiskill
 description: Run or resume WikiSkill experiments in Penguin. Compile training traces into a persistent Wiki, propose one skill change per batch, and accept changes only when independent validation improves. Use for skill-based RSI with isolated evaluation, including GDPevo through Harbor.
-version: 2026.10.13.4
+version: 2026.10.14.1
 ---
 
 # WikiSkill 自进化
@@ -16,6 +16,7 @@ version: 2026.10.13.4
 - 用户明确要求离线演练：只在独立临时 OUT 使用标明合成的轨迹与评分，执行本地工具链；不要求虚构 App Data Dir/真实 Session。报告为 fixture 检查，实际加载、角色隔离和模型效果均标未验证，模拟记录不能混入正式实验。
 - 用户要求运行：读取 [penguin.md](references/penguin.md)，核对参数、实验权限和运行条件。使用本项目 GDPevo 配置时还须先读 [gdpevo.md](references/gdpevo.md) 的实验方案，并通过 [harbor.md](references/harbor.md) 执行 cell。
 - 用户要求续跑：已有 `state.json` 时先执行 `state.py verify`；尚处准备、smoke 或基线评测阶段时，核对创建记录、`experiment.json`、H0 部署和既有 Session/trial，恢复原事务。缺少 `state.json` 不代表应该重建 Target 或重跑已启动的题。恢复事务时读 [state.md](references/state.md)，不要重新初始化、补造分数或默认从下一轮开始。
+- 用户要求无人值守接力、费用监控或提速：读取 [operations.md](references/operations.md)，使用本包的运行检查工具；不得在临时脚本里重新实现预算停止、收尾通过和回执校验。正在运行的实验继续使用其冻结版本，新协议另开实验，不替换现有证据。
 
 加载本技能的当前普通 Agent 就是 **Controller**，无需用户另建专门的 Controller。Controller 按 [penguin.md](references/penguin.md) 在准备阶段自行创建或核验本次实验的专用 **Target**；用户无需逐个创建 Agent，也无需预先创建三次实验的全部身份。Target 不能加载本技能、评测 skill 或 Wiki。模型、服务商和 thinking 由用户选择，技能不限定 DeepSeek 官方、OpenRouter 或其他渠道。已提供本地 Workspace 和 GDPevo/Harbor 两种执行接口；新环境须先适配执行、评分与隔离接口。
 
@@ -52,6 +53,7 @@ App Data Dir、数据划分、可用模型对或预算授权无法确定时，�
 4. 拒绝候选只恢复技能内容及其派生注入段，保留 Wiki、本轮 train 原始轨迹和完整的被拒修改记录。
 5. 学习角色只接收 train 内容、Wiki、技能、历次 validation **汇总**分数和接受记录。validation/test 的题目、输出、逐题评分、轨迹与评分细则不进入 Wiki 或 proposal。
 6. 基础设施失败、缺题、重复结果、模型漂移或评分异常不能当成 0 分，也不能在删去失败样本后取平均。
+7. 预算停止后不再发继续指令或启动下一副本。费用未知时暂停新调度，保留在途任务；收尾检查失败不能标成 complete。会话 idle 和容器消失均不等于实验成功。
 
 ## 执行一轮
 
@@ -96,3 +98,5 @@ App Data Dir、数据划分、可用模型对或预算授权无法确定时，�
 达到轮次/预算或 validation 满分后，冻结 accepted 的内容 hash。只有冻结后才能评测 test；若要报告提升，在同一固定条件下测 H0 与最终技能。看到 test 结果之后不得再据此选版本、修改技能并重用该 test 宣称提升。
 
 返回：最终技能目录与 hash、基线/最佳 validation 分、每轮 accept/reject/no_action、预算与实际执行量、Wiki/证据路径、论文偏离项。只有运行了独立 test 才报告 test 指标；没有真实运行则写“静态/本地样例验证”，不能把模拟分数说成性能提升。
+
+GDPevo 自动接力前运行 `campaign.py verify-replica`，并独立确认所有角色、Harbor 进程和任务容器均已结束。复算只证明状态和矩阵一致，不证明容器隔离或原始审计真实。分数下降照实报告，不据 test 改写本实验的 Wiki/技能。

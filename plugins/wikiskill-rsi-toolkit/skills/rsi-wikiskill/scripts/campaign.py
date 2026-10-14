@@ -245,6 +245,78 @@ def statistics(values):
     return {"mean": str(mean), "population_std": str(variance.sqrt())}
 
 
+def verify_replica(campaign, replica_id):
+    """Recompute phase matrices and decisions before automatic replica handoff.
+
+    Does not certify receipts, OS isolation, or absence of active processes.
+    The supervisor must separately establish quiescence and settled costs.
+    """
+    _, config, profile = load_campaign(campaign)
+    replica = replica_config(config, replica_id)
+    states = sibling("state")
+    store = states.Store(replica["out"])
+    with store.lock():
+        state = states.load_verified(store)
+        require(state["pending"] is None, "pending candidate prevents wrapup")
+        require(Decimal(state["score_max"]) == 100, "unexpected score scale")
+        require(state["round"] <= profile["config"]["max_iterations"], "iteration budget exceeded")
+        require(state["round"] == profile["config"]["max_iterations"] or Decimal(state["best_score"]) == 100,
+                "evolution is incomplete; an early operator stop is not completed wrapup")
+        empty_hash = states.tree_info({})["sha256"]
+        used_sessions, verified_labels = set(), set()
+
+        def phase(label, name, skill_hash):
+            folder = path(Path(replica["plans"]) / label)
+            actual, plan_hash = read_json(folder / "plan.json")
+            binding, _ = read_json(folder / "deployment.json")
+            version = binding["expected_version"]
+            expected = phase_plan(profile, replica, name, version)
+            require(encoded(actual) == encoded(expected), "phase differs from complete frozen matrix")
+            require(encoded(binding) == encoded(deployment(config, replica, name, label, version, skill_hash, expected)),
+                    "phase deployment is not the expected skill set")
+            result = evaluation.aggregate(folder / "plan.json", folder / "cells")
+            require(result["plan_sha256"] == plan_hash, "phase plan changed")
+            for entry in result["cell_sha256"]:
+                cell, digest = read_json(folder / "cells" / entry["file"])
+                require(digest == entry["sha256"], "cell changed during verification")
+                require(cell["session_id"] not in used_sessions, "Target session reused across phases")
+                used_sessions.add(cell["session_id"])
+            verified_labels.add(label)
+            return result
+
+        baseline = phase("validation-H0", "validation", empty_hash)
+        require(Decimal(baseline["score"]) == Decimal(state["baseline_score"]), "baseline score differs from cells")
+        decisions = {row["candidate_id"]: row for row in state["decisions"]}
+        candidates = {store.json(f"candidates/{cid}/meta.json")["round"]: cid for cid in state["candidates"]}
+        accepted = empty_hash
+        for round_number in range(1, state["round"] + 1):
+            phase(f"train-r{round_number:04d}", "train", accepted)
+            candidate = candidates.get(round_number)
+            if candidate is None:  # load_verified has already checked no_action rounds.
+                continue
+            meta = store.json(f"candidates/{candidate}/meta.json")
+            require(meta["base"]["sha256"] == accepted, "candidate was not based on accepted skills")
+            result = phase(f"validation-r{round_number:04d}", "validation", meta["content"]["sha256"])
+            decision = decisions[candidate]
+            require(result["evaluation_id"] == decision["evaluation_id"] and
+                    Decimal(result["score"]) == Decimal(decision["score"]), "decision differs from validation evidence")
+            if decision["accepted"]:
+                accepted = meta["content"]["sha256"]
+        require(accepted == state["accepted"]["sha256"], "final accepted skill differs from round history")
+        h0 = phase("test-H0", "test", empty_hash)
+        final = phase("test-final", "test", accepted)
+        require({p.name for p in path(replica["plans"]).iterdir()} == verified_labels,
+                "unexpected/unverified phase plan remains")
+        with localcontext() as context:
+            context.prec = 40
+            delta = str(Decimal(final["score"]) - Decimal(h0["score"]))
+        return {"status": "verified", "replica_id": replica_id,
+                "campaign_sha256": config["campaign_sha256"], "accepted_sha256": accepted,
+                "H0_test": h0["score"], "final_test": final["score"], "delta": delta,
+                "phase_count": len(verified_labels), "target_trials": len(used_sessions),
+                "scope": "state_and_matrix_consistency; runtime_audits_required_separately"}
+
+
 def summarize(campaign):
     _, config, profile = load_campaign(campaign)
     paired, sessions = [], set()
@@ -289,12 +361,17 @@ def main(argv=None):
     plan.add_argument("--skill-hash", required=True)
     summary = commands.add_parser("summary")
     summary.add_argument("--campaign", required=True, type=Path)
+    verify = commands.add_parser("verify-replica")
+    verify.add_argument("--campaign", required=True, type=Path)
+    verify.add_argument("--replica", required=True, choices=REPLICAS)
     args = parser.parse_args(argv)
     try:
         if args.command == "init":
             result = initialize(args.profile, args.out, args.penguin_home, args.project_id, args.agent_prefix)
         elif args.command == "plan":
             result = create_plan(args.campaign, args.replica, args.phase, args.label, args.version, args.skill_hash)
+        elif args.command == "verify-replica":
+            result = verify_replica(args.campaign, args.replica)
         else:
             result = summarize(args.campaign)
         sys.stdout.buffer.write(encoded(result))
