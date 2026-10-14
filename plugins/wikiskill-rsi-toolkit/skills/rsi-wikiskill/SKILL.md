@@ -1,7 +1,7 @@
 ---
 name: rsi-wikiskill
-description: Run or resume WikiSkill experiments in Penguin. Compile training traces into a persistent Wiki, propose one skill change per batch, and accept changes only when independent validation improves. Use for skill-based RSI with isolated evaluation, including GDPevo through Harbor.
-version: 2026.10.14.5
+description: Run or resume WikiSkill experiments in Penguin. Compile training traces into a persistent Wiki, propose one skill change per batch, and accept changes only when independent validation improves. Use for skill-based RSI with isolated evaluation, including GDPevo and externally specified Terminal-Bench tasks through Harbor.
+version: 2026.10.15.1
 ---
 
 # WikiSkill 自进化
@@ -14,11 +14,11 @@ version: 2026.10.14.5
 
 - 用户只要求设计、编写或审核 skill：交付文件和检查结果，不启动模型实验。
 - 用户明确要求离线演练：只在独立临时 OUT 使用标明合成的轨迹与评分，执行本地工具链；不要求虚构 App Data Dir/真实 Session。报告为 fixture 检查，实际加载、角色隔离和模型效果均标未验证，模拟记录不能混入正式实验。
-- 用户要求运行：先按 [experiment-spec.md](references/experiment-spec.md) 区分实验方案与执行适配，再读取 [penguin.md](references/penguin.md)，核对参数、实验权限和运行条件。使用本项目 GDPevo 配置时还须先读 [gdpevo.md](references/gdpevo.md) 的实验方案，并通过 [harbor.md](references/harbor.md) 执行 cell。
+- 用户要求运行：先按 [experiment-spec.md](references/experiment-spec.md) 区分实验方案与执行适配，再读取 [penguin.md](references/penguin.md)，核对参数、实验权限和运行条件。GDPevo 使用 [gdpevo.md](references/gdpevo.md) 与 [harbor.md](references/harbor.md)；Terminal-Bench 使用 [terminal-bench.md](references/terminal-bench.md)，由现有 PenguinAgent/Harbor 执行，不调用 GDPevo 专用启动器。
 - 用户要求续跑：已有 `state.json` 时先执行 `state.py verify`；尚处准备、smoke 或基线评测阶段时，核对创建记录、`experiment.json`、H0 部署和既有 Session/trial，恢复原事务。缺少 `state.json` 不代表应该重建 Target 或重跑已启动的题。恢复事务时读 [state.md](references/state.md)，不要重新初始化、补造分数或默认从下一轮开始。
 - 用户要求无人值守接力、费用监控或提速：读取 [operations.md](references/operations.md)，使用本包的运行检查工具；不得在临时脚本里重新实现预算停止、收尾通过和回执校验。正在运行的实验继续使用其冻结版本，新协议另开实验，不替换现有证据。
 
-加载本技能的当前普通 Agent 就是 **Controller**，无需用户另建专门的 Controller。Controller 按 [penguin.md](references/penguin.md) 在准备阶段自行创建或核验本次实验的专用 **Target**；用户无需逐个创建 Agent，也无需预先创建全部重复实验的身份。Target 不能加载本技能、评测 skill 或 Wiki。模型、服务商和 thinking 由用户选择，技能不限定 DeepSeek 官方、OpenRouter 或其他渠道。已提供本地 Workspace 和 GDPevo/Harbor 两种执行接口；新环境须先适配执行、评分与隔离接口。
+加载本技能的当前普通 Agent 就是 **Controller**，无需用户另建专门的 Controller。Controller 按 [penguin.md](references/penguin.md) 在准备阶段自行创建或核验本次实验的专用 **Target**；用户无需逐个创建 Agent，也无需预先创建全部重复实验的身份。Target 不能加载本技能、评测 skill 或 Wiki。模型、服务商和 thinking 由用户选择，技能不限定 DeepSeek 官方、OpenRouter 或其他渠道。已提供本地 Workspace、GDPevo/Harbor 与外部清单绑定的 Terminal-Bench 接口；新环境仍须验证执行、评分和隔离。
 
 模型选择与算法分开：优先使用用户指定的实验 profile；创建新实验时采用用户在网页或启动参数中选择的模型，记录各角色实际配置。显示名相同不证明版本、端点或服务行为相同，绑定与核查使用 `provider`、`model_id` 和 thinking。续跑保持已冻结配置；用户改选时新建 profile/campaign，保留原实验及结果，不静默覆盖或混算。
 
@@ -43,7 +43,7 @@ Wiki Maintainer、Skill Proposer、Evaluator、Companion Auditor 都由顶层 Co
 - 用户选择的 Target `provider`、`model_id`、thinking level，以及优化/评测角色的实际模型配置；角色可以按实验设计分别配置，调度时显式绑定，不能只在提示词里声明。记录非敏感端点或路由设置以便复现，不保存 API Key。一次实验中的 H0、候选和最终比较保持同一配置；切换渠道建立新实验，并在报告中区分条件。使用实验预先声明的评分器与聚合规则，不能为提高分数更换评分方式。
 - `max_iterations`、每题 `runs_per_case`、并发数和停止预算。用户未指定时，初步探索可采用 **2 轮、每题 1 次、串行**，注明这是初步探索配置。预估 Target 次数为 `Nval*R + K*(Ntrain+Nval)*R`，最终测试另计；预算不允许完整一轮时不启动它。
 - `train_feedback_mode: score_only`（默认）或 `with_labels`；后者只用用户明确提供的训练标签出口，不读取私有 rubric 来造标签。
-- `skill_provisioning: full_injection`、`isolation_mode`、冻结的基础 Agent State 指纹及工具/提示词/版本。默认从空技能集合、空 Wiki 开始，专用 Target 不继承其他业务技能。
+- `skill_provisioning: full_injection`、`isolation_mode`、冻结的基础 Agent State 指纹及工具/提示词/版本。默认从空派生技能集合、空 Wiki 开始，专用 Target 不继承其他实验的技能。benchmark 原生资源（包括个别任务自带 skills）属于固定环境，必须记录并在 H0/候选/最终比较中保持一致，不能擅删或声称环境完全没有技能。
 
 App Data Dir、数据划分、可用模型对或预算授权无法确定时，只问缺失项；已有 profile、网页选择或安全配置查询能够确定的内容无需重复询问。缺少 Target ID 按上述流程自行准备，不要求用户手建。可以先完成静态规划，不能从凭证文件猜测配置。最少需要四个不同训练任务；更小样例可检查脚本，但不宣称运行了论文流程。
 
@@ -71,7 +71,7 @@ App Data Dir、数据划分、可用模型对或预算授权无法确定时，�
 
 检查 State/benchmark 指纹和实际模型绑定；伴生审计角色核查数据访问边界及加载内容。如果发现泄漏、运行中状态变化或注入失败，本轮无效，停止排查，不生成“改进”。
 
-GDPevo/Harbor 用 [training-views.md](references/training-views.md) 的 `train_views.py` 将整轮已审计结果导出到新的 `raw/rNNNN/`，同时保存完整原始分片、轨迹入口与采样 manifest；不要先用原始 JSON 前缀手工造摘要。其他执行接口须保留同等来源、完整轨迹与视图限制记录。
+Harbor 接口用 [training-views.md](references/training-views.md) 的 `train_views.py` 将整轮已审计结果导出到新的 `raw/rNNNN/`；外部清单须同时传 `--spec` 与 `--source-root`。保存完整原始分片、轨迹入口与采样 manifest，不用原始 JSON 前缀手工造摘要。其他执行接口须保留同等来源、完整轨迹与视图限制记录。
 
 ### 2. Wiki Maintainer
 
@@ -103,4 +103,4 @@ GDPevo/Harbor 用 [training-views.md](references/training-views.md) 的 `train_v
 
 返回：最终技能目录与 hash、基线/最佳 validation 分、每轮 accept/reject/no_action、预算与实际执行量、Wiki/证据路径、论文偏离项。只有运行了独立 test 才报告 test 指标；没有真实运行则写“静态/本地样例验证”，不能把模拟分数说成性能提升。
 
-GDPevo 自动接力前运行 `campaign.py verify-replica`，并独立确认所有角色、Harbor 进程和任务容器均已结束。复算只证明状态和矩阵一致，不证明容器隔离或原始审计真实。分数下降照实报告，不据 test 改写本实验的 Wiki/技能。
+自动接力前，GDPevo 运行 `campaign.py verify-replica`，外部清单运行 `spec_campaign.py verify-replica`；独立确认所有角色、Harbor 进程和任务容器均已结束。外部清单在 test 前必须 `spec_campaign.py freeze`，收尾将核对实际技能注入与 test 时序。复算不证明容器隔离或原始审计真实。分数下降照实报告，不据 test 改写本实验的 Wiki/技能。

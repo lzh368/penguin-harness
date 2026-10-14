@@ -53,8 +53,10 @@ python3 -B <skill>/scripts/experiment_spec.py check \
 
 ## 已有 GDPevo 与新的 benchmark
 
-[GDPevo](gdpevo.md) 已有专用 `gdpevo_profile.py` → `campaign.py` → Harbor 回执/转换 → `train_views.py` 链路；它固定任务、划分与证据格式。通用 `spec-frozen.json` 不能传给这些工具，不能替代旧 profile，更不能在续跑时重写旧 hash。已有实验继续绑定原 profile/campaign。
+[GDPevo](gdpevo.md) 保留专用 `gdpevo_profile.py` → `campaign.py` 链路。通用 `spec-frozen.json` 不能替代旧 profile 或传给这两个专用工具；已有实验继续绑定原 profile/campaign，不在续跑时重写旧 hash。
 
-Terminal-Bench 的候选软件子集、18 题及 8/5/5 都不是算法默认值，也不是本工具自动作出的决定。任务清单、资源可运行性与 WikiSkill 结果适配尚未验证；Penguin 已能展示 benchmark 或 Harbor 已能执行其任务，不等于本插件的专用结果工具支持它。应先确定外部实验方案，再实现并验证对应执行适配；不得通过改 GDPevo case 名、放宽 allowlist 或伪造回执来接入。
+[Terminal-Bench](terminal-bench.md) 另有 `terminal_bench.py`：只读取任务元数据并对不透明文件做 hash，可按外部选择生成固定划分；18 道 Software、8/5/5 是附带的探索方案，不是 WikiSkill 算法要求。`harbor_spec.py` 核对实际 Git 提交和任务字节，`spec_campaign.py` 保存身份、阶段计划和最终冻结记录。正式执行继续使用 Penguin 现有的 `penguin_agent:PenguinAgent` 与 Harbor 0.23.0，没有另造 runner。
 
-未来适配落地时，须让 `experiment.json`、执行计划与结果回执绑定 `spec_sha256` 和原始任务身份，并核对转换前后的冻结条件一致；目前没有实现这条通用执行绑定。更改任务名单或 runtime 时生成新的 spec，已有运行继续保留原方案和证据，不覆盖后混用结果。
+外部实验给 `harbor_receipt.py`、`harbor_result.py`、`train_views.py` 显式传入 `--spec` 和 `--source-root`，使用 schema-3 回执绑定 `experiment_spec_sha256`、原始 task、实际路径与完整 phase。独立 smoke 用 `purpose=smoke`，不能导出为训练或混入正式矩阵。没有这两个参数时旧 GDPevo 行为不变。
+
+`experiment_spec.py` 本身仍只规划，冻结文件的 `planning_only` 不改成伪造的运行状态。实际来源验证、真实 smoke、隔离证据、技能注入与最终结果分别由执行工具和审计提供；静态清单及单元测试不能当作真实容器预检。更改任务名单、来源或 runtime 时创建新 spec，保留旧方案及结果。

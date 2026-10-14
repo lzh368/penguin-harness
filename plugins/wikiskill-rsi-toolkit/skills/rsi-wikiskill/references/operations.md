@@ -48,6 +48,8 @@ python3 -B <skill>/scripts/run_guard.py --guard <replica>/guard.json finish \
 
 `verify-replica` 检查 state、无 pending、训练与验证矩阵、决策绑定、最终技能及两套 test。`finish` 重新调用它，只有 `action=complete` 可作为接力条件，不能忽略返回的 False、异常或非零退出码。提前预算停止保留部分结果，不冒充正常完成。下一副本仍须已有用户授权，并在其自身 guard 中核对最新总费用。
 
+上述两个 `--campaign` 命令是 GDPevo 入口。外部清单（如 Terminal-Bench）改用 `spec_campaign.py verify-replica --campaign <campaign> --replica r1`，guard 收尾改为 `finish --spec-campaign <campaign> --replica r1 --snapshot ...`；不可同时传两种 campaign 参数。外部 campaign 还复核实际技能注入段及 test 晚于最终冻结。没有 `campaign.py guard` 子命令，费用入口始终是 `run_guard.py`。
+
 ## 有限并发与重试
 
 按授权的并发数在**同一 phase、同一 State/archive**内滚动补位；所有 cell 收尾并通过审计后才能进入 Wiki、提案、换 State 或下一 phase。使用相互独立的 Workspace、容器、job 名、私有证据目录；同一 logical cell 未确认结束前不重投。不要因某题慢而跳过、复制结果或扩大模型/turn/时间预算。并发和变更时间进入运行记录。
@@ -62,6 +64,6 @@ python3 -B <skill>/scripts/run_guard.py --guard <replica>/guard.json finish \
 
 访问审计按真实 parent/sessionId 归类并覆盖全部分片，保留完整命令和工具返回状态供本机私有复核；公开报告只导出脱敏清单及 hash。截断命令、未知来源或缺失分片不能宣称无泄漏。
 
-当前版本引入 schema-2 回执。新实验使用它；历史 schema-1 可加 `--allow-legacy` 复核旧分数，结果仍只有原来的审计强度。不得覆盖旧 receipt 或借新探针为历史运行补造 pass。新版本单独检出、离线检查、独立 smoke 后启用，不在运行中拉代码、重建 bundle、重装技能或改 profile。
+GDPevo 新实验使用 schema-2，外部清单使用绑定 spec 的 schema-3；历史 schema-1 可加 `--allow-legacy` 复核旧分数，结果仍只有原来的审计强度。不得覆盖旧 receipt 或借新探针为历史运行补造 pass。新版本单独检出、离线检查、独立 smoke 后启用，不在运行中拉代码、重建 bundle、重装技能或改 profile。
 
-本版本不向学习角色提供任何 r1 test 分析，也不修改 K、24/6/30、模型或 thinking。新实验固定 `experiment.json`（含 train_feedback_mode、并发与预算）的文件 hash，与 profile hash 一起记录；profile hash 本身不覆盖未包含的字段。交接时同时提供 profile/campaign/preflight 原件及脱敏说明，原始与脱敏 hash 分开。
+不向学习角色提供其他实验的 test 分析，不修改既有实验的 K、划分、模型或 thinking。新实验固定 `experiment.json`（含并发与预算）的文件 hash，与 profile/spec hash 一起记录；hash 本身不覆盖清单未包含的字段。交接时同时提供 profile/spec、campaign、preflight 原件及脱敏说明，原始与脱敏 hash 分开。外部 spec 已绑定 train_feedback_mode 和并发，GDPevo 的历史 profile 则未绑定这些字段。

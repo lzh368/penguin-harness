@@ -75,6 +75,15 @@ class StateTests(unittest.TestCase):
         self.assertIn("Reopen", rendered)
         self.assertNotIn("PRIVATE_RATIONALE", rendered)
 
+    def test_render_block_has_canonical_empty_and_candidate_boundaries(self):
+        begin, end = "<!-- WIKISKILL_DERIVED_BEGIN -->\n", "<!-- WIKISKILL_DERIVED_END -->"
+        self.assertEqual(self.call("render", "--source", "accepted", "--block").stdout, begin + end)
+        self.stage()
+        original = self.call("render", "--source", "c0001").stdout
+        block = self.call("render", "--source", "c0001", "--block").stdout
+        self.assertEqual(block, begin + original + end)
+        self.assertNotIn("PRIVATE_RATIONALE", block)
+
     def test_pending_prevents_second_stage_and_no_action(self):
         self.stage()
         self.stage(ok=False)

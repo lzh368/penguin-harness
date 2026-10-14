@@ -484,11 +484,8 @@ def no_action(store, state, args):
     return {"status": "no_action", "round": state["round"], "best_score": state["best_score"]}
 
 
-def render(store, state, args):
-    source = args.source
-    require(source == "accepted" or source in state["candidates"], "unknown render source")
-    directory = "accepted/skills" if source == "accepted" else f"candidates/{source}/skills"
-    files = store.tree(directory)
+def render_text(files, block=False):
+    """Deterministic skill-only injection; PURPOSE is never given to Target."""
     parts = []
     for name, body in sorted(files.items()):
         if name.endswith("/SKILL.md"):
@@ -496,6 +493,17 @@ def render(store, state, args):
             newline = "" if body.endswith("\n") else "\n"
             parts.append(f"<!-- BEGIN WIKISKILL {slug} -->\n{body}{newline}<!-- END WIKISKILL {slug} -->\n")
     text = "\n".join(parts)
+    if block:
+        text = "<!-- WIKISKILL_DERIVED_BEGIN -->\n" + text + "<!-- WIKISKILL_DERIVED_END -->"
+    return text
+
+
+def render(store, state, args):
+    source = args.source
+    require(source == "accepted" or source in state["candidates"], "unknown render source")
+    directory = "accepted/skills" if source == "accepted" else f"candidates/{source}/skills"
+    files = store.tree(directory)
+    text = render_text(files, block=getattr(args, "block", False))
     if args.output:
         destination = store.relative(args.output)
         require(destination.startswith("rendered/"), "--output must be under OUT/rendered/")
@@ -524,6 +532,7 @@ def main():
             sub.add_argument("--reason", required=True)
         elif name == "render":
             sub.add_argument("--source", required=True)
+            sub.add_argument("--block", action="store_true", help="include the canonical WIKISKILL_DERIVED boundary markers")
             sub.add_argument("--output", help="optional destination under OUT/rendered/")
     args = parser.parse_args()
     try:

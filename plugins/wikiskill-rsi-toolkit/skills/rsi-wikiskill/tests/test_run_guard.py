@@ -170,6 +170,27 @@ class RunGuardTest(unittest.TestCase):
         check = subprocess.run([*command, "check", "--snapshot", str(snapshot)], capture_output=True, text=True)
         self.assertEqual(json.loads(check.stdout)["action"], "stop")
 
+    def test_cli_external_spec_campaign_failure_is_also_persistent(self):
+        snapshot, state = self.root / "snapshot.json", self.root / "guard.json"
+        snapshot.write_text(json.dumps(self.snapshot))
+        guard.save(state, self.state)
+        (self.root / "campaign.json").write_text('{"kind":"wikiskill-spec-campaign"}')
+        command = [sys.executable, "-B", str(ROOT / "scripts/run_guard.py"), "--guard", str(state)]
+        result = subprocess.run([*command, "finish", "--spec-campaign", str(self.root), "--replica", "custom_replica",
+                                 "--snapshot", str(snapshot)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(json.loads(state.read_text())["reason"], "wrapup_failed")
+        checked = subprocess.run([*command, "check", "--snapshot", str(snapshot)], capture_output=True, text=True)
+        self.assertEqual(json.loads(checked.stdout)["action"], "stop")
+
+    def test_cli_finish_cannot_mix_legacy_and_external_spec_campaigns(self):
+        command = [sys.executable, "-B", str(ROOT / "scripts/run_guard.py"), "--guard", str(self.root / "unused.json")]
+        result = subprocess.run([*command, "finish", "--campaign", str(self.root), "--spec-campaign", str(self.root),
+                                 "--replica", "r1", "--snapshot", str(self.root / "unused-snapshot.json")],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertFalse((self.root / "unused.json").exists())
+
     def cli_guard(self, name):
         folder = self.root / name
         folder.mkdir()

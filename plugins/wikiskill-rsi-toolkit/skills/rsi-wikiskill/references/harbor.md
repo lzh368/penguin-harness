@@ -2,7 +2,7 @@
 
 仅用于 [gdpevo.md](gdpevo.md) 指定的数据和接口版本。Controller 编排 WikiSkill；每个叶子 Evaluator 执行一个 Harbor trial，使用原始 verifier，并输出与 `aggregate.py` 兼容的 cell。当前提供的是执行约定和离线校验工具，真实容器预检仍需完成。
 
-这里的命令、`harbor_receipt.py` 与 `harbor_result.py` 都属于固定 GDPevo 适配；同样由 Harbor 运行的其他 benchmark 也不能直接套用。新实验规范通过规划校验不代表任务环境、评分器或结果转换已接好，接口边界见 [experiment-spec.md](experiment-spec.md)。
+本页命令和任务约定属于固定 GDPevo 适配。Terminal-Bench 入口见 [terminal-bench.md](terminal-bench.md)，不要套用本页的题目路径、24/6/30、60 turns 或业务服务约定。共用的 `harbor_receipt.py` / `harbor_result.py` 通过 `--spec` 与 `--source-root` 切换到 schema-3 外部清单绑定；注入、四项审计和完整 trace 观测规则仍需遵守。
 
 ## 首次启动前
 

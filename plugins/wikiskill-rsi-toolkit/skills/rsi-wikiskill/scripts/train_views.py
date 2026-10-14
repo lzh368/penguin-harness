@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare learning inputs from a complete, audited GDPevo train batch.
+"""Prepare learning inputs from a complete, audited Penguin/Harbor train batch.
 
 Copies only Target traces, never private verifier/result/receipt contents. A
 bounded behavior view is an index into immutable raw evidence, not a complete
@@ -165,12 +165,16 @@ def sample(entries, seed):
     return selected
 
 
-def build(plan_path, cells_dir, sources_path, out, seed=0):
+def build(plan_path, cells_dir, sources_path, out, seed=0, spec_path=None, source_root=None):
     require(type(seed) is int, "seed must be an integer fixed before sampling")
     plan_path, cells_dir, sources_path, out = map(trace.safe_path, (plan_path, cells_dir, sources_path, out))
     require(not out.exists() and out.parent.is_dir(), "output must be a new directory with an existing parent")
     plan = read_json(plan_path)
     require(plan.get("phase") == "train", "only a train phase may become learning input")
+    require((spec_path is None) == (source_root is None), "--spec and --source-root must be supplied together")
+    frozen = converter.spec_tool().load(spec_path, source_root) if spec_path is not None else None
+    if frozen is not None:
+        converter.spec_tool().validate_plan(frozen, plan)
     summary = evaluation.aggregate(plan_path, cells_dir)
     cells = {}
     for item in summary["cell_sha256"]:
@@ -195,9 +199,11 @@ def build(plan_path, cells_dir, sources_path, out, seed=0):
         source = mapped[key]
         result_path, receipt_path = map(trace.safe_path, (source["result"], source["receipt"]))
         receipt = read_json(receipt_path)
-        require(receipt.get("schema_version") == 2 and
+        require(receipt.get("schema_version") == (3 if frozen is not None else 2) and
                 receipt["phase_plan"]["sha256"] == summary["plan_sha256"], "receipt must bind this entire train plan")
-        converted = converter.convert(result_path, receipt_path)
+        if frozen is not None:
+            require(receipt.get("purpose") == "evaluation", "smoke traces cannot become learning input")
+        converted = converter.convert(result_path, receipt_path, spec_path=spec_path, source_root=source_root)
         require(converted == cells[key], "source result differs from the scored train cell")
         binding = {name: receipt["state_binding"]["expected"][name] for name in
                    ("deployed_state_sha256", "archive_sha256", "injected_block_sha256", "state_version")}
@@ -247,6 +253,8 @@ def build(plan_path, cells_dir, sources_path, out, seed=0):
                 "success_criterion": "score == 100", "view_limit_chars": VIEW_LIMIT,
                 "selected": sample(entries, seed), "entries": entries,
                 "scope": "audited train traces; bounded behavior samples are not complete trajectories or a content-isolation proof"}
+    if frozen is not None:
+        manifest["experiment_spec_sha256"] = frozen["spec_sha256"]
     outputs["manifest.json"] = encoded(manifest)
     # Check first, publish only a complete batch; never overwrite past evidence.
     with tempfile.TemporaryDirectory(prefix=".train-views-", dir=out.parent) as folder:
@@ -266,9 +274,11 @@ def main():
     for name in ("plan", "cells", "sources", "out"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--seed", type=int, required=True)
+    parser.add_argument("--spec", type=Path)
+    parser.add_argument("--source-root", type=Path)
     args = parser.parse_args()
     try:
-        result = build(args.plan, args.cells, args.sources, args.out, args.seed)
+        result = build(args.plan, args.cells, args.sources, args.out, args.seed, args.spec, args.source_root)
         print(json.dumps({"manifest": str(args.out / "manifest.json"), "train_cells": len(result["entries"]),
                           "sampled": len(result["selected"]), "evaluation_id": result["evaluation_id"]}))
     except (OSError, ValueError, TypeError, KeyError, AttributeError):

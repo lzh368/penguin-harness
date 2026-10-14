@@ -247,8 +247,11 @@ def main():
     stop = commands.add_parser("stop")
     stop.add_argument("--reason", required=True)
     done = commands.add_parser("finish")
-    done.add_argument("--campaign", type=Path, required=True)
-    done.add_argument("--replica", choices=("r1", "r2", "r3"), required=True)
+    campaign_kind = done.add_mutually_exclusive_group(required=True)
+    campaign_kind.add_argument("--campaign", type=Path)
+    campaign_kind.add_argument("--spec-campaign", type=Path,
+                               help="external-spec campaign; old GDPevo campaigns use --campaign")
+    done.add_argument("--replica", required=True)
     done.add_argument("--snapshot", type=Path, required=True)
     args = parser.parse_args()
     try:
@@ -266,12 +269,13 @@ def main():
                             result = {"action": "wait", "reason": "work_still_outstanding", "may_nudge": False}
                         else:
                             def verify():
-                                campaign = sibling("campaign")
-                                _, config, _ = campaign.load_campaign(args.campaign)
+                                campaign = sibling("spec_campaign" if args.spec_campaign else "campaign")
+                                root = args.spec_campaign or args.campaign
+                                _, config, _ = campaign.load_campaign(root)
                                 replica = campaign.replica_config(config, args.replica)
                                 require(replica["controller_agent_id"] == state["identity"]["agentId"] and
                                         config["project_id"] == state["identity"]["projectId"], "guard/campaign identity mismatch")
-                                return campaign.verify_replica(args.campaign, args.replica)
+                                return campaign.verify_replica(root, args.replica)
                             result = finish(state, verify)
                 else:
                     state.update(status="stopped", reason=args.reason)

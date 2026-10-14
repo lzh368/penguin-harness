@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a schema-2 receipt after independent deployment and isolation audits.
+"""Build an audited receipt (GDPevo schema 2, external experiment schema 3).
 
 Evaluator only. Expected binding is the prelaunch ledger; observed-state is a
 separate container measurement (archive/state hashes and version). The remaining
@@ -30,8 +30,13 @@ def encoded(value):
     return (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode()
 
 
-def build(result_path, private, request_path, expected_path, observed_state_path):
+def build(result_path, private, request_path, expected_path, observed_state_path,
+          spec_path=None, source_root=None, purpose="evaluation"):
     private = trace.safe_path(private)
+    converter.require((spec_path is None) == (source_root is None), "--spec and --source-root must be supplied together")
+    converter.require(purpose in ("evaluation", "smoke"), "unknown evaluation purpose")
+    converter.require(spec_path is not None or purpose == "evaluation", "explicit smoke purpose requires an external spec")
+    frozen = converter.spec_tool().load(spec_path, source_root) if spec_path is not None else None
     converter.require(expected_path.resolve() != observed_state_path.resolve(),
                       "expected ledger and container measurement must be different inputs")
     request = trace.parse(trace.read(request_path))
@@ -62,6 +67,9 @@ def build(result_path, private, request_path, expected_path, observed_state_path
                "phase_plan": {"artifact": "plan.json", "sha256": trace.sha(plan_raw)},
                "state_binding": {"expected": expected, "observed": observed}, "audit": audits,
                "runtime_evidence": {"artifact": "runtime-observation.json", "sha256": trace.sha(encoded(observation))}}
+    if frozen is not None:
+        receipt.update(schema_version=3, benchmark_revision=frozen["spec"]["source"]["revision"],
+                       experiment_spec_sha256=frozen["spec_sha256"], purpose=purpose)
     outputs = {"runtime-observation.json": encoded(observation), "receipt.json": encoded(receipt)}
     converter.require(all(not (private / name).exists() and not (private / name).is_symlink()
                           for name in outputs), "receipt/evidence already exists; preserve it")
@@ -75,11 +83,11 @@ def build(result_path, private, request_path, expected_path, observed_state_path
             (staging / relative).write_bytes(trace.read(private / relative))
         for name, raw in outputs.items():
             (staging / name).write_bytes(raw)
-        converter.convert(result_path, staging / "receipt.json")
+        converter.convert(result_path, staging / "receipt.json", spec_path=spec_path, source_root=source_root)
     for name, raw in outputs.items():
         with (private / name).open("xb") as handle:
             handle.write(raw)
-    return {"receipt": str(private / "receipt.json"), "schema_version": 2,
+    return {"receipt": str(private / "receipt.json"), "schema_version": receipt["schema_version"],
             "root_shards": len(observation["root_shards"]),
             "scope": "trace binding recomputed; container measurements and isolation independently audited"}
 
@@ -88,9 +96,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("result", "private", "request", "expected", "observed-state"):
         parser.add_argument("--" + name, required=True, type=Path)
+    parser.add_argument("--spec", type=Path)
+    parser.add_argument("--source-root", type=Path)
+    parser.add_argument("--purpose", choices=("evaluation", "smoke"), default="evaluation")
     args = parser.parse_args()
     try:
-        print(json.dumps(build(args.result, args.private, args.request, args.expected, args.observed_state)))
+        print(json.dumps(build(args.result, args.private, args.request, args.expected, args.observed_state,
+                               args.spec, args.source_root, args.purpose)))
     except (OSError, ValueError, TypeError, KeyError):
         print("receipt refused; review inputs and private evidence, no successful receipt generated", file=sys.stderr)
         return 2

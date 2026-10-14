@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Convert one audited GDPevo Harbor 0.23.0 trial into a Penguin cell JSON.
+"""Convert an audited Penguin/Harbor 0.23.0 trial into a Penguin cell JSON.
 
 Reads result.json, a receipt, plan, audits and the private exported Target traces.
 No model/container calls, credentials or gold. Schema 2 recomputes injection and
 runtime facts from all exported root shards. File deployment, export completeness
 and isolation still require independent audits; hashes are not attestations.
-The supported source is a single-step local task from the pinned benchmark.
+Schema 3 binds a single-step local task to an explicit frozen experiment spec.
+Without --spec, the existing GDPevo protocol remains unchanged.
 """
 from __future__ import annotations
 
@@ -27,6 +28,13 @@ sys.dont_write_bytecode = True
 
 def trace_tool():
     spec = importlib.util.spec_from_file_location("wikiskill_trace_binding", Path(__file__).with_name("trace_binding.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def spec_tool():
+    spec = importlib.util.spec_from_file_location("wikiskill_harbor_spec", Path(__file__).with_name("harbor_spec.py"))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -128,12 +136,17 @@ def checked_artifact(directory, entry, filename):
     return data
 
 
-def receipt_check(receipt, directory, allow_legacy=False):
+def receipt_check(receipt, directory, allow_legacy=False, frozen=None):
     version = receipt.get("schema_version")
-    require(type(version) is int and version in (1, 2), "unsupported receipt version")
-    require(version == 2 or allow_legacy, "legacy receipt requires explicit --allow-legacy (historical review only)")
-    exact(receipt, RECEIPT_FIELDS | ({"runtime_evidence"} if version == 2 else set()), "receipt")
-    require(receipt["benchmark_revision"] == BENCHMARK_REVISION, "benchmark revision mismatch")
+    require(type(version) is int and version in (1, 2, 3), "unsupported receipt version")
+    require(version >= 2 or allow_legacy, "legacy receipt requires explicit --allow-legacy (historical review only)")
+    require((version == 3) == (frozen is not None), "schema 3 requires --spec and --source-root; legacy receipts cannot use a spec")
+    extra = {"experiment_spec_sha256", "purpose"} if version == 3 else set()
+    exact(receipt, RECEIPT_FIELDS | ({"runtime_evidence"} if version >= 2 else set()) | extra, "receipt")
+    revision = frozen["spec"]["source"]["revision"] if frozen is not None else BENCHMARK_REVISION
+    require(receipt["benchmark_revision"] == revision, "benchmark revision mismatch")
+    if frozen is not None:
+        require(receipt["experiment_spec_sha256"] == frozen["spec_sha256"], "experiment spec binding mismatch")
     request = receipt["request"]
     exact(request, REQUEST_FIELDS, "request")
     require(type(request["protocol_version"]) is int and request["protocol_version"] == 1,
@@ -152,13 +165,17 @@ def receipt_check(receipt, directory, allow_legacy=False):
             "invalid thinking_level")
     task = receipt["task_name"]
     require(isinstance(task, str), "invalid task_name")
-    match = re.fullmatch(r"tg(003|005|010|014|018|024)-(train|test)-00([1-5])", task)
-    require(match is not None, "task outside the pinned GDPevo subset")
-    group, split, task_index = match.groups()
-    case_number = GROUPS.index(group) * 5 + int(task_index)
-    require(request["case_id"] == f"CASE-{case_number:03d}-{task}", "case/task mapping mismatch")
-    require(request["benchmark_id"] == f"penguinharness-benchmark-gdpevo-{split}",
-            "benchmark/task mapping mismatch")
+    if frozen is None:
+        match = re.fullmatch(r"tg(003|005|010|014|018|024)-(train|test)-00([1-5])", task)
+        require(match is not None, "task outside the pinned GDPevo subset")
+        group, split, task_index = match.groups()
+        case_number = GROUPS.index(group) * 5 + int(task_index)
+        require(request["case_id"] == f"CASE-{case_number:03d}-{task}", "case/task mapping mismatch")
+        require(request["benchmark_id"] == f"penguinharness-benchmark-gdpevo-{split}",
+                "benchmark/task mapping mismatch")
+    else:
+        catalog_task = spec_tool().case_task(frozen, request["case_id"])
+        require(task == PurePosixPath(catalog_task["path"]).name, "case/task mapping mismatch")
     trial = receipt["trial_dir"]
     require(isinstance(trial, str) and re.fullmatch(re.escape(task) + r"__[A-Za-z0-9_-]+", trial),
             "invalid trial basename")
@@ -174,13 +191,16 @@ def receipt_check(receipt, directory, allow_legacy=False):
     cases = plan["case_ids"]
     require(isinstance(cases, list) and cases and all(isinstance(x, str) for x in cases)
             and len(cases) == len(set(cases)), "invalid phase case list")
-    indices = {"train": range(1, 5), "validation": (5,), "test": range(1, 6)}[plan["phase"]]
-    source_split = "test" if plan["phase"] == "test" else "train"
-    approved_cases = {
-        f"CASE-{group_index * 5 + index:03d}-tg{group_id}-{source_split}-{index:03d}"
-        for group_index, group_id in enumerate(GROUPS) for index in indices
-    }
-    require(set(cases) <= approved_cases, "phase plan violates the approved GDPevo split")
+    if frozen is None:
+        indices = {"train": range(1, 5), "validation": (5,), "test": range(1, 6)}[plan["phase"]]
+        source_split = "test" if plan["phase"] == "test" else "train"
+        approved_cases = {
+            f"CASE-{group_index * 5 + index:03d}-tg{group_id}-{source_split}-{index:03d}"
+            for group_index, group_id in enumerate(GROUPS) for index in indices
+        }
+        require(set(cases) <= approved_cases, "phase plan violates the approved GDPevo split")
+    else:
+        spec_tool().validate_plan(frozen, plan, receipt["purpose"])
     require(request["case_id"] in cases, "case absent from the declared phase plan")
     integer(plan["runs_per_case"], "runs_per_case")
     require(request["run"] <= plan["runs_per_case"], "run outside the phase plan")
@@ -239,11 +259,13 @@ def duration_ms(execution):
     return int((Decimal(microseconds) / 1000).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
-def convert(result_path, receipt_path, allow_legacy=False):
+def convert(result_path, receipt_path, allow_legacy=False, spec_path=None, source_root=None):
     result_path, receipt_path = Path(result_path), Path(receipt_path)
     require(result_path.name == "result.json", "expected a trial/result.json")
     receipt = json_bytes(file_bytes(receipt_path))
-    request = receipt_check(receipt, receipt_path.absolute().parent, allow_legacy)
+    require((spec_path is None) == (source_root is None), "--spec and --source-root must be supplied together")
+    frozen = spec_tool().load(spec_path, source_root) if spec_path is not None else None
+    request = receipt_check(receipt, receipt_path.absolute().parent, allow_legacy, frozen)
     raw = file_bytes(result_path)
     require(sha256(raw) == receipt["result_sha256"], "result does not match the audited bytes")
     result = json_bytes(raw)
@@ -254,9 +276,14 @@ def convert(result_path, receipt_path, allow_legacy=False):
     task_id = result.get("task_id")
     exact(task_id, {"path"}, "supported LocalTaskId")
     task_path = task_id["path"]
-    require(isinstance(task_path, str) and ".." not in PurePosixPath(task_path).parts and
-            PurePosixPath(task_path).parts[-4:] == ("benchmarks", "gdpevo", "tasks", receipt["task_name"]),
-            "local task path does not match the pinned task layout")
+    if frozen is None:
+        require(isinstance(task_path, str) and ".." not in PurePosixPath(task_path).parts and
+                PurePosixPath(task_path).parts[-4:] == ("benchmarks", "gdpevo", "tasks", receipt["task_name"]),
+                "local task path does not match the pinned task layout")
+    else:
+        catalog_task = spec_tool().case_task(frozen, request["case_id"])
+        expected_path = spec_tool().task_path(source_root, catalog_task["path"])
+        require(task_path == str(expected_path), "result task path differs from the actual frozen source")
     require("exception_info" in result and result["exception_info"] is None,
             "trial has an exception or lacks its exception status")
     require(result.get("step_results") in (None, []), "multi-step trials are not supported")
@@ -293,7 +320,7 @@ def convert(result_path, receipt_path, allow_legacy=False):
     require(not any(record.get(key) for record in (metadata, agent) for key in ("error", "errors")),
             "adapter reports an error")
 
-    if receipt["schema_version"] == 2:
+    if receipt["schema_version"] >= 2:
         observation = json_bytes(checked_artifact(receipt_path.absolute().parent,
                                  receipt["runtime_evidence"], "runtime-observation.json"))
         trace = trace_tool()
@@ -304,12 +331,14 @@ def convert(result_path, receipt_path, allow_legacy=False):
     verifier = result.get("verifier_result")
     exact(verifier, {"rewards"}, "verifier_result")
     rewards = verifier.get("rewards")
-    require(isinstance(rewards, dict) and set(rewards) == {"reward"}, "expected one verifier reward")
-    reward = number(rewards["reward"], "reward")
-    require(0 <= reward <= 1, "reward outside 0..1")
+    scoring = frozen["spec"]["scoring"] if frozen is not None else {"metric": "reward", "raw_min": 0, "raw_max": 1}
+    require(isinstance(rewards, dict) and set(rewards) == {scoring["metric"]}, "expected the frozen verifier reward metric")
+    reward = number(rewards[scoring["metric"]], "reward")
+    lower, upper = (Decimal(str(scoring[key])) for key in ("raw_min", "raw_max"))
+    require(lower <= reward <= upper, "reward outside the frozen range")
     with localcontext() as context:
         context.prec = max(40, len(reward.as_tuple().digits) + 8)
-        scored = (reward * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        scored = ((reward - lower) * 100 / (upper - lower)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     cost = agent.get("cost_usd")
     if cost is not None:
         cost = number(cost, "cost_usd")
@@ -336,11 +365,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--result", type=Path, required=True)
     parser.add_argument("--receipt", type=Path, required=True)
+    parser.add_argument("--spec", type=Path, help="frozen external experiment specification (schema-3 receipts)")
+    parser.add_argument("--source-root", type=Path, help="checkout whose revision and task bytes match the spec")
     parser.add_argument("--allow-legacy", action="store_true",
                         help="review schema-1 historical receipts without claiming runtime verification")
     args = parser.parse_args()
     try:
-        output = convert(args.result, args.receipt, args.allow_legacy)
+        output = convert(args.result, args.receipt, args.allow_legacy, args.spec, args.source_root)
         print(cell_json(output))
     except (InvalidTrial, InvalidOperation, OSError, ValueError, TypeError, KeyError) as error:
         # Error messages identify failed checks only; never dump source records.

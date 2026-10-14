@@ -1,8 +1,8 @@
 # 从完整 train 批次准备学习输入
 
-本接口用于 GDPevo/Harbor，连接评测产物与 Wiki/Proposer，不调用模型、不生成技能、不改变评分。先完成本轮全部 train cell 的运行、审计和转换；不能边跑边更新 Wiki。通用 Workspace 接口仍按下述信息边界准备等价输入，不伪造 Harbor 回执。
+本接口用于已接入的 Harbor 实验，连接评测产物与 Wiki/Proposer，不调用模型、不生成技能、不改变评分。先完成本轮全部 train cell 的运行、审计和转换；不能边跑边更新 Wiki。通用 Workspace 接口仍按下述信息边界准备等价输入，不伪造 Harbor 回执。
 
-`train_views.py` 复用固定 GDPevo 的回执转换器，因此目前不是任意 Harbor benchmark 的导出器。更换数据集须先验证对应的执行与证据适配；不能修改 case 名或绕过原校验来制造兼容。
+`train_views.py` 默认使用 GDPevo schema-2 回执。外部清单的 Terminal-Bench 实验必须同时增加 `--spec <campaign>/spec-frozen.json --source-root <真实源码根>`，重验 schema-3 来源与完整 train plan；`purpose=smoke` 明确拒绝。更换其他 runner 仍须验证执行与证据适配，不能改 case 名制造兼容。
 
 ## Controller 的导出步骤
 
@@ -29,7 +29,7 @@ python3 -B <skill>/scripts/train_views.py \
   --out <OUT>/raw/r0001 --seed <本轮预先记录的整数>
 ```
 
-工具复用 `aggregate.py` 与 `harbor_result.py`：拒绝非 train、矩阵不完整、来源与成绩不一致、非 schema-2 回执、回执绑定的 plan 字节不一致，同批次混用不同 State/注入块/部署归档，以及不同 cell 复用同一个 Target/子会话。验证全部来源后才发布目录；失败不产生半套学习输入。Controller 仍须把 manifest 的 `state_binding` 与本轮冻结的 accepted 部署账本核对；同批一致不等于自动证明使用了正确的 accepted 版本。工具校验已有证据，不替代真实运行、隔离审计或模型阅读证明。
+工具复用 `aggregate.py` 与 `harbor_result.py`：拒绝非 train、矩阵不完整、来源与成绩不一致、错误回执版本、回执绑定的 plan 字节不一致，同批次混用不同 State/注入块/部署归档，以及不同 cell 复用同一个 Target/子会话。验证全部来源后才发布目录；失败不产生半套学习输入。Controller 仍须把 manifest 的 `state_binding` 与本轮冻结的 accepted 部署账本核对；同批一致不等于自动证明使用了正确的 accepted 版本。外部 campaign 收尾另将 Store 的真实技能渲染 hash 与每个 receipt 比对。工具校验已有证据，不替代真实运行、隔离审计或模型阅读证明。
 
 输出如下，manifest 内的路径均相对这个批次目录：
 
