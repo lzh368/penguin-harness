@@ -31,6 +31,7 @@ encoded = specs.canonical
 LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 IDENTIFIER = re.compile(r"[a-z][a-z0-9_]{1,63}\Z")
 TEST_LABELS = ("test-H0", "test-final")
+final_tests = sibling("final_test")
 
 
 def path(value):
@@ -50,7 +51,8 @@ def write_new(filename, value):
         stream.write(encoded(value))
 
 
-def configuration(root, frozen, source_root, home, project_id, prefix):
+def configuration(root, frozen, source_root, home, project_id, prefix, final_test_policy=None):
+    require(final_test_policy is None or final_test_policy in final_tests.POLICIES, "unknown final test policy")
     require(IDENTIFIER.fullmatch(project_id or ""), "invalid project ID")
     require(isinstance(prefix, str) and re.fullmatch(r"[a-z][a-z0-9_]{1,39}", prefix), "invalid Agent prefix")
     require(root != home and not root.is_relative_to(home) and not home.is_relative_to(root),
@@ -68,6 +70,7 @@ def configuration(root, frozen, source_root, home, project_id, prefix):
                    "spec_sha256": frozen["spec_sha256"],
                    "spec_file_sha256": hashlib.sha256(encoded(frozen)).hexdigest(),
                    "source_root": str(source_root), "penguin_home": str(home), "project_id": project_id,
+                   **({"final_test_policy": final_test_policy} if final_test_policy else {}),
                    "agent_prefix": prefix, "replicas": replicas}, "campaign_sha256")
 
 
@@ -79,7 +82,7 @@ def load_campaign(campaign):
     require(hashlib.sha256((root / "spec-frozen.json").read_bytes()).hexdigest() == config.get("spec_file_sha256"),
             "frozen spec file changed")
     expected = configuration(root, frozen, path(config["source_root"]), path(config["penguin_home"]),
-                             config.get("project_id"), config.get("agent_prefix"))
+                             config.get("project_id"), config.get("agent_prefix"), config.get("final_test_policy"))
     require(encoded(config) == encoded(expected), "campaign configuration changed")
     for replica in config["replicas"]:
         require(path(replica["plans"]).is_dir(), "replica plans directory is missing")
@@ -87,11 +90,11 @@ def load_campaign(campaign):
     return root, config, frozen
 
 
-def initialize(spec_path, source_root, out, penguin_home, project_id, agent_prefix):
+def initialize(spec_path, source_root, out, penguin_home, project_id, agent_prefix, final_test_policy=None):
     source_root = path(source_root)
     frozen = sibling("harbor_spec").load(spec_path, source_root)
     root = path(out)
-    config = configuration(root, frozen, source_root, path(penguin_home), project_id, agent_prefix)
+    config = configuration(root, frozen, source_root, path(penguin_home), project_id, agent_prefix, final_test_policy)
     if root.exists():
         _, previous, _ = load_campaign(root)
         require(encoded(previous) == encoded(config), "existing campaign has different initialization settings")
@@ -195,6 +198,12 @@ def create_plan(campaign, replica_id, phase, label, version, skill_hash):
         store = states.Store(replica["out"])
         with store.lock():
             load_freeze(config, replica, frozen, store, states.load_verified(store))
+    if label == "test-final" and config.get("final_test_policy") == final_tests.REUSE:
+        check_store = sibling("state").Store(replica["out"])
+        with check_store.lock():
+            check_state = sibling("state").load_verified(check_store)
+            require(bool(check_state["accepted"]["manifest"]),
+                    "unchanged empty skills: record skip evidence instead of planning test-final")
     plan = phase_plan(frozen, replica, phase, version)
     binding = deployment(config, replica, phase, label, version, skill_hash, plan)
     folder = path(Path(replica["plans"]) / label)
@@ -312,15 +321,23 @@ def verify_replica(campaign, replica_id, used_sessions=None):
                 accepted = meta["content"]["sha256"]
         require(accepted == state["accepted"]["sha256"], "final accepted Skills differ from round history")
         h0, _ = phase("test-H0", "test", empty_hash, version)
-        final, _ = phase("test-final", "test", accepted, version)
+        skipped = config.get("final_test_policy") == final_tests.REUSE and accepted == empty_hash
+        if skipped:
+            require(not (Path(replica["plans"]) / "test-final").exists(), "duplicate final test exists under skip policy")
+            record = final_tests.read(Path(replica["out"]).parent / "final-test-decision.json")
+            final_tests.verify_record(record, replica["out"], h0, config["campaign_sha256"], frozen["spec"]["config"]["max_iterations"], already_locked=True)
+            final = None
+        else:
+            final, _ = phase("test-final", "test", accepted, version)
         require({p.name for p in path(replica["plans"]).iterdir()} == labels, "unexpected/unverified phase plan")
         with localcontext() as context:
             context.prec = 40
-            delta = str(Decimal(final["score"]) - Decimal(h0["score"]))
+            delta = None if skipped else str(Decimal(final["score"]) - Decimal(h0["score"]))
         return {"status": "verified", "replica_id": replica_id, "campaign_sha256": config["campaign_sha256"],
                 "experiment_spec_sha256": frozen["spec_sha256"], "accepted_sha256": accepted,
                 "freeze_sha256": freeze["freeze_sha256"],
-                "H0_test": h0["score"], "final_test": final["score"], "delta": delta,
+                "H0_test": h0["score"], "final_test": None if skipped else final["score"], "delta": delta,
+                "final_test_status": "skipped_unchanged_state" if skipped else "measured",
                 "phase_count": len(labels), "target_trials": len(used_sessions) - previous_session_count,
                 "scope": "state_matrix_and_receipt_consistency; runtime_audit_truth_requires_operator_review"}
 
@@ -333,9 +350,10 @@ def summarize(campaign):
         context.prec = 40
         overall = {}
         for field in ("H0_test", "final_test", "delta"):
-            values = [Decimal(item[field]) for item in reports]
-            mean = sum(values) / len(values)
-            overall[field] = {"mean": str(mean), "population_std": str((sum((x - mean) ** 2 for x in values) / len(values)).sqrt())}
+            values = [Decimal(item[field]) for item in reports if item[field] is not None]
+            mean = sum(values) / len(values) if values else None
+            overall[field] = {"measured_replicas": len(values), "mean": str(mean) if mean is not None else None,
+                              "population_std": str((sum((x - mean) ** 2 for x in values) / len(values)).sqrt()) if values else None}
     return {"schema_version": 1, "campaign_sha256": config["campaign_sha256"],
             "experiment_spec_sha256": frozen["spec_sha256"], "replica_count": len(reports),
             "paired": reports, "overall": overall, "score_max": 100}
@@ -349,6 +367,7 @@ def main():
         init.add_argument("--" + flag, type=Path, required=True)
     init.add_argument("--project-id", required=True)
     init.add_argument("--agent-prefix", required=True)
+    init.add_argument("--final-test-policy", choices=final_tests.POLICIES, default=final_tests.REUSE)
     plan = commands.add_parser("plan")
     plan.add_argument("--phase", choices=specs.PHASES, required=True)
     plan.add_argument("--label", required=True)
@@ -364,7 +383,7 @@ def main():
     args = parser.parse_args()
     try:
         if args.command == "init":
-            result = initialize(args.spec, args.source_root, args.out, args.penguin_home, args.project_id, args.agent_prefix)
+            result = initialize(args.spec, args.source_root, args.out, args.penguin_home, args.project_id, args.agent_prefix, args.final_test_policy)
         elif args.command == "plan":
             result = create_plan(args.campaign, args.replica, args.phase, args.label, args.version, args.skill_hash)
         elif args.command == "verify-replica":

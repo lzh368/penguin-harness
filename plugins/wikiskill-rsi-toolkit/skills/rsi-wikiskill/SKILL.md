@@ -1,7 +1,7 @@
 ---
 name: rsi-wikiskill
 description: Run or resume WikiSkill experiments in Penguin. Compile training traces into a persistent Wiki, propose one skill change per batch, and accept changes only when independent validation improves. Use for skill-based RSI with isolated evaluation, including GDPevo and externally specified Terminal-Bench tasks through Harbor.
-version: 2026.10.15.1
+version: 2026.10.19.1
 ---
 
 # WikiSkill 自进化
@@ -42,6 +42,7 @@ Wiki Maintainer、Skill Proposer、Evaluator、Companion Auditor 都由顶层 Co
 - train / validation / test 的 benchmark ID、case ID 列表和内容指纹；划分按原始题目身份去重，不能仅靠换 ID。通用探索可暂不指定 test，此时只称验证实验；具体 benchmark 方案可以提出更严格的要求。记录本实验共享 Wiki/Skill 的学习单元；若按领域分别学习，每个单元另用独立方案和 OUT，不暗中共享记忆。
 - 用户选择的 Target `provider`、`model_id`、thinking level，以及优化/评测角色的实际模型配置；角色可以按实验设计分别配置，调度时显式绑定，不能只在提示词里声明。记录非敏感端点或路由设置以便复现，不保存 API Key。一次实验中的 H0、候选和最终比较保持同一配置；切换渠道建立新实验，并在报告中区分条件。使用实验预先声明的评分器与聚合规则，不能为提高分数更换评分方式。
 - `max_iterations`、每题 `runs_per_case`、并发数和停止预算。用户未指定时，初步探索可采用 **2 轮、每题 1 次、串行**，注明这是初步探索配置。预估 Target 次数为 `Nval*R + K*(Ntrain+Nval)*R`，最终测试另计；预算不允许完整一轮时不启动它。
+- `final_test_policy: reuse_unchanged`（新实验默认）或 `repeat`（事先计划的同状态波动测量）。开始学习前冻结；已有实验沿用原协议。具体工具、条件与报告口径见 [final-test.md](references/final-test.md)。
 - `train_feedback_mode: score_only`（默认）或 `with_labels`；后者只用用户明确提供的训练标签出口，不读取私有 rubric 来造标签。
 - `skill_provisioning: full_injection`、`isolation_mode`、冻结的基础 Agent State 指纹及工具/提示词/版本。默认从空派生技能集合、空 Wiki 开始，专用 Target 不继承其他实验的技能。benchmark 原生资源（包括个别任务自带 skills）属于固定环境，必须记录并在 H0/候选/最终比较中保持一致，不能擅删或声称环境完全没有技能。
 
@@ -99,7 +100,9 @@ Harbor 接口用 [training-views.md](references/training-views.md) 的 `train_vi
 
 ## 停止与交付
 
-达到轮次/预算或 validation 满分后，冻结 accepted 的内容 hash。只有冻结后才能评测 test；若要报告提升，在同一固定条件下测 H0 与最终技能。看到 test 结果之后不得再据此选版本、修改技能并重用该 test 宣称提升。
+达到轮次上限或 validation 满分并完成合法决策后，冻结 accepted 的内容 hash；预算中止、pending 或审计失败只能报告未完成。只有冻结后才能评测 test。新实验按 [final-test.md](references/final-test.md) 使用本包 `scripts/final_test.py`：最终业务技能仍为空且完整有效部署/评测条件与 H0 一致时，只执行一次真实 test-H0，记录“最终状态未变化，未重复测试”；否则在同一固定条件下测 H0 与最终技能。K=2 第一轮接受、第二轮拒绝时仍保留第一轮技能，必须测最终技能，不能因最后一轮拒绝而跳过。
+
+跳过不是0分或0提升，不复制结果冒充第二次测量，不据此声称算法无效；要单独研究同状态波动，须在实验开始前选择 repeat。看到 test 结果之后不得再据此选择是否重复、选版本、修改技能并重用该 test 宣称提升。
 
 返回：最终技能目录与 hash、基线/最佳 validation 分、每轮 accept/reject/no_action、预算与实际执行量、Wiki/证据路径、论文偏离项。只有运行了独立 test 才报告 test 指标；没有真实运行则写“静态/本地样例验证”，不能把模拟分数说成性能提升。
 

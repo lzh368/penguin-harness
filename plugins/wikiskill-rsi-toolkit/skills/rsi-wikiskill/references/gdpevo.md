@@ -1,5 +1,7 @@
 # GDPevo：本项目实验配置
 
+> 新实验最终测试按 [final-test.md](final-test.md) 执行：冻结 `reuse_unchanged` 时，最终业务技能为空且有效状态/评测条件一致，只做 test-H0 并保存 skip 回执；下文“两套 test”对有技能变化或预先选择 `repeat` 的实验成立。旧冻结实验保持旧协议。
+
 本文件规定本项目已确认的数据与重复实验方案，不是 WikiSkill 的通用参数。先选择模型并生成清单，再按 [harbor.md](harbor.md) 执行；数据、模型和预算在首个真实 cell 前冻结。
 
 这是 [experiment-spec.md](experiment-spec.md) 所区分的专用实验适配：`gdpevo_profile.py`、`campaign.py`、Harbor 回执/转换与训练视图工具共同校验这套固定协议。它们不接受任意 benchmark 清单；通用规划文件不能替换这里的 profile。既有 profile/campaign 保持原字节与 hash，新规划工具不迁移或重写历史实验。

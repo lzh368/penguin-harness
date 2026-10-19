@@ -1,5 +1,7 @@
 # 运行监督、提速与版本交接
 
+> 新实验最终测试按 [final-test.md](final-test.md) 执行：冻结 `reuse_unchanged` 时，最终业务技能为空且有效状态/评测条件一致，只做 test-H0 并保存 skip 回执；下文“两套 test”对有技能变化或预先选择 `repeat` 的实验成立。旧冻结实验保持旧协议。
+
 这些工具解决执行可靠性，不改变 WikiSkill 的训练→Wiki→单技能候选→独立验证流程，也不保证技能提分。`state.py` 仍以严格超过历史最好 validation 分为接受标准。
 
 ## 费用和接力

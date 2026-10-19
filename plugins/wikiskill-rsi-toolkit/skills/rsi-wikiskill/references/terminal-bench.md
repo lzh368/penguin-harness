@@ -1,5 +1,7 @@
 # Terminal-Bench：外部方案与现有 Harbor 执行器
 
+> 新实验最终测试按 [final-test.md](final-test.md) 执行：冻结 `reuse_unchanged` 时，最终业务技能为空且有效状态/评测条件一致，只做 test-H0 并保存 skip 回执；下文“两套 test”对有技能变化或预先选择 `repeat` 的实验成立。旧冻结实验保持旧协议。
+
 本页供实验准备者、Controller 和 Evaluator 使用。学习角色不读取 benchmark 源码、题库清单或私有评测资料。算法仍是 train → Wiki → 单技能候选 → validation 严格筛选，冻结后才比较 H0/final test。
 
 Penguin 已有 Terminal-Bench 接入。团队 benchmark 仓库的 Sec E 是混合类别 CPU 子集，不能当作 Software 全集。本入口复用该仓库的 `agents/penguin_agent`，另从官方源码取得所选任务；不修改 Penguin core/web，不另造执行器，也不调用工作区中 GDPevo 专用的 `scripts/rsi.py`。

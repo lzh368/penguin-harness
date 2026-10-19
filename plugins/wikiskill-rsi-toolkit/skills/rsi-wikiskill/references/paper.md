@@ -1,5 +1,7 @@
 # 来源、复现边界与工程约定
 
+> 新实验最终测试按 [final-test.md](final-test.md) 执行：冻结 `reuse_unchanged` 时，最终业务技能为空且有效状态/评测条件一致，只做 test-H0 并保存 skip 回执；下文“两套 test”对有技能变化或预先选择 `repeat` 的实验成立。旧冻结实验保持旧协议。
+
 论文：Liyan Tang 等，**WikiSkill: Compiling Agent Experience into Persistent Knowledge for Skill Evolution**，2026-08-27，Google Research；Tu Vu 同时署名 Virginia Tech。
 
 - 摘要：https://arxiv.org/abs/2608.27454

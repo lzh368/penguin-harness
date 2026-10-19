@@ -1,5 +1,7 @@
 # GDPevo 的 Harbor cell 接口
 
+> 新实验最终测试按 [final-test.md](final-test.md) 执行：冻结 `reuse_unchanged` 时，最终业务技能为空且有效状态/评测条件一致，只做 test-H0 并保存 skip 回执；下文“两套 test”对有技能变化或预先选择 `repeat` 的实验成立。旧冻结实验保持旧协议。
+
 仅用于 [gdpevo.md](gdpevo.md) 指定的数据和接口版本。Controller 编排 WikiSkill；每个叶子 Evaluator 执行一个 Harbor trial，使用原始 verifier，并输出与 `aggregate.py` 兼容的 cell。当前提供的是执行约定和离线校验工具，真实容器预检仍需完成。
 
 本页命令和任务约定属于固定 GDPevo 适配。Terminal-Bench 入口见 [terminal-bench.md](terminal-bench.md)，不要套用本页的题目路径、24/6/30、60 turns 或业务服务约定。共用的 `harbor_receipt.py` / `harbor_result.py` 通过 `--spec` 与 `--source-root` 切换到 schema-3 外部清单绑定；注入、四项审计和完整 trace 观测规则仍需遵守。
