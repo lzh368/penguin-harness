@@ -4,6 +4,8 @@
 
 这些工具解决执行可靠性，不改变 WikiSkill 的训练→Wiki→单技能候选→独立验证流程，也不保证技能提分。`state.py` 仍以严格超过历史最好 validation 分为接受标准。
 
+固定 Skill 三次测试见 [test-repeats.md](test-repeats.md)。当前用户要求先看学习结果时，保持 test 阶段关卡，不因重复统计方案已写好而启动测试。该模式的 test-r2/r3 不启动学习角色；沿用被冻结的业务 Skill，而非复用做题会话。此页独立学习的 verify-replica/finish 不能替代重复测试的完整矩阵与运行审计。
+
 ## 费用和接力
 
 使用 `scripts/run_guard.py` 作为外部监督器的决策门。它不创建 Agent、不调用模型、不发 steering、不终止容器。已有 relay/watch 不会因安装插件自动接入；操作者必须把其启动、续跑和跨副本分支接到此工具，验证退出码与 `action`，再启用自动接力。不要同时保留一个能绕过它发继续指令的旧 relay。

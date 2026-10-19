@@ -1,5 +1,7 @@
 # GDPevo 三次独立实验入口
 
+本文的 r1/r2/r3 都包含重新学习。一次学习后的三次固定 Skill 测试使用独立 [test-repeats.md](test-repeats.md) 协议；不能调用本页 `verify-replica` 把只做测试的 r2/r3 当作完整学习。本文历史汇总的总体标准差 ddof=0 保留；新测试复测报告样本标准差 ddof=1，明确标注，不能混用。
+
 > 新实验最终测试按 [final-test.md](final-test.md) 执行：冻结 `reuse_unchanged` 时，最终业务技能为空且有效状态/评测条件一致，只做 test-H0 并保存 skip 回执；下文“两套 test”对有技能变化或预先选择 `repeat` 的实验成立。旧冻结实验保持旧协议。
 
 `scripts/campaign.py` 负责本项目 GDPevo 配置的身份冻结、评测矩阵及复算汇总；真实执行仍按本技能与 Harbor 接口。这是可选的实验管理工具；普通 Web 实验可以由当前 Controller 按本技能直接准备 Target 和清单，不依赖工作区的 `rsi.py`。工具从所选 profile 读取模型，不限定某个服务商，也不创建 Penguin Agent、模型 Session、baseline 分数或审计 pass。

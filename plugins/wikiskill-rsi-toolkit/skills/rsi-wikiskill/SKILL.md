@@ -1,7 +1,7 @@
 ---
 name: rsi-wikiskill
 description: Run or resume WikiSkill experiments in Penguin. Compile training traces into a persistent Wiki, propose one skill change per batch, and accept changes only when independent validation improves. Use for skill-based RSI with isolated evaluation, including GDPevo and externally specified Terminal-Bench tasks through Harbor.
-version: 2026.10.19.1
+version: 2026.10.19.2
 ---
 
 # WikiSkill 自进化
@@ -17,6 +17,7 @@ version: 2026.10.19.1
 - 用户要求运行：先按 [experiment-spec.md](references/experiment-spec.md) 区分实验方案与执行适配，再读取 [penguin.md](references/penguin.md)，核对参数、实验权限和运行条件。GDPevo 使用 [gdpevo.md](references/gdpevo.md) 与 [harbor.md](references/harbor.md)；Terminal-Bench 使用 [terminal-bench.md](references/terminal-bench.md)，由现有 PenguinAgent/Harbor 执行，不调用 GDPevo 专用启动器。
 - 用户要求续跑：已有 `state.json` 时先执行 `state.py verify`；尚处准备、smoke 或基线评测阶段时，核对创建记录、`experiment.json`、H0 部署和既有 Session/trial，恢复原事务。缺少 `state.json` 不代表应该重建 Target 或重跑已启动的题。恢复事务时读 [state.md](references/state.md)，不要重新初始化、补造分数或默认从下一轮开始。
 - 用户要求无人值守接力、费用监控或提速：读取 [operations.md](references/operations.md)，使用本包的运行检查工具；不得在临时脚本里重新实现预算停止、收尾通过和回执校验。正在运行的实验继续使用其冻结版本，新协议另开实验，不替换现有证据。
+- 用户要求固定最终 Skill 复测、三次平均或标准差误差棒：读取 [test-repeats.md](references/test-repeats.md)。默认方案为一次学习、空 Skill 与冻结最终 Skill 各测三次；明确统计单位，使用本包统计工具，不自动启动尚未授权的测试。
 
 加载本技能的当前普通 Agent 就是 **Controller**，无需用户另建专门的 Controller。Controller 按 [penguin.md](references/penguin.md) 在准备阶段自行创建或核验本次实验的专用 **Target**；用户无需逐个创建 Agent，也无需预先创建全部重复实验的身份。Target 不能加载本技能、评测 skill 或 Wiki。模型、服务商和 thinking 由用户选择，技能不限定 DeepSeek 官方、OpenRouter 或其他渠道。已提供本地 Workspace、GDPevo/Harbor 与外部清单绑定的 Terminal-Bench 接口；新环境仍须验证执行、评分和隔离。
 
@@ -32,7 +33,7 @@ version: 2026.10.19.1
 
 只准备当前要执行的 smoke 或 replica。创建身份、记录配置不执行做题模型；用户仅要求准备时，完成检查并报告下一步。用户已要求开始且预算、权限齐全时继续执行，不为每个 Agent 重复索要许可。遇到权限不足，说明具体失败命令和缺少的能力，不读取凭证或扩大权限。
 
-Wiki Maintainer、Skill Proposer、Evaluator、Companion Auditor 都由顶层 Controller 通过 `run_subagent` 开启临时叶子会话，不创建同名持久 Agent。按实验计划指定的重复次数，每次独立重复各用新的 Controller Session、独立 Target 和 OUT，从空 Wiki/技能起步；可以复用干净的 Controller 定义，但不能复用上一次重复实验的对话或注入其记忆。使用已冻结 campaign 时保留其中的 Controller/Target ID 约定。
+Wiki Maintainer、Skill Proposer、Evaluator、Companion Auditor 都由顶层 Controller 通过 `run_subagent` 开启临时叶子会话，不创建同名持久 Agent。若计划为独立学习重复，每次各用新的 Controller Session、独立 Target 和 OUT，从空 Wiki/技能起步；可以复用干净的 Controller 定义，但不能复用上一次学习实验的对话或注入其记忆。若计划为固定 Skill 测试复测，只复用冻结技能字节，每个测试任务使用全新 Session/Workspace，不重新学习。两种模式不能混算，见 [test-repeats.md](references/test-repeats.md)。使用已冻结 campaign 时保留其中的 Controller/Target ID 约定。
 
 ## 实验配置
 
@@ -43,6 +44,7 @@ Wiki Maintainer、Skill Proposer、Evaluator、Companion Auditor 都由顶层 Co
 - 用户选择的 Target `provider`、`model_id`、thinking level，以及优化/评测角色的实际模型配置；角色可以按实验设计分别配置，调度时显式绑定，不能只在提示词里声明。记录非敏感端点或路由设置以便复现，不保存 API Key。一次实验中的 H0、候选和最终比较保持同一配置；切换渠道建立新实验，并在报告中区分条件。使用实验预先声明的评分器与聚合规则，不能为提高分数更换评分方式。
 - `max_iterations`、每题 `runs_per_case`、并发数和停止预算。用户未指定时，初步探索可采用 **2 轮、每题 1 次、串行**，注明这是初步探索配置。预估 Target 次数为 `Nval*R + K*(Ntrain+Nval)*R`，最终测试另计；预算不允许完整一轮时不启动它。
 - `final_test_policy: reuse_unchanged`（新实验默认）或 `repeat`（事先计划的同状态波动测量）。开始学习前冻结；已有实验沿用原协议。具体工具、条件与报告口径见 [final-test.md](references/final-test.md)。
+- 测试复测另记 `repetition_mode: fixed_skill_test_repeats`、`test_repeats: 3`（可按用户方案调整）、重复ID、`std_ddof: 1`、每次测试预算及是否获准自动启动。它独立于学习轮数 K 和现有 campaign 的独立学习 replicas；冻结最终 Skill 和测试条件后、首次 test 前确定，测试结果不得反馈修改 Skill 或挑选重复次数。
 - `train_feedback_mode: score_only`（默认）或 `with_labels`；后者只用用户明确提供的训练标签出口，不读取私有 rubric 来造标签。
 - `skill_provisioning: full_injection`、`isolation_mode`、冻结的基础 Agent State 指纹及工具/提示词/版本。默认从空派生技能集合、空 Wiki 开始，专用 Target 不继承其他实验的技能。benchmark 原生资源（包括个别任务自带 skills）属于固定环境，必须记录并在 H0/候选/最终比较中保持一致，不能擅删或声称环境完全没有技能。
 
@@ -105,5 +107,7 @@ Harbor 接口用 [training-views.md](references/training-views.md) 的 `train_vi
 跳过不是0分或0提升，不复制结果冒充第二次测量，不据此声称算法无效；要单独研究同状态波动，须在实验开始前选择 repeat。看到 test 结果之后不得再据此选择是否重复、选版本、修改技能并重用该 test 宣称提升。
 
 返回：最终技能目录与 hash、基线/最佳 validation 分、每轮 accept/reject/no_action、预算与实际执行量、Wiki/证据路径、论文偏离项。只有运行了独立 test 才报告 test 指标；没有真实运行则写“静态/本地样例验证”，不能把模拟分数说成性能提升。
+
+固定 Skill 测试复测按 [test-repeats.md](references/test-repeats.md) 调用 `scripts/test_repeats.py`：先算每次整套 test 均分，再对三次均分报告 mean ± sample SD（ddof=1），图示标准差误差棒并展示三次原始点；同时报告按重复ID配对的差值均值和标准差。无最终 Skill 时只保留空 Skill 的三次测量，不复制成第二条系列，final/delta 为 null。误差棒不是置信区间，三次测试不证明学习过程稳定。
 
 自动接力前，GDPevo 运行 `campaign.py verify-replica`，外部清单运行 `spec_campaign.py verify-replica`；独立确认所有角色、Harbor 进程和任务容器均已结束。外部清单在 test 前必须 `spec_campaign.py freeze`，收尾将核对实际技能注入与 test 时序。复算不证明容器隔离或原始审计真实。分数下降照实报告，不据 test 改写本实验的 Wiki/技能。

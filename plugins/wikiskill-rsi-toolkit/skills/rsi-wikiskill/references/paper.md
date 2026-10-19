@@ -25,6 +25,8 @@
 
 ## 本适配的明确差异
 
+- **固定 Skill 测试复测**：用户可选择一次学习后，空 Skill 与最终 Skill 各测三次，报告三次测试均分的 mean ± sample SD（ddof=1），见 [test-repeats.md](test-repeats.md)。这是本适配的评测方案，不宣称为论文强制协议，也不等于三次独立学习；历史 campaign 的三次独立学习及 ddof=0 输出保持原义。
+
 - **训练反馈**：Penguin 私有评测契约不向优化器公开 rubric。默认 `score_only` 用训练轨迹、预测和分数；论文 Proposer 同时有训练 ground truth。只有指定训练标签出口时才能启用 `with_labels`；两种模式必须分别标注。
 - **完整注入**：从技能文件确定性生成 Target `AGENTS.md` 的限定段，作为当前 Penguin 系统上下文接入方式。固定段外文字不变，不把生成的文本视为额外可优化 system prompt。未验证注入时不能声称忠实复现。不能静默改为按需技能检索。
 - **评测标度**：本地 Penguin rubric 使用 0–100，按固定 cell 集合取算术均值；满分为 100。算法的严格比较不变。连续评分、评测模型与原论文 benchmark reward 不同，结果不直接横比。
@@ -36,7 +38,7 @@
 - **伴生审计**：检查读取路径、状态漂移、证据和候选范围，是 Penguin 适配增加的可审计措施；不等同于论文新增优化器，也不等同于安全 sandbox。
 - **运行环境**：提供本地 Workspace 接口与固定 GDPevo/Harbor 接口、计划生成和结果转换工具。没有复现论文五种环境；本次改动仅做本地合成检查，真实 Harbor 加载、隔离和效果尚未验证。
 - **GDPevo 划分**：经用户确认，每组原 train 的 001–004 用于训练、005 用于 validation，原 test 全留：24/6/30。它是本项目的适配方案，不是 WikiSkill 原论文的数据划分，也不同于 GDPevo 原始 30-train 协议。
-- **GDPevo 重复和模型**：本项目做三次独立初始化、独立进化，最终 test 分数取均值；模型与服务商由用户选择并在 profile 中冻结，最初的 DeepSeek 官方配置不是算法要求。Wiki/候选不能跨三次实验继承。GDPevo 沿用原始 verifier 的 0..1 reward，转换为 0..100、半向上保留两位小数后聚合，不由 LLM rubric 重评分。
+- **旧固定 GDPevo 方案的重复和模型**：该方案做三次独立初始化、独立进化，最终 test 分数取均值；模型与服务商由用户选择并在 profile 中冻结，最初的 DeepSeek 官方配置不是算法要求。Wiki/候选不能跨三次学习实验继承。该适配沿用原始 verifier 的 0..1 reward，转换为 0..100、半向上保留两位小数后聚合，不由 LLM rubric 重评分。固定 Skill 的三次测试按上面的独立评测协议处理，不伪装成三次学习，也不改写旧结果。
 
 ## Penguin 参考版本
 

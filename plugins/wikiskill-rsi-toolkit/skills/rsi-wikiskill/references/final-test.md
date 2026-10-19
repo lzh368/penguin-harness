@@ -30,3 +30,7 @@ python3 -B "$SKILL/scripts/final_test.py"   --out "$OUT" --iterations "$K" --bin
 - test-final：`null`，状态 `skipped_unchanged_state`；差值 `null`，新增 Target 次数 0。可以说“最终仍是这个已测初始状态”，不能说“再次测得相同分数”。
 - 未重复的组仍是完整执行了该新协议，但不能把它当作一对独立实测结果。汇总须显示实际对照数量；只含接受技能组的均值不得冒充全部组的算法效果。
 - `repeat` 的两次真实结果及波动如实保留。新旧协议分开标记，不回改历史结果。
+
+## 与三次测试复测的关系
+
+见 [test-repeats.md](test-repeats.md)。`reuse_unchanged` 控制的是每次测试中是否再测一份完全相同的最终状态，不禁止预先计划三次 H0 测量。无最终 Skill 的组只有 H0 的三个真实分数和标准差，final/delta 仍为 null；有最终 Skill 的组各测三次 H0 与 final。这里的 `test_repeats=3` 与本页用于同状态双测的 `final_test_policy=repeat` 是不同参数。
