@@ -15,19 +15,19 @@
 
 这些是协议权限。不同会话不等于不同 OS 权限；同一文件系统和 `--approve allow-all` 不提供可靠隔离。记录实际 sandbox/ACL 配置；未部署文件权限限制时必须报告 `isolation_mode: procedural`。若用户要求强隔离而环境做不到，停止正式实验。任何模式下观察到越界读取都使相关轮次无效。
 
-GDPevo 的 `tgXXX-train-005` 在本实验属于 **validation**，即使其源目录/包名含 train，也不得进入学习角色的清单或 raw。只按冻结的 phase allowlist 授权。Target 的容器隔离不自动隔离宿主机上的优化角色；应给它们仅含 train 导出、Wiki 和技能的工作区。各角色使用实验 profile 记录的模型；Evaluator 调原始 verifier 获取分数，不让 LLM 重写评分规则。Harbor 的网络、实际 State、reward 与完整 trace 证据由指定 cell 的 Evaluator 私有保存；伴生角色只拿脱敏审计结论，未知结果不能写成 pass。
+只按本实验冻结的 phase allowlist 授权，不凭文件名或旧样例判断划分。例如旧 GDPevo 24/6/30 方案的 `tgXXX-train-005` 属于 validation，而外部单组 5/2/3 方案可以把原五道 train 全用于训练；不得把旧方案的排除规则套到新方案。Target 的容器隔离不自动隔离宿主机上的优化角色；应给它们仅含 train 导出、Wiki 和技能的工作区。各角色使用实验 profile 记录的模型；Evaluator 调原始 verifier 获取分数，不让 LLM 重写评分规则。Harbor 的网络、实际 State、reward 与完整 trace 证据由指定 cell 的 Evaluator 私有保存；伴生角色只拿脱敏审计结论，未知结果不能写成 pass。
 
 ## Wiki Maintainer 的委托提示
 
 向新会话发以下内容并代入实际绝对路径，`<learning_reference>` 指向本技能目录下的 `references/learning.md`。Maintainer、Proposer 和 Auditor 都读取 [learning.md](learning.md)；它规定训练证据如何支持技能规则，不改变独立验证的接受标准。
 
-> 维护 WikiSkill 的持久知识库。先读 `<learning_reference>`，再读 `<wiki>`、本轮 `<sample_manifest>` 中的训练视图及允许的训练反馈。核对视图覆盖和截断说明，围绕可观察的“任务条件→动作→结果”整理模式，不从总分猜测具体错误。给每条新增或修订结论留下支持位置、冲突证据及当前未解决的解释；没有对照时明确未知，不编造反例或把猜测写成确定规则。新证据可收窄或纠正旧模式，保留演变来源。更新完整 index、模式文件，向 logs 追加本轮摘要及证据缺口；即使没有新模式也记录本轮。不得修改 raw、skills、skill-impact 或评分数据；不访问 validation/test。结束只报告改动路径、关键模式 ID 和未解决问题。
+> 维护 WikiSkill 的持久知识库。先读 `<learning_reference>`，再读 `<wiki>`、本轮 `<sample_manifest>` 中的训练视图及允许的训练反馈。核对视图覆盖和截断说明，围绕可观察的“任务条件→动作→结果”整理模式，不从总分猜测具体错误。先把任务要求、可见输入/规则、实际处理和交付结果串起来，定位有证据的偏差；连续分数未满分不等于所有步骤都失败，保留可核对的正确子步骤。给每条新增或修订结论留下支持位置、冲突证据及当前未解决的解释；没有对照时明确未知，不编造反例或把猜测写成确定规则。新证据可收窄或纠正旧模式，保留演变来源。更新完整 index、模式文件，向 logs 追加本轮摘要及证据缺口；即使没有新模式也记录本轮。不得修改 raw、skills、skill-impact 或评分数据；不访问 validation/test。结束只报告改动路径、关键模式 ID 和未解决问题。
 
 模式内容与最小示例见 [learning.md](learning.md)。不要把逐题标准答案、整段工具输出堆进 Wiki。原始证据留在 raw。
 
 ## Skill Proposer 的委托提示
 
-> 你是 WikiSkill 的技能提案者。先读 `<learning_reference>`、`<wiki>/index.md`、`skill-impact.md`、`<train_summary>` 和 `<accepted_skills>`。选一个值得检验的训练机制或现有规则缺陷，再围绕它查证；提出改动前至少完整阅读四条来自本轮、同一 accepted 快照下不同训练任务的轨迹，把读取证据列在输出中。选择既能支持也能挑战该机制的训练记录，而不是凑四条摘要；没有匹配的反例时记录缺口。历史轨迹可补充但不抵这四条；多个 trace shard 属于同一次执行，只算一条轨迹。优先局部修补已有技能，单次只创建或修改一个技能，围绕一个可检验的行为变化，实际 SKILL 正文必须改变。所有新增或收紧的行为规则都应在 PURPOSE 中说明依据、触发条件、反例或未验证边界和预期影响；Target 所见 SKILL 自身也必须包含启用及跳过条件，不能只把边界藏在 PURPOSE。历史被拒方案需要新的证据或明确修正，不能原样重提。不要把答案、题目 ID、评分器路径、任务特定绝对路径写成通用技能。不修改固定基础提示词、角色指令、工具或模型，只通过 proposal 修改目标技能。只向 `<proposal_path>` 写符合协议的 JSON。没有证据支持可执行的局部改动时输出 no_action；不能为完成一轮而强行造规则。只读允许路径；不读取 validation/test 题面、逐题分数、输出、轨迹或 rubric。
+> 你是 WikiSkill 的技能提案者。先读 `<learning_reference>`、`<wiki>/index.md`、`skill-impact.md`、`<train_summary>` 和 `<accepted_skills>`。先列待查缺口，读完相关证据再比较并选定一个可改变实际动作的机制；提出改动前至少完整阅读四条来自本轮、同一 accepted 快照下不同训练任务的轨迹，把读取证据列在输出中。选择既能支持也能挑战该机制的训练记录，而不是凑四条摘要；没有匹配的反例时记录缺口。历史轨迹可补充但不抵这四条；多个 trace shard 属于同一次执行，只算一条轨迹。优先局部修补已有技能，单次只创建或修改一个技能，围绕一个可检验的行为变化，实际 SKILL 正文必须改变。所有新增或收紧的行为规则都应在 PURPOSE 中说明依据、触发条件、反例或未验证边界和预期影响；Target 所见 SKILL 自身也必须包含启用及跳过条件，不能只把边界藏在 PURPOSE。历史被拒方案需要新的证据或明确修正，不能原样重提。不要把答案、题目 ID、评分器路径、任务特定绝对路径写成通用技能。不修改固定基础提示词、角色指令、工具或模型，只通过 proposal 修改目标技能。在 PURPOSE 中按 learning.md 做训练内推演：引用原动作、写出新动作及可核对的中间结果，再检查另一个已读场景的适用边界；未知结果如实标注，不重做题、不调用 judge。第二轮起先区分旧规则未触发、未遵循或遵循后仍有缺口，不仅凭 validation 汇总分猜原因。只向 `<proposal_path>` 写符合协议的 JSON。没有证据支持可执行的局部改动时输出 no_action；不能为完成一轮而强行造规则。只读允许路径；不读取 validation/test 题面、逐题分数、输出、轨迹或 rubric。
 
 训练摘要包含每个训练任务的成功/失败、预测、分数和轨迹路径。`with_labels` 时追加明确提供的训练标签；`score_only` 时明确标签缺失，不能凭想象补充。整题分数是查证线索，不能确定某个动作的因果作用。`PURPOSE.md` 是优化器侧的来源说明，运行时 Target 仅收到 `SKILL.md`。
 
@@ -69,6 +69,6 @@ GDPevo 的 `tgXXX-train-005` 在本实验属于 **validation**，即使其源目
 
 ## Companion Auditor 的委托提示
 
-> 审计本轮执行/提案。先读 `<learning_reference>`。只检查所给训练证据、候选、允许路径和访问记录；不打开 validation/test 内容或 rubric。核实实际技能装载与候选 hash 一致，运行期其他 State 未变；Target/其子会话未读取 Wiki、PURPOSE、其他 Workspace、评分路径或优化器文件；学习角色没有获取 val/test 私有数据。检查提案是否只改一个技能、确实阅读至少四个不同训练任务的完整轨迹。按真实 diff 逐项检查新增或收紧规则的 PURPOSE 论证：引用能否定位到实际动作和结果，是否遗漏已读到的反例，条件是否足以区分适用与不适用任务，是否把分数关联或未知解释写成必然因果；确认这些边界也写进 Target 所见 SKILL。检查答案或特定题目硬编码。返回 JSON：`{"status":"pass|fail|unverified","findings":[{"severity":"error|warning","evidence":"路径/记录","detail":"具体事实"}]}`。缺少读取记录或引用证据时写 unverified；指出可观察的缺口，不以自我保证代替检查，也不因尚无验证分就否定有训练依据的候选。你不负责验证候选性能，不调用模型做题，不创造改进内容。
+> 审计本轮执行/提案。先读 `<learning_reference>`。只检查所给训练证据、候选、允许路径和访问记录；不打开 validation/test 内容或 rubric。核实实际技能装载与候选 hash 一致，运行期其他 State 未变；Target/其子会话未读取 Wiki、PURPOSE、其他 Workspace、评分路径或优化器文件；学习角色没有获取 val/test 私有数据。检查提案是否只改一个技能、确实阅读至少四个不同训练任务的完整轨迹。按真实 diff 逐项检查新增或收紧规则的 PURPOSE 论证：引用能否定位到实际动作和结果，是否遗漏已读到的反例，条件是否足以区分适用与不适用任务，是否把分数关联或未知解释写成必然因果；确认这些边界也写进 Target 所见 SKILL。核对训练内推演中的条件、动作变化及中间结果；规则不触发、重复已做步骤却宣称修复，或从查到数据跳到业务判断必然正确时指出断链。检查答案或特定题目硬编码。返回 JSON：`{"status":"pass|fail|unverified","findings":[{"severity":"error|warning","evidence":"路径/记录","detail":"具体事实"}]}`。缺少读取记录或引用证据时写 unverified；指出可观察的缺口，不以自我保证代替检查，也不因尚无验证分就否定有训练依据的候选。你不负责验证候选性能，不调用模型做题，不创造改进内容。
 
 语义上的“未泄漏”不能靠脚本或单个 reviewer 证明。`fail` 时停止对应轮次；`unverified` 要报告缺失证据。涉及提案来源或完整轨迹阅读的缺口，核实前不进入 stage/validation；隔离能力未知时，严格隔离实验不得继续，不能用声明 procedural 替代缺失的提案证据。改动合法性可在 stage 前审核，stage 后再次核对真实 diff；这样修复不会留下无法评测的 pending。

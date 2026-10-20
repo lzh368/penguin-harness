@@ -1,4 +1,9 @@
-"""Synthetic train-only learning inputs; no benchmark data or model calls."""
+"""Synthetic train-only learning inputs; no benchmark data or model calls.
+
+Given a long trace, sampled calls retain their matching results.
+Given reused call IDs in different sessions, missing counterparts stay unknown.
+Given many long tool outputs, the task and delivery retain their own space.
+"""
 import copy
 import json
 from pathlib import Path
@@ -132,6 +137,63 @@ class TrainViewsTest(unittest.TestCase):
         self.assertIn("SYNTHETIC INPUT OBSERVED", view)
         self.assertIn("FINAL ARTIFACT WRITTEN", view)
         self.assertLessEqual(len(view), 15_000)
+
+    def test_sampled_calls_keep_their_results_across_shards(self):
+        records = [message("text", "user", text="TASK REQUIREMENT")]
+        outputs = []
+        for i in range(60):
+            records.append(message("tool_call", "assistant", name="inspect",
+                                   arguments=f"CALL-{i:03d}", tool_call_id=f"id-{i}"))
+            outputs.append(message("tool_call_output", "user",
+                                   output=f"RESULT-{i:03d}", tool_call_id=f"id-{i}"))
+        outputs.append(message("text", "assistant", text="DELIVERED ANSWER"))
+        behavior = []
+        for name, shard in (("first.jsonl", records), ("second.jsonl", outputs)):
+            behavior.extend(self.views.behavior_records(
+                "\n".join(json.dumps(r) for r in shard), name, "root"))
+        text, _ = self.views.view(behavior, "synthetic", 1, "50", "root")
+        retained = []
+        for i in range(60):
+            self.assertEqual(f"CALL-{i:03d}" in text, f"RESULT-{i:03d}" in text)
+            if f"CALL-{i:03d}" in text:
+                retained.append(i)
+        self.assertGreater(len(retained), 1)
+        self.assertLess(min(retained), 20)
+        self.assertGreater(max(retained), 40)
+        self.assertIn("TASK REQUIREMENT", text)
+        self.assertIn("DELIVERED ANSWER", text)
+        self.assertLessEqual(len(text), 15_000)
+
+    def test_same_call_id_in_different_sessions_is_not_a_pair(self):
+        a = message("tool_call", "assistant", name="inspect",
+                    arguments="FIRST SESSION CALL", tool_call_id="shared-id")
+        b = message("tool_call_output", "user", output="SECOND SESSION RESULT",
+                    tool_call_id="shared-id")
+        behavior = self.views.behavior_records(json.dumps(a), "a.jsonl", "root")
+        behavior += self.views.behavior_records(json.dumps(b), "b.jsonl", "child")
+        text, _ = self.views.view(behavior, "synthetic", 1, "50", "root")
+        self.assertIn("FIRST SESSION CALL", text)
+        self.assertIn("SECOND SESSION RESULT", text)
+        self.assertEqual(text.count("| unpaired tool record"), 2)
+
+    def test_task_and_delivery_are_not_squeezed_out_by_long_tool_outputs(self):
+        task = "INPUT " * 160 + "IMPORTANT TASK CONDITION" + " INPUT" * 160
+        answer = "VALUE " * 160 + "IMPORTANT DELIVERED VALUE" + " VALUE" * 160
+        records = [message("text", "user", text=task)]
+        for i in range(30):
+            records.extend([
+                message("tool_call", "assistant", name="inspect",
+                        arguments="ARGS " * 1000, tool_call_id=str(i)),
+                message("tool_call_output", "user", output="ROWS " * 1000,
+                        tool_call_id=str(i)),
+            ])
+        records.append(message("text", "assistant", text=answer))
+        behavior = self.views.behavior_records(
+            "\n".join(json.dumps(r) for r in records), "a.jsonl", "root")
+        text, _ = self.views.view(behavior, "synthetic", 1, "50", "root")
+        self.assertIn(task, text)
+        self.assertIn(answer, text)
+        self.assertLessEqual(len(text), 15_000)
 
     def test_full_pinned_benchmark_batch_reaches_learning_with_original_bytes(self):
         self.matrix(count=24)

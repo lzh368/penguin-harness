@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import tempfile
 import sys
+from typing import NamedTuple
 
 sys.dont_write_bytecode = True
 
@@ -30,6 +31,15 @@ converter = sibling("harbor_result")
 require = trace.require
 VIEW_LIMIT = 15_000
 MAX_VIEW_RECORDS = 24
+
+
+class BehaviorRecord(NamedTuple):
+    location: str
+    text: str
+    session: str
+    role: str
+    kind: str
+    call_id: str | None = None
 
 
 def encoded(value):
@@ -91,7 +101,8 @@ def behavior_records(raw, relative, session):
         label = f"{relative}:{line_number} | session={session} | {role}/{kind}"
         if payload.get("stop_reason"):
             label += " | stop=" + str(payload["stop_reason"])
-        records.append((label, content, session, role, kind))
+        records.append(BehaviorRecord(label, content, session, role, kind,
+                                      payload.get("tool_call_id")))
     return records
 
 
@@ -103,15 +114,43 @@ def spaced_indices(size, count):
     return sorted({index * (size - 1) // (count - 1) for index in range(count)})
 
 
+def select_records(records, anchors):
+    """Sample complete call/result pairs, scoped to a session, across the trace."""
+    calls = {}
+    for i, record in enumerate(records):
+        if record.call_id:
+            calls.setdefault((record.session, record.call_id), []).append(i)
+    paired = {}
+    for indices in calls.values():
+        # Ambiguous/missing counterparts remain labelled excerpts, never guess.
+        if len(indices) == 2 and {records[i].kind for i in indices} == {"tool_call", "tool_call_output"}:
+            for i in indices:
+                paired[i] = tuple(indices)
+    groups, seen = [], set(anchors)
+    for i in range(len(records)):
+        if i not in seen:
+            group = paired.get(i, (i,))
+            groups.append(group)
+            seen.update(group)
+    # Every group costs at most two slots. First spread evenly, then fill gaps.
+    capacity = MAX_VIEW_RECORDS - len(anchors)
+    priority = spaced_indices(len(groups), max(1, capacity // 2))
+    priority += [i for i in range(len(groups)) if i not in priority]
+    selected = set(anchors)
+    for i in priority:
+        if len(selected) + len(groups[i]) <= MAX_VIEW_RECORDS:
+            selected.update(groups[i])
+    return sorted(selected), paired
+
+
 def view(records, case_id, run, score, root_session):
-    """Keep beginning, middle and end; never fill the quota with a raw prefix."""
+    """Keep task/delivery and linked actions; never use a raw JSON prefix."""
     require(bool(records), "no supported task/action/output records; inspect traces before learning")
-    tasks = [i for i, r in enumerate(records) if r[2:] == (root_session, "user", "text")]
-    answers = [i for i, r in enumerate(records) if r[2:] == (root_session, "assistant", "text")]
+    tasks = [i for i, r in enumerate(records) if (r.session, r.role, r.kind) == (root_session, "user", "text")]
+    answers = [i for i, r in enumerate(records) if (r.session, r.role, r.kind) == (root_session, "assistant", "text")]
     # Child shards must not crowd the root task or final response out of a view.
     anchors = set(tasks[:1] + answers[-1:])
-    others = [i for i in range(len(records)) if i not in anchors]
-    indices = sorted(anchors | {others[i] for i in spaced_indices(len(others), MAX_VIEW_RECORDS - len(anchors))})
+    indices, paired = select_records(records, anchors)
     chosen = [records[index] for index in indices]
     omitted = len(records) - len(chosen)
     prefix = (f"# Train behavior view: {case_id} / run {run}\n\n"
@@ -120,30 +159,40 @@ def view(records, case_id, run, score, root_session):
               "System metadata, reasoning, media, compaction spans and tagged harness/server messages are excluded.\n"
               "Records are displayed per source shard, not a global cross-session timeline.\n"
               "Omitted content is unknown, not evidence that an action never happened.\n"
+              "Call/result pairs share a session and call ID; unpaired records have unknown context.\n"
               "Raw evidence is retained in index.md; access depends on your role's allowed paths.\n"
               "Maintainer: mark missing context as unknown; do not open raw evidence without authorization.\n\n"
               f"Behavior records: {len(records)}; included: {len(chosen)}; omitted: {omitted}.\n")
-    labels = [f"\n## Record {index + 1}: {record[0]}\n" for index, record in zip(indices, chosen)]
+    labels = [f"\n## Record {index + 1}: {record.location}"
+              + (" | unpaired tool record" if record.call_id and index not in paired else "") + "\n"
+              for index, record in zip(indices, chosen)]
     allowance = VIEW_LIMIT - len(prefix) - sum(map(len, labels)) - len(chosen) - 90
     require(allowance >= len(chosen) * 80, "trace identifiers too long for a useful view")
-    # Allocate unused space from short records to long ones deterministically.
+    # Preserve enough of the task and delivery to interpret sampled tool output.
+    # Any unused quota goes back to behavior records, with the same total cap.
     allocations = [0] * len(chosen)
     remaining = set(range(len(chosen)))
+    for i, index in enumerate(indices):
+        if index in anchors:
+            reserve = sum(min(len(chosen[j].text), 80) for j in remaining if j != i)
+            allocations[i] = min(len(chosen[i].text), 3000, allowance - reserve)
+            allowance -= allocations[i]
+            remaining.remove(i)
     while remaining:
         share = allowance // len(remaining)
-        short = [i for i in sorted(remaining) if len(chosen[i][1]) <= share]
+        short = [i for i in sorted(remaining) if len(chosen[i].text) <= share]
         if not short:
             for i in sorted(remaining):
                 allocations[i] = share
             break
         for i in short:
-            allocations[i] = len(chosen[i][1])
+            allocations[i] = len(chosen[i].text)
             allowance -= allocations[i]
             remaining.remove(i)
-    truncated = sum(len(record[1]) > allocations[i] for i, record in enumerate(chosen))
+    truncated = sum(len(record.text) > allocations[i] for i, record in enumerate(chosen))
     result = prefix + f"Truncated included records: {truncated}.\n"
     for i, record in enumerate(chosen):
-        result += labels[i] + clipped(record[1], allocations[i]) + "\n"
+        result += labels[i] + clipped(record.text, allocations[i]) + "\n"
     require(len(result) <= VIEW_LIMIT, "view exceeded character budget")
     return result, {"behavior_records": len(records), "included_records": len(chosen),
                     "truncated_records": truncated, "omitted_records": omitted}
