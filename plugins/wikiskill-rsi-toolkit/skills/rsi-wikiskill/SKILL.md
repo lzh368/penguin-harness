@@ -1,7 +1,7 @@
 ---
 name: rsi-wikiskill
 description: Run or resume WikiSkill experiments in Penguin. Compile training traces into a persistent Wiki, propose one skill change per batch, and accept changes only when independent validation improves. Use for skill-based RSI with isolated evaluation, including GDPevo and externally specified Terminal-Bench tasks through Harbor.
-version: 2026.10.20.1
+version: 2026.10.20.2
 ---
 
 # WikiSkill 自进化
@@ -86,9 +86,13 @@ Harbor 接口用 [training-views.md](references/training-views.md) 的 `train_vi
 
 `no_action`：记录理由，保留 Wiki 和技能，消耗一轮，跳过重复 validation。本规则是工程约定。格式错误可在同一角色会话修正；不要向它透露 validation 私有细节。修正仍不合法时停止本轮，不把错误伪装成算法拒绝。
 
+提案必须给出至少一处具体的训练内操作变化及可检查结果。仅增加“不确定”标注、重复 Target 已做的检查，或把原有猜测替换为未经支持的字段映射，不能作为已经完成的行为推演。按 [learning.md](references/learning.md) 先修正缺口；实际操作合理而提分未知的候选仍可进入 validation。训练数据可能缺少业务规则或字段级反馈，如实保留这个限制，不用补造规则强行产出技能。
+
 ### 4. 构造并审计候选
 
 先让伴生审计检查提案证据、单技能范围、通用性与数据访问；问题由 Proposer 根据训练证据修正。再用 `state.py stage` 在候选副本上应用 proposal，核对真实 diff；精确补丁锚点不存在或重复、实际 SKILL 内容未变均失败。审计不创造新技能、不读评测答案；stage 后发现问题时保留 pending 并按状态文档停止处理，不手工覆盖候选。
+
+审计区分“操作依据未核实”和“操作有依据、收益待验证”：前者 `unverified`，明显矛盾或强加无依据规则时 `fail`，不能降为 warning 放行；后者允许 `pass` 并记录效果未知。修正发生在 stage 前，不做额外试分。实际工具为只写一次的提案文件时，不覆盖已提交内容；保留修订及审计版本，适配器不支持安全修订则停止并报告。
 
 保持其他配置固定，完整注入所有候选 `SKILL.md`。`PURPOSE.md` 只供优化角色追溯来源，不提供给 Target。
 
