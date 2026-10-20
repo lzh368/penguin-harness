@@ -1,7 +1,7 @@
 ---
 name: rsi-wikiskill
 description: Run or resume WikiSkill experiments in Penguin. Compile training traces into a persistent Wiki, propose one skill change per batch, and accept changes only when independent validation improves. Use for skill-based RSI with isolated evaluation, including GDPevo and externally specified Terminal-Bench tasks through Harbor.
-version: 2026.10.20.3
+version: 2026.10.20.4
 ---
 
 # WikiSkill 自进化
@@ -87,7 +87,7 @@ Harbor 接口用 [training-views.md](references/training-views.md) 的 `train_vi
 
 `no_action`：记录理由，保留 Wiki 和技能，消耗一轮，跳过重复 validation。本规则是工程约定。格式错误可在同一角色会话修正；不要向它透露 validation 私有细节。修正仍不合法时停止本轮，不把错误伪装成算法拒绝。
 
-提案必须给出至少一处具体的训练内操作变化及可检查结果。仅增加“不确定”标注、重复 Target 已做的检查，或把原有猜测替换为未经支持的字段映射，不能作为已经完成的行为推演。按 [learning.md](references/learning.md) 先修正缺口；实际操作合理而提分未知的候选仍可进入 validation。训练数据可能缺少业务规则或字段级反馈，如实保留这个限制，不用补造规则强行产出技能。
+提案必须给出至少一处具体的训练内操作依据及可检查结果：可以编译 Target 已做过的有用步骤，也可以修正行为缺口，如实区分两者。仅增加“不确定”标注，或把原有猜测替换为未经支持的字段映射，不能代替操作依据。一个技能围绕一个机制；每个必需步骤的输入与适用条件都要成立，不能用宽泛入口套用特定任务的业务检查。按 [learning.md](references/learning.md) 先修正缺口；实际操作合理而提分未知的候选仍可进入 validation。训练数据可能缺少业务规则或字段级反馈，如实保留这个限制，不用补造规则强行产出技能。
 
 ### 4. 构造并审计候选
 
