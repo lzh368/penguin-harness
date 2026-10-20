@@ -1,7 +1,7 @@
 ---
 name: rsi-wikiskill
 description: Run or resume WikiSkill experiments in Penguin. Compile training traces into a persistent Wiki, propose one skill change per batch, and accept changes only when independent validation improves. Use for skill-based RSI with isolated evaluation, including GDPevo and externally specified Terminal-Bench tasks through Harbor.
-version: 2026.10.20.2
+version: 2026.10.20.3
 ---
 
 # WikiSkill 自进化
@@ -17,6 +17,7 @@ version: 2026.10.20.2
 - 用户要求运行：先按 [experiment-spec.md](references/experiment-spec.md) 区分实验方案与执行适配，再读取 [penguin.md](references/penguin.md)，核对参数、实验权限和运行条件。GDPevo 使用 [gdpevo.md](references/gdpevo.md) 与 [harbor.md](references/harbor.md)；Terminal-Bench 使用 [terminal-bench.md](references/terminal-bench.md)，由现有 PenguinAgent/Harbor 执行，不调用 GDPevo 专用启动器。
 - 用户要求续跑：已有 `state.json` 时先执行 `state.py verify`；尚处准备、smoke 或基线评测阶段时，核对创建记录、`experiment.json`、H0 部署和既有 Session/trial，恢复原事务。缺少 `state.json` 不代表应该重建 Target 或重跑已启动的题。恢复事务时读 [state.md](references/state.md)，不要重新初始化、补造分数或默认从下一轮开始。
 - 用户要求无人值守接力、费用监控或提速：读取 [operations.md](references/operations.md)，使用本包的运行检查工具；不得在临时脚本里重新实现预算停止、收尾通过和回执校验。正在运行的实验继续使用其冻结版本，新协议另开实验，不替换现有证据。
+- 用户要求复用既有训练轨迹诊断学习过程：读取 [experience-replay.md](references/experience-replay.md)，冻结来源与复用范围，报告为固定经验回放；不得冒充新的独立训练轮次。
 - 用户要求固定最终 Skill 复测、三次平均或标准差误差棒：读取 [test-repeats.md](references/test-repeats.md)。默认方案为一次学习、空 Skill 与冻结最终 Skill 各测三次；明确统计单位，使用本包统计工具，不自动启动尚未授权的测试。
 
 加载本技能的当前普通 Agent 就是 **Controller**，无需用户另建专门的 Controller。Controller 按 [penguin.md](references/penguin.md) 在准备阶段自行创建或核验本次实验的专用 **Target**；用户无需逐个创建 Agent，也无需预先创建全部重复实验的身份。Target 不能加载本技能、评测 skill 或 Wiki。模型、服务商和 thinking 由用户选择，技能不限定 DeepSeek 官方、OpenRouter 或其他渠道。已提供本地 Workspace、GDPevo/Harbor 与外部清单绑定的 Terminal-Bench 接口；新环境仍须验证执行、评分和隔离。
