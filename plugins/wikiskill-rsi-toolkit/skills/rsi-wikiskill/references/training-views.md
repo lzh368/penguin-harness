@@ -53,6 +53,8 @@ raw/r0001/
 
 view 不是完整轨迹；未出现某动作不代表没有执行。Maintainer 对缺少上下文的因果解释记为待查。Proposer 必须阅读所选完整入口列出的所有原始分片，不能用 view、index 或四个分片冒充四个不同任务的完整轨迹。
 
+视图中 Target 自写脚本的 OK、VALID 或最终回复中的“已检查”仍是任务行为记录，不是独立评分或正确性证明。引用这类记录时保留来源及其检查范围；规则正文、公式依据或最终提交被截断时，不补全为已核实事实。索引里的待查问题由 Proposer 从授权完整轨迹复核，不能在压缩转述中消失。
+
 ## 给各角色哪些路径
 
 - **Maintainer**：只给 `manifest.json`、其中 `selected` 对应的 view 绝对路径、已有 Wiki 和 [learning.md](learning.md)。manifest 中的其他 raw 路径用于标识来源，不额外授权读取。只更新 Wiki。

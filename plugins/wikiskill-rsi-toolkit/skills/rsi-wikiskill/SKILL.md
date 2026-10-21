@@ -1,7 +1,7 @@
 ---
 name: rsi-wikiskill
 description: Run or resume WikiSkill experiments in Penguin. Compile training traces into a persistent Wiki, propose one skill change per batch, and accept changes only when independent validation improves. Use for skill-based RSI with isolated evaluation, including GDPevo and externally specified Terminal-Bench tasks through Harbor.
-version: 2026.10.21.1
+version: 2026.10.21.2
 ---
 
 # WikiSkill 自进化
@@ -79,7 +79,7 @@ Harbor 接口用 [training-views.md](references/training-views.md) 的 `train_vi
 
 ### 2. Wiki Maintainer
 
-从当轮训练记录分层抽样，最多 5 条失败、3 条成功；每条给 Maintainer 的轨迹视图最多 15,000 字符，记录采样种子/ID及截断方式，保留原文件。Harbor 使用导出 manifest 的 selected 视图，不另行挑选。让 Maintainer 先串起任务要求、可见输入/规则、实际处理和交付结果，定位有证据的偏差；保留连续评分任务中正确的子步骤，不把未满分等同于全部失败。区分观察和解释，记录条件、动作、结果、反例与未知之处，更新 `wiki/patterns/`、完整 `index.md` 并追加 `logs.md`。新证据削弱旧模式时同时修正索引中的结论，不把互相冲突的建议一直累加。
+从当轮训练记录分层抽样，最多 5 条失败、3 条成功；每条给 Maintainer 的轨迹视图最多 15,000 字符，记录采样种子/ID及截断方式，保留原文件。Harbor 使用导出 manifest 的 selected 视图，不另行挑选。让 Maintainer 先串起视图可见的任务要求、输入/规则、实际处理和交付结果，缺少环节明确待查。保留有独立依据的正确子步骤及待验证的有用做法，不把未满分等同于全部失败，也不把 Target 自检通过当作正确性或排除失分原因的证明。每个模式区分任务约束、工具事实、Target 自拟解释与 Maintainer 假设，记录条件、动作、结果、反例和未知之处；更新 `wiki/patterns/`、完整 `index.md` 并追加 `logs.md`。新证据削弱旧模式时同步修正索引和正文，不累积互相冲突的建议。
 
 ### 3. Skill Proposer
 
@@ -90,6 +90,8 @@ Harbor 接口用 [training-views.md](references/training-views.md) 的 `train_vi
 提案必须给出至少一处具体的训练内操作依据及可检查结果：可以编译 Target 已做过的有用步骤，也可以修正行为缺口，如实区分两者。仅增加“不确定”标注，或把原有猜测替换为未经支持的字段映射，不能代替操作依据。一个技能围绕一个机制；每个必需步骤的输入与适用条件都要成立，不能用宽泛入口套用特定任务的业务检查。按 [learning.md](references/learning.md) 先修正缺口；实际操作合理而提分未知的候选仍可进入 validation。训练数据可能缺少业务规则或字段级反馈，如实保留这个限制，不用补造规则强行产出技能。
 
 检查类技能须区分“计算或结构自洽”与“业务判断有依据”。跨字段的互斥、包含或决策关系本身也要有证据，不能只因两个字段各有说明就认定它们互相约束。依赖未知关系的检查只能触发查证，不能强制改写答案；自定规则与依此生成的答案相符，不是独立的正确性证据。
+
+优先把有依据的计算、查询或决策过程编译为可执行步骤；不能因“加强检查”容易描述就跳过证据更强的方向。每个检查须说明冲突后如何核对规则、检查实现和答案，再决定修正哪一方；不预设自写断言永远正确。完整训练记录优先于 Wiki 中未经核实的解释，提案不得继承已被原记录推翻的前提。
 
 ### 4. 构造并审计候选
 
