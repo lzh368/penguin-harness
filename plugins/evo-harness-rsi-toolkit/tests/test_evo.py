@@ -1,11 +1,14 @@
 """Synthetic fixtures only: no models, real benchmark answers or reported scores."""
 import copy
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import shlex
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -16,24 +19,53 @@ evo = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(evo)
 
 
+def install_training(root, train):
+    """Install a real helper copy; every data value is synthetic."""
+    helper = root / "method/scripts/evo.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_bytes(TOOL.read_bytes())
+    training = {"train_ids": train, "attempt_id": "attempt-1", "config_sha256": "a" * 64,
+                "private_learning": str(root / "private"), "answer_dir": str(root / "answers"),
+                "feedback_dir": str(root / "private/feedback")}
+    (helper.parent.parent / "training.json").write_bytes(evo.encoded(training))
+    (root / "answers").mkdir()
+    return helper, training
+
+
+def judge_request(root, training, task, url="http://127.0.0.1:9005/api/judge"):
+    paths = evo.judge_paths(training, task, training["attempt_id"])
+    req = {"op": "judge", "split": "train", "task_id": task, "attempt_id": training["attempt_id"],
+           "train_ids": training["train_ids"], "url": url, "answer": paths["answer"], "output": paths["output"]}
+    path = Path(paths["judge_request"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(evo.encoded(req))
+    return req, path
+
+
 class BatchTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="synthetic-evo-")
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.train = [f"train_{n:03d}" for n in range(1, 6)]
+        self.helper, self.training = install_training(self.root, self.train)
+        installed = patch.object(evo, "__file__", str(self.helper))
+        installed.start()
+        self.addCleanup(installed.stop)
         self.contexts = []
         self.candidates = []
         self.parent = self.root / "parent.jsonl"
         self.parent.write_text("\n".join(json.dumps({"type": "event_msg", "payload": {
             "type": "subagent", "session_id": f"solver-{n}"}}) for n in range(1, 6)) + "\n")
         for n, task in enumerate(self.train, 1):
-            answer = self.root / f"{task}-answer.json"
+            answer = self.root / "answers" / f"{task}.json"
             answer.write_text('{"synthetic": true}')
-            fb = {"task_id": task, "attempt_id": "attempt-1", "answer_sha256": evo.digest(answer.read_bytes()),
-                  "status": "ok", "http_status": 200, "score": 0.5, "correct": False,
-                  "raw_response": '{"score": 0.5, "correct": false}'}
-            feedback = self.save(f"{task}-feedback", fb)
+            judge_req, judge_path = judge_request(self.root, self.training, task)
+            with patch.object(evo.urllib.request, "build_opener") as opener:
+                response = opener.return_value.open.return_value.__enter__.return_value
+                response.status, response.read.return_value = 200, b'{"score": 0.5, "correct": false}'
+                fb = evo.judge(judge_req)
+            feedback = Path(judge_req["output"])
             binding = {"session_id": f"solver-{n}", "provider": "fixture", "model_id": "no-model",
                        "source": "subagent", "workspace": "/synthetic/app", "agent_state": "/synthetic/state",
                        "parent_trace": str(self.parent)}
@@ -48,13 +80,15 @@ class BatchTests(unittest.TestCase):
                     {"type": "model_msg", "payload": {"type": "tool_call_output", "tool_call_id": "read-1",
                      "output": json.dumps(evo.material({"path": str(inp)}))}},
                     {"type": "model_msg", "payload": {"type": "tool_call", "name": "exec_command",
-                     "arguments": '{}', "tool_call_id": "judge-1"}},
+                     "arguments": json.dumps({"cmd": shlex.join(["python3", "-B", str(self.helper), str(judge_path)])}),
+                     "tool_call_id": "judge-1"}},
                     {"type": "model_msg", "payload": {"type": "tool_call_output", "tool_call_id": "judge-1",
                      "output": "exit code 0\n" + json.dumps(fb)}}]
             trace.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
             dest = self.root / f"{task}-context.json"
             req = {"split": "train", "task_id": task, "attempt_id": "attempt-1", "train_ids": self.train,
                    "answer": str(answer), "feedback": str(feedback), "inputs": [str(inp)],
+                   "judge_request": str(judge_path),
                    "traces": [str(trace)], "binding": binding, "output": str(dest)}
             evo.capture(req)
             self.contexts.append(str(dest))
@@ -146,7 +180,7 @@ class BatchTests(unittest.TestCase):
         receipt = {"protocol_version": 1, "status": "ok", "case_id": task, "score": 50,
                    "session_id": "solver-1", **identity}
         return {"op": "capture-evaluation", "split": "train", "task_id": task,
-             "attempt_id": "attempt-1", "train_ids": self.train, "answer": str(self.root / f"{task}-answer.json"),
+             "attempt_id": "attempt-1", "train_ids": self.train, "answer": str(self.root / "answers" / f"{task}.json"),
              "evaluation": str(self.save("evaluation", receipt)), "evaluation_identity": identity,
              "inputs": [str(inp)], "traces": [str(trace)], "binding": binding,
              "output": str(self.root / "workspace-context.json")}
@@ -303,6 +337,86 @@ class BatchTests(unittest.TestCase):
             evo.trace_view([path], binding)
 
 
+    def rewrite_solver_trace(self, change):
+        context = evo.read(self.contexts[0])
+        path = Path(context["trace"]["sources"][0]["path"])
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        change(rows)
+        path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        # Updating the capture and its hashes still must not turn a bad native
+        # operation into valid learning evidence.
+        context["trace"] = evo.trace_view([path], context["trace"]["binding"])
+        Path(self.contexts[0]).write_bytes(evo.encoded(context))
+
+    def test_echoed_receipt_or_shell_wrapped_judge_is_not_native_judge_evidence(self):
+        original = Path(self.root / "train_001.jsonl").read_text()
+        for command in ("printf '%s' synthetic-fabricated-receipt", "python3 -c 'print(1)'",
+                        "echo before; python3 -B irrelevant request.json"):
+            with self.subTest(command=command):
+                (self.root / "train_001.jsonl").write_text(original)
+                self.rewrite_solver_trace(lambda rows: rows[4]["payload"].update(arguments=json.dumps({"cmd": command})))
+                with self.assertRaisesRegex(ValueError, "canonical exec|canonical judge"):
+                    evo.compile_batch(self.req)
+
+    def test_repeated_canonical_judge_calls_are_not_valid_learning(self):
+        def duplicate(rows):
+            pair = copy.deepcopy(rows[-2:])
+            for row in pair:
+                row["payload"]["tool_call_id"] = "judge-2"
+            rows.extend(pair)
+        self.rewrite_solver_trace(duplicate)
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            evo.compile_batch(self.req)
+
+    def test_raw_http_probe_before_canonical_judge_invalidates_attempt(self):
+        def probe(rows):
+            rows[2:2] = [
+                {"type": "model_msg", "payload": {"type": "tool_call", "name": "exec_command",
+                    "arguments": json.dumps({"cmd": "curl -X POST http://127.0.0.1:9005/api/judge"}),
+                    "tool_call_id": "probe"}},
+                {"type": "model_msg", "payload": {"type": "tool_call_output", "tool_call_id": "probe",
+                    "output": '{"score": 0.2, "correct": false}'}}]
+        self.rewrite_solver_trace(probe)
+        with self.assertRaisesRegex(ValueError, "direct judge probe"):
+            evo.compile_batch(self.req)
+
+    def test_additional_score_response_from_indirect_command_is_rejected(self):
+        def probe(rows):
+            rows.extend([
+                {"type": "model_msg", "payload": {"type": "tool_call", "name": "exec_command",
+                    "arguments": json.dumps({"cmd": "python3 synthetic-probe.py"}), "tool_call_id": "probe"}},
+                {"type": "model_msg", "payload": {"type": "tool_call_output", "tool_call_id": "probe",
+                    "output": '{"score": 0.8, "correct": false}'}}])
+        self.rewrite_solver_trace(probe)
+        with self.assertRaisesRegex(ValueError, "additional judge feedback"):
+            evo.compile_batch(self.req)
+
+    def test_reading_public_api_response_example_is_not_another_judge(self):
+        def read_example(rows):
+            rows.extend([
+                {"type": "model_msg", "payload": {"type": "tool_call", "name": "read_file",
+                    "arguments": json.dumps({"file_path": "/synthetic/public-api.md"}), "tool_call_id": "api-doc"}},
+                {"type": "model_msg", "payload": {"type": "tool_call_output", "tool_call_id": "api-doc",
+                    "output": '1\tSYNTHETIC response example: {"score": 0.5, "correct": false}'}}])
+        self.rewrite_solver_trace(read_example)
+        self.assertEqual(evo.compile_batch(self.req)["entries"], 1)
+
+    def test_judge_request_and_frozen_profile_are_revalidated(self):
+        context = evo.read(self.contexts[0])
+        path = Path(context["judge_request"]["path"])
+        original = path.read_bytes()
+        changed = evo.read(path)
+        changed["answer"] = "/synthetic/another-answer.json"
+        path.write_bytes(evo.encoded(changed))
+        with self.assertRaisesRegex(ValueError, "request evidence changed"):
+            evo.compile_batch(self.req)
+        path.write_bytes(original)
+        training = self.helper.parent.parent / "training.json"
+        training.write_bytes(evo.encoded({**self.training, "attempt_id": "attempt-2"}))
+        with self.assertRaisesRegex(ValueError, "training evidence changed"):
+            evo.compile_batch(self.req)
+
+
 class JournalTests(unittest.TestCase):
     def test_no_duplicate_dispatch_unknown_cost_reserves_budget_and_recovery(self):
         with tempfile.TemporaryDirectory() as root:
@@ -323,22 +437,177 @@ class JournalTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "configuration"):
                 evo.journal({**req, "action": "status", "config_sha256": "changed"})
 
-    def test_judge_error_is_durable_and_never_automatically_repeated(self):
-        with tempfile.TemporaryDirectory() as root:
-            answer = Path(root) / "answer.json"
-            answer.write_text('{}')
-            req = {"split": "train", "train_ids": ["train_001"], "task_id": "train_001", "attempt_id": "a1",
-                   "url": "http://127.0.0.1:9005/api/judge", "answer": str(answer), "output": str(Path(root) / "fb.json")}
-            with patch.object(evo.urllib.request, "build_opener") as opener:
-                opener.return_value.open.side_effect = OSError("SYNTHETIC network failure")
-                one = evo.judge(req)
-                two = evo.judge(req)
-                self.assertEqual(one, two)
-                self.assertEqual(opener.return_value.open.call_count, 1)
-                self.assertIsNone(one["score"])
-                self.assertEqual(one["status"], "error")
-            with self.assertRaises(ValueError):
-                evo.judge({**req, "split": "test"})
+class JudgeHTTPTests(unittest.TestCase):
+    """Real CLI/filesystem/HTTP; the server returns only synthetic constant data."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="synthetic-judge-http-")
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.helper, self.training = install_training(self.root, ["train_001"])
+        self.calls = []
+        self.response = {"score": 0.5, "correct": False}
+        self.status = 200
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.release.set()
+        fixture = self
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers["Content-Length"]))
+                fixture.calls.append((self.path, json.loads(body)))
+                fixture.entered.set()
+                fixture.release.wait(timeout=5)
+                self.send_response(fixture.status)
+                self.end_headers()
+                try:
+                    self.wfile.write(json.dumps(fixture.response).encode())
+                except BrokenPipeError:
+                    pass  # The interrupted-CLI regression deliberately closes its socket.
+            def log_message(self, *args):
+                pass
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self.stop_server)
+        self.req, self.request_path = judge_request(self.root, self.training, "train_001",
+            f"http://127.0.0.1:{self.server.server_port}/api/judge")
+        Path(self.req["answer"]).write_text('{"synthetic": true}')
+
+    def stop_server(self):
+        self.release.set()
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
+
+    def command(self):
+        return ["python3", "-B", str(self.helper), str(self.request_path)]
+
+    def invoke(self, expected=0):
+        result = subprocess.run(self.command(), capture_output=True, text=True)
+        self.assertEqual(result.returncode, expected, result.stderr)
+        if expected:
+            return json.loads(result.stderr)
+        self.last_stdout = result.stdout
+        record = evo.read(self.req["output"])
+        self.assertEqual(json.loads(result.stdout), evo.judge_stdout(record))
+        return record
+
+    def rewrite_request(self, **changes):
+        self.request_path.write_bytes(evo.encoded({**self.req, **changes}))
+
+    def test_concurrent_cli_retries_use_one_durable_http_attempt(self):
+        one = subprocess.Popen(self.command(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        two = subprocess.Popen(self.command(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        out_one, err_one = one.communicate(timeout=10)
+        out_two, err_two = two.communicate(timeout=10)
+        self.assertEqual((one.returncode, two.returncode), (0, 0), err_one + err_two)
+        self.assertEqual(json.loads(out_one), json.loads(out_two))
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0], ("/api/judge", {"task_id": "train_001", "answer": {"synthetic": True}}))
+
+    def test_changing_output_attempt_roster_or_answer_cannot_probe_again(self):
+        self.invoke()
+        for changes in ({"output": str(self.root / "another-feedback.json")},
+                        {"attempt_id": "attempt-2"}, {"train_ids": ["train_001", "test_001"]},
+                        {"task_id": "test_001"}, {"answer": str(self.root / "another-answer.json")},
+                        {"split": "test"}):
+            with self.subTest(changes=changes):
+                self.rewrite_request(**changes)
+                self.invoke(expected=2)
+                self.assertEqual(len(self.calls), 1)
+        self.rewrite_request()
+        Path(self.req["answer"]).write_text('{"synthetic": "changed after scoring"}')
+        self.assertIn("identity conflict", self.invoke(expected=2)["error"])
+        self.assertEqual(len(self.calls), 1)
+
+    def test_http_failure_is_durable_unknown_not_zero(self):
+        self.status = 500
+        first = self.invoke()
+        self.status = 200
+        self.assertEqual(self.invoke(), first)
+        self.assertEqual(first["status"], "error")
+        self.assertIsNone(first["score"])
+        self.assertIsNone(first["correct"])
+        self.assertEqual(len(self.calls), 1)
+
+    def test_killed_cli_leaves_unknown_attempt_and_does_not_resend(self):
+        self.release.clear()
+        process = subprocess.Popen(self.command(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            self.assertTrue(self.entered.wait(timeout=5), "synthetic judge did not receive request")
+        finally:
+            process.kill()
+            process.communicate(timeout=5)
+            self.release.set()
+        recovered = self.invoke()
+        self.assertEqual(recovered["status"], "error")
+        self.assertIn("interrupted", recovered["error"])
+        self.assertIsNone(recovered["score"])
+        self.assertEqual(len(self.calls), 1)
+
+    def test_valid_zero_feedback_is_preserved(self):
+        self.response = {"score": 0, "correct": False}
+        result = self.invoke()
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["score"], 0)
+        self.assertTrue(evo.feedback(result, "train_001", "attempt-1", result["answer_sha256"]))
+        self.assertEqual(json.loads(result["raw_response"]), self.response)
+
+    def test_out_of_range_negative_score_remains_raw_error_and_is_not_retried(self):
+        self.response = {"score": -0.25, "correct": False}
+        first = self.invoke()
+        self.assertEqual(first["status"], "error")
+        self.assertIsNone(first["score"])
+        self.assertEqual(json.loads(first["raw_response"]), self.response)
+        self.assertEqual(self.invoke(), first)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_large_feedback_is_captured_by_real_cli_chunks_without_rejudging(self):
+        Path(self.req["answer"]).write_text(json.dumps({"synthetic": True, "answer": "X" * 30000}))
+        feedback = self.invoke()
+        judge_output = self.last_stdout
+        self.assertLess(len(judge_output), 16000)
+        self.assertGreater(Path(self.req["output"]).stat().st_size, 30000)
+        inp = self.root / "public-input.txt"
+        inp.write_text("SYNTHETIC public facts; this is not a benchmark task.\n")
+        binding = {"session_id": "synthetic-long-solver", "source": "cli", "workspace": str(self.root),
+                   "agent_state": str(self.root / "method"), "provider": "fixture", "model_id": "no-model"}
+        grant = {"evo_task": {"split": "train", "task_id": "train_001", "attempt_id": "attempt-1", "inputs": [str(inp)]}}
+        rows = [{"type": "session_meta", "payload": binding},
+                {"type": "model_msg", "payload": {"type": "text", "role": "user", "text": json.dumps(grant)}}]
+        def pair(call_id, command, output):
+            return [{"type": "model_msg", "payload": {"type": "tool_call", "name": "exec_command",
+                        "tool_call_id": call_id, "arguments": json.dumps({"cmd": shlex.join(command)})}},
+                    {"type": "model_msg", "payload": {"type": "tool_call_output", "tool_call_id": call_id,
+                        "output": output}}]
+        def read_chunks(path, prefix):
+            pairs = []
+            for offset in range(0, max(len(path.read_text()), 1), 4000):
+                request = self.root / f"{prefix}-{offset}.json"
+                request.write_bytes(evo.encoded({"op": "read-material", "path": str(path), "offset": offset}))
+                command = ["python3", "-B", str(self.helper), str(request)]
+                result = subprocess.run(command, capture_output=True, text=True, check=True)
+                self.assertLess(len(result.stdout), 16000)
+                pairs.extend(pair(f"{prefix}-{offset}", command, result.stdout))
+            return pairs
+        rows += read_chunks(inp, "public")
+        judged = pair("one-judge", self.command(), judge_output)
+        chunks = read_chunks(Path(self.req["output"]), "feedback")
+        trace = self.root / "synthetic-cli-outputs.jsonl"
+        request = {"op": "capture", "split": "train", "task_id": "train_001", "attempt_id": "attempt-1",
+                   "train_ids": self.training["train_ids"], "answer": self.req["answer"], "feedback": self.req["output"],
+                   "judge_request": str(self.request_path), "inputs": [str(inp)], "binding": binding,
+                   "traces": [str(trace)], "output": str(self.root / "context.json")}
+        for invalid in (rows + judged, rows + judged + chunks[:-2], rows + chunks + judged):
+            trace.write_text("\n".join(json.dumps(row) for row in invalid) + "\n")
+            with self.assertRaisesRegex(ValueError, "fully read"):
+                evo.capture(request)
+        trace.write_text("\n".join(json.dumps(row) for row in rows + judged + chunks) + "\n")
+        captured = evo.capture(request)
+        context = evo.read(captured["path"])
+        self.assertEqual(context["feedback"], feedback)
+        self.assertEqual(evo.validate_contexts([context], ["train_001"])[("train_001", "attempt-1")], context)
+        self.assertEqual(len(self.calls), 1)
 
 
 if __name__ == "__main__":

@@ -15,6 +15,7 @@ import math
 import os
 from pathlib import Path
 import re
+import shlex
 import tempfile
 import urllib.error
 import urllib.parse
@@ -141,26 +142,71 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def judge(req):
-    """One authorized training attempt. Failure stays an error, never a zero."""
-    task, attempt = ident(req["task_id"]), ident(req["attempt_id"])
-    require(req["split"] == "train" and task in req["train_ids"], "train-only judge")
+def judge_paths(training, task, attempt):
+    """Derive identities from the installed training profile, never caller output paths."""
+    config = training["config_sha256"]
+    require(isinstance(config, str) and re.fullmatch(r"[0-9a-f]{64}", config), "invalid frozen config hash")
+    require(task in training["train_ids"] and attempt == training["attempt_id"], "unregistered training attempt")
+    paths = {key: Path(training[key]) for key in ("private_learning", "answer_dir", "feedback_dir")}
+    for path in paths.values():
+        require(path.is_absolute() and str(path) == str(path.resolve()), "training paths must be canonical absolute paths")
+    require(paths["feedback_dir"].is_relative_to(paths["private_learning"]), "feedback outside private learning")
+    name = f"{ident(task)}.{ident(attempt)}.json"
+    return {"answer": str(paths["answer_dir"] / f"{task}.json"),
+            "output": str(paths["feedback_dir"] / config / name),
+            "judge_request": str(paths["private_learning"] / "judge-requests" / config / name),
+            "training_snapshot": str(paths["private_learning"] / "frozen-training.json")}
+
+
+def validate_judge_request(req, training, request_path):
+    require(req["op"] == "judge" and req["split"] == "train", "train-only judge")
+    require(req["train_ids"] == training["train_ids"], "training roster changed")
+    paths = judge_paths(training, req["task_id"], req["attempt_id"])
+    require(str(request_path) == paths["judge_request"], "noncanonical judge request")
+    for key in ("answer", "output"):
+        require(req[key] == paths[key], f"noncanonical judge {key}")
     url = urllib.parse.urlparse(req["url"])
     require(url.scheme == "http" and url.hostname in ("127.0.0.1", "localhost", "::1")
             and url.path == "/api/judge" and not url.query and not url.fragment
             and not url.username and not url.password, "judge must be the local training API")
+    return paths
+
+
+def judge(req, request_path=None):
+    """One authorized training attempt. Failure stays an error, never a zero."""
+    task, attempt = ident(req["task_id"]), ident(req["attempt_id"])
+    helper = regular(__file__).resolve()
+    training_path = helper.parent.parent / "training.json"
+    training_raw = regular(training_path).read_bytes()
+    training = json.loads(training_raw)
+    paths = validate_judge_request(req, training, request_path or judge_paths(training, task, attempt)["judge_request"])
+    request_raw = regular(paths["judge_request"]).read_bytes()
+    require(json.loads(request_raw) == req, "judge request file differs from operation")
     answer_bytes = regular(req["answer"]).read_bytes()
     answer = json.loads(answer_bytes)
     require(isinstance(answer, dict), "answer must be an object")
-    dest = Path(req["output"])
+    with locked(paths["training_snapshot"] + ".lock"):
+        snapshot = Path(paths["training_snapshot"])
+        if snapshot.exists():
+            require(regular(snapshot).read_bytes() == training_raw, "installed training changed")
+        else:
+            write_once(snapshot, training_raw)
+    identity = {"source": "evo-judge", "config_sha256": training["config_sha256"],
+                "training_path": str(training_path), "training_sha256": digest(training_raw),
+                "training_snapshot": paths["training_snapshot"],
+                "helper_path": str(helper), "helper_sha256": digest(helper.read_bytes()),
+                "judge_request_path": paths["judge_request"], "judge_request_sha256": digest(request_raw),
+                "feedback_path": paths["output"]}
+    dest = Path(paths["output"])
     with locked(str(dest) + ".lock"):
         if dest.exists():
-            previous = read(dest)
+            previous = read(regular(dest))
             require(previous["task_id"] == task and previous["attempt_id"] == attempt
-                    and previous["answer_sha256"] == digest(answer_bytes), "attempt identity conflict")
+                    and previous["answer_sha256"] == digest(answer_bytes)
+                    and all(previous.get(k) == v for k, v in identity.items()), "attempt identity conflict")
             # Even an interrupted HTTP call is never repeated silently.
             return previous
-        record = {"task_id": task, "attempt_id": attempt, "answer_sha256": digest(answer_bytes),
+        record = {**identity, "task_id": task, "attempt_id": attempt, "answer_sha256": digest(answer_bytes),
                   "status": "error", "error": "judge call in flight or interrupted", "score": None,
                   "correct": None, "url": req["url"], "request": {"task_id": task, "answer": answer}}
         atomic(dest, encoded(record))
@@ -181,6 +227,14 @@ def judge(req):
             record["error"] = str(exc)
         atomic(dest, encoded(record))
         return record
+
+
+def judge_stdout(record):
+    """Bounded CLI receipt; the canonical ledger retains the complete feedback."""
+    raw = encoded(record)
+    return {"source": "evo-judge-receipt", "feedback_path": record["feedback_path"],
+            "sha256": digest(raw), "bytes": len(raw),
+            **{key: record[key] for key in ("task_id", "attempt_id", "config_sha256", "status", "score", "correct")}}
 
 
 def trace_view(paths, expected, path_map=None):
@@ -237,6 +291,97 @@ def contains_json(text, value):
             except ValueError:
                 pass
     return False
+
+
+def verify_judge_evidence(view, fb, request_path, path_map=None):
+    """Audit cooperative execution, not an arbitrary-code security sandbox.
+
+    A score must be returned by the one exact helper command. Visible raw HTTP
+    probes, repeated helper executions and echoed/fabricated receipts invalidate
+    the attempt. Obfuscated code/network activity needs the runtime boundary.
+    """
+    mapped = path_map or {}
+    require(fb.get("source") == "evo-judge", "feedback lacks canonical judge receipt")
+    training_raw = regular(mapped.get(fb["training_path"], fb["training_path"])).read_bytes()
+    require(digest(training_raw) == fb["training_sha256"], "frozen training evidence changed")
+    training = json.loads(training_raw)
+    request_raw = regular(mapped.get(request_path, request_path)).read_bytes()
+    require(request_path == fb["judge_request_path"] and digest(request_raw) == fb["judge_request_sha256"],
+            "judge request evidence changed")
+    req = json.loads(request_raw)
+    paths = validate_judge_request(req, training, request_path)
+    helper = str(Path(fb["training_path"]).parent / "scripts/evo.py")
+    require(fb["helper_path"] == helper and fb["helper_sha256"] == digest(regular(__file__).read_bytes()),
+            "judge helper differs from trusted implementation")
+    require(fb["config_sha256"] == training["config_sha256"] and
+            fb["training_snapshot"] == paths["training_snapshot"] and fb["feedback_path"] == paths["output"],
+            "judge receipt differs from frozen identity")
+    require(req["task_id"] == fb["task_id"] and req["attempt_id"] == fb["attempt_id"]
+            and req["url"] == fb["url"] and fb["request"]["task_id"] == req["task_id"], "judge request/receipt mismatch")
+    ledger_raw = regular(mapped.get(fb["feedback_path"], fb["feedback_path"])).read_bytes()
+    require(ledger_raw == encoded(fb), "canonical feedback ledger changed")
+    expected = ["python3", "-B", helper, request_path]
+    matched = []
+    chunked = []
+    decoder = json.JSONDecoder()
+    for pair in view["pairs"]:
+        call, observation = pair["call"]["payload"], pair["observation"]["payload"]["output"]
+        authorized = False
+        if call["name"] == "exec_command":
+            args = json.loads(call["arguments"])
+            command = args.get("cmd", "")
+            try:
+                tokens = shlex.split(command)
+            except ValueError:
+                tokens = []
+            authorized = (tokens == expected and not any(c in command for c in "`$\n\r;&|<>")
+                          and not args.get("run_in_background", False))
+            require("/api/judge" not in command, "direct judge probe in Solver trace")
+            if not authorized and helper in tokens:
+                # A second helper request is detectable locally when its file is
+                # available. Native hooks must also reject it before execution.
+                other_path = tokens[-1] if tokens else ""
+                other = Path(mapped.get(other_path, other_path))
+                if other.is_file():
+                    try:
+                        other_req = read(other)
+                    except (ValueError, OSError):
+                        other_req = None
+                    require(not isinstance(other_req, dict) or other_req.get("op") != "judge",
+                            "noncanonical or repeated judge operation")
+        if authorized:
+            if not contains_json(observation, fb):
+                require(contains_json(observation, judge_stdout(fb)), "judge command did not return bound receipt")
+                chunked.append(pair)
+            matched.append(call["tool_call_id"])
+        elif call["name"] == "read_file":
+            # Reading API documentation or an existing receipt is not another
+            # scoring request, and cannot satisfy the canonical command below.
+            continue
+        else:
+            require(not contains_json(observation, fb), "judge receipt was not produced by canonical exec")
+            # Raw /api/judge replies have score/correct; canonical receipts add
+            # source. Neither is valid feedback from a different tool call.
+            for index, char in enumerate(observation):
+                if char != "{":
+                    continue
+                try:
+                    value, _ = decoder.raw_decode(observation[index:])
+                except ValueError:
+                    continue
+                require(not isinstance(value, dict) or not (
+                    value.get("source") == "evo-judge" or {"score", "correct"} <= value.keys()),
+                    "additional judge feedback in Solver trace")
+    require(len(matched) == 1, "requires exactly one canonical judge operation")
+    for pair in chunked:
+        # Complete feedback must be observed after the one judge has returned;
+        # never rerun judge to recover an output-length truncation.
+        positions = {(m["source"], m["line"]): i for i, m in enumerate(view["messages"])}
+        observation = pair["observation"]
+        returned = positions[(observation["source"], observation["line"])]
+        later = [p for p in view["pairs"] if positions[(p["call"]["source"], p["call"]["line"])] > returned]
+        verify_reads({"pairs": later}, [fb["feedback_path"]], path_map)
+    return {"path": request_path, "sha256": digest(request_raw), "tool_call_id": matched[0]}
 
 
 def material(req):
@@ -305,6 +450,32 @@ def verify_workspace_inputs(view, paths, workspace, records=None):
                 "workspace input not fully read through native read_file")
 
 
+def verify_training_root(contexts, roles, path_map=None):
+    """Continuous HTTP learning must belong to one native training root.
+
+    Parent segments may differ after compaction; the native Session identity
+    and State/runtime remain the same. Generic workspace evaluation is separate.
+    """
+    http = [c for c in contexts if c["feedback"].get("source") == "evo-judge"]
+    if not http:
+        return None
+    require(len(http) == len(contexts), "continuous training cannot mix feedback protocols")
+    root = None
+    fields = ("session_id", "source", "agent_state", "workspace", "provider", "model_id")
+    for binding in [c["trace"]["binding"] for c in contexts] + [r["binding"] for r in roles]:
+        require(binding["source"] == "subagent", "continuous training requires native child roles")
+        parent = binding["parent_trace"]
+        rows = [json.loads(line) for line in regular((path_map or {}).get(parent, parent)).read_text().splitlines()]
+        metas = [r["payload"] for r in rows if r.get("type") == "session_meta" and not r.get("origin")]
+        require(len(metas) == 1 and metas[0].get("source") in ("cli", "benchmark"), "invalid native training root")
+        identity = {key: metas[0][key] for key in fields}
+        require(all(identity[key] == binding[key] for key in ("agent_state", "workspace", "provider", "model_id")),
+                "role State/runtime differs from training root")
+        require(root is None or root == identity, "roles belong to different training roots")
+        root = identity
+    return root
+
+
 def seal_training(req):
     root = Path(req["private_learning"]).resolve()
     def rel(path):
@@ -313,6 +484,7 @@ def seal_training(req):
         return p.relative_to(root).as_posix()
     contexts = [read(p) for p in req["contexts"]]
     validated = validate_contexts(contexts, req["train_ids"])
+    training_root = verify_training_root(contexts, req["roles"])
     validate_candidates(read(req["candidates"]), validated)
     roles, trace_paths, reflected = [], set(), []
     sessions = {c["trace"]["binding"]["session_id"] for c in contexts}
@@ -353,6 +525,14 @@ def seal_training(req):
         members[c["task_id"]] = {"answer_sha256": c["answer_sha256"], "attempt_id": c["attempt_id"],
             "context_file": rel(path), "container_context_path": path, "context_sha256": digest(regular(path).read_bytes()),
             "feedback_sha256": digest(encoded(c["feedback"])), "solver_session_id": c["trace"]["binding"]["session_id"]}
+        if c["feedback"].get("source") == "evo-judge":
+            fb = c["feedback"]
+            require(digest(regular(fb["training_snapshot"]).read_bytes()) == fb["training_sha256"],
+                    "portable frozen training snapshot changed")
+            members[c["task_id"]]["judge_evidence_files"] = {
+                fb["training_path"]: rel(fb["training_snapshot"]),
+                c["judge_request"]["path"]: rel(c["judge_request"]["path"]),
+                fb["feedback_path"]: rel(fb["feedback_path"])}
     verify_compilation({**req, "path_map": {}})
     record = {"complete": True, "runtime": req["runtime"], "members": members, "roles": roles, "trace_paths": sorted(trace_paths),
               "candidates_file": rel(req["candidates"]), "candidates_sha256": digest(regular(req["candidates"]).read_bytes()),
@@ -361,6 +541,8 @@ def seal_training(req):
               "limits": req["limits"], "max_entries": req["max_entries"], "max_bytes": req["max_bytes"],
               "decisions_file": rel(req["decisions"]), "decisions_sha256": digest(regular(req["decisions"]).read_bytes()),
               "skill_sha256": validate_package(req["skill"])["sha256"]}
+    if training_root is not None:
+        record["training_root"] = training_root
     write_once(req["output"], encoded(record))
     return record
 
@@ -381,6 +563,7 @@ def capture(req):
               "evaluation_identity": req["evaluation_identity"]}
     else:
         fb = read(req["feedback"])
+        require(fb.get("source") == "evo-judge", "HTTP capture requires canonical judge receipt")
     negative = feedback(fb, task, attempt, digest(answer_bytes))
     require(fb["status"] == "ok", "judge error blocks reflection and compilation")
     view = trace_view(req["traces"], req["binding"])
@@ -392,10 +575,13 @@ def capture(req):
                     and contains_json(m["payload"]["text"], grant) for m in view["messages"]),
                 "input files not bound to the native task delegation")
         verify_reads(view, req["inputs"])
-    # The real judge result must occur in the solver's tool observations.
+    # The result must originate from the exact single-operation helper call.
+    judge_receipt = None
     if fb.get("source") != "penguin-evaluation":
-        require(any(contains_json(p["observation"]["payload"]["output"], fb) for p in view["pairs"]),
-                "solver trace has no receipt of this attempt's judge feedback")
+        require(req["answer"] == read(req["judge_request"])["answer"]
+                and req["feedback"] == fb["feedback_path"], "capture paths differ from judged attempt")
+        judge_receipt = verify_judge_evidence(view, fb, req["judge_request"])
+        require(fb["request"]["answer"] == json.loads(answer_bytes), "judge submitted a different answer")
     inputs = []
     for source in req["inputs"]:
         raw = regular(source).read_bytes()
@@ -405,6 +591,8 @@ def capture(req):
               "answer_text": answer_bytes.decode(),
               "answer_sha256": digest(answer_bytes),
               "feedback": fb, "negative": negative, "trace": view}
+    if judge_receipt is not None:
+        record["judge_request"] = judge_receipt
     write_once(req["output"], encoded(record))
     return {"path": req["output"], "sha256": digest(encoded(record)), "negative": negative}
 
@@ -450,8 +638,9 @@ def validate_contexts(contexts, train_ids, path_map=None):
                                 "end": min(offset + 4000, len(content)), "total": len(content), "text": content[offset:offset + 4000]}
                     require(any(contains_json(p["observation"]["payload"]["output"], expected) for p in actual["pairs"]),
                             "captured input absent from Solver observations")
-            require(any(contains_json(p["observation"]["payload"]["output"], c["feedback"])
-                        for p in actual["pairs"]), "feedback absent from trace")
+            require(verify_judge_evidence(actual, c["feedback"], c["judge_request"]["path"], path_map)
+                    == c["judge_request"], "captured judge operation changed")
+            require(c["feedback"]["request"]["answer"] == c["answer"], "judge submitted a different answer")
     return {(c["task_id"], c["attempt_id"]): c for c in contexts}
 
 
@@ -694,8 +883,8 @@ def journal(req):
         return state
 
 
-def execute(req):
-    actions = {"judge": judge, "capture": capture, "capture-evaluation": capture, "compile": compile_batch,
+def execute(req, request_path=None):
+    actions = {"judge": lambda r: judge(r, request_path), "capture": capture, "capture-evaluation": capture, "compile": compile_batch,
                "read-material": material, "audit-role": audit_role,
                "seal-training": seal_training,
                "file-digest": lambda r: {"file_path": r["path"], "sha256": digest(regular(r["path"]).read_bytes())},
@@ -709,7 +898,10 @@ def execute(req):
 if __name__ == "__main__":
     try:
         require(len(sys.argv) == 2, "usage: python3 -B evo.py REQUEST.json")
-        print(json.dumps(execute(read(sys.argv[1])), ensure_ascii=False, allow_nan=False))
+        request = read(sys.argv[1])
+        result = execute(request, sys.argv[1])
+        print(json.dumps(judge_stdout(result) if request["op"] == "judge" else result,
+                         ensure_ascii=False, allow_nan=False))
     except (ValueError, KeyError, OSError, TypeError) as exc:
         print(json.dumps({"error": str(exc)}), file=sys.stderr)
         sys.exit(2)

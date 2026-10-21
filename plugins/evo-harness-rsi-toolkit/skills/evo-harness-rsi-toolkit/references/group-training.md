@@ -1,139 +1,136 @@
 # Continuous group delegation (GDPevo adaptation)
 
-Only the host Controller owns baseline → training → publish → final evaluation.
-This reference delegates one training batch, not another experiment controller.
-Penguin's leaf evaluation worker cannot spawn children. Harbor's adapter starts
-a new native root Target Session in the container; that root can invoke the
-Solver, Reflector and Evolver leaves while the shared service remains alive.
+The main Penguin owns training → compile/freeze → H0 tests → final tests.
+One native evaluation child handles the single continuous Harbor training case.
+Harbor starts a fresh native training root with one level of Solver, Reflector
+and Evolver leaves. The five members share its workspace and business service;
+they are not five independent Harbor trials. See [control.md](control.md).
 
-## Host preparation and worker request
+## Host preparation and worker
 
-Create a separate Trainer Agent with the Solver's fixed settings and H0 learned
-slot, plus this method Skill. Its AGENTS.md must distinguish the root from a
-child: only a Session with `run_subagent`, given a continuous group instruction,
-reads this reference's “Container training root”; child Sessions follow their
-explicit role. Write frozen training inputs in
-`skills/evo-harness-rsi-toolkit/training.json`: train_ids, attempt_id, limits,
-max_entries, max_bytes, runtime, workspace, output paths, compilation deadline.
-Also freeze `training_budget_usd`, `host_operation_id`, and `config_sha256` from
-the host's reserved training operation. Pass these explicitly to `prepare-trainer`;
-the budget includes the container root and all its child roles. Reserve host
-Controller/worker overhead separately. Do not infer an allocation from old runs.
-There is no test material or scoreboard in that State. Use the benchmark
-protocol helper's `prepare-trainer` operation and verify its State snapshot.
+Keep the test Target at a sanitized frozen H0. Create a separate fresh Trainer
+from those Solver settings through the benchmark prepare-trainer operation.
+Pass config, config_sha256, repo, evo_tool, base_state, output, method_skill,
+method_hooks, training_budget_usd and host_operation_id. method_hooks is the
+native installed hooks/evo-harness-rsi-toolkit directory, including hooks.json,
+guard.mjs and icon.svg, not the source plugin's uninstalled hooks directory.
+Preparation installs the exact method Skill and native hook package, enables
+Trainer hooks and writes guard_version=2 training.json; the test Target's hooks
+stay disabled. Never copy host credentials or test materials into Trainer State.
 
-Call one `run_subagent` with explicit runtime and this prompt:
+training.json freezes train_ids, attempt_id=attempt-1, limits, max_entries,
+max_bytes, runtime, workspace=/app, private_learning=/logs/agent/evo-harness,
+answer_dir=/app/submission/answers, feedback_dir under private_learning,
+training_budget_usd, host_operation_id, config_sha256, compilation_reserve_sec
+and solving_timeout_sec. The host reserves this training allocation once for
+the container root and all its children; host/worker overhead is separate.
 
-```text
-Read <group-training.md> section "Training evaluation worker" and
-<evaluation.md>. Execute exactly this one group training delegation.
+After configure-controller, prepare a worker-request with phase=training and
+a call containing the explicit frozen runtime, run_in_background=true and:
+
+~~~text
+Read <absolute group-training.md> section "Training evaluation worker" and
+<absolute evaluation.md>. Execute exactly this one group training delegation.
 training_protocol_version: 1
-operation_id: <unique id>
-config_sha256: <frozen experiment config hash>
-training_budget_usd: <host-reserved allocation, including container children>
-case_id: <the published continuous group case>
+operation_id: <host_operation_id>
+config_sha256: <frozen hash>
+training_budget_usd: <reserved allocation including container roles>
+case_id: <published continuous group case>
 run: 1
-expected_version: <Trainer State version>
-test_agent_id: <Trainer agent id, NOT the held-out Target>
-benchmark_id: <training Benchmark>
+expected_version: <Trainer version>
+test_agent_id: <Trainer id>
+benchmark_id: <training Benchmark id>
 provider: <fixed provider>
 model_id: <fixed model>
+thinking_level: <fixed thinking level>
 expected_members: [train_001, train_002, train_003, train_004, train_005]
-```
+~~~
 
-The host records its native worker id before waiting. Never stop a completed
-Trainer at “answers done”; compilation/export are part of this same task.
+Invoke the returned call using native run_subagent. Record the child id; await
+that child without new steering. Do not start any held-out worker yet.
 
 ## Training evaluation worker
 
-Follow the shared `evaluation.md` worker's validation, fixed-runtime, Harbor
-invocation, State immutability and failure semantics. Run exactly one Harbor
-group task with the prepared Trainer State. Never spawn another worker, edit
-State, or write scoreboard. Verify training.json's host_operation_id,
-config_sha256 and training_budget_usd match this request before launching Harbor.
-Use the pinned current adapter and install bundle, `run_timeout=task`,
-`max_turns=-1`. Respect original task timeout and reserve
-time within it for all learning and export. Only you may read final verifier
-summary; it is not learning input.
+Follow the unchanged evaluation.md worker contract for validation, fixed
+runtime, Harbor invocation, State immutability, cleanup and failure semantics.
+Launch exactly one group task with the prepared Trainer State and pinned current
+adapter/install bundle, run_timeout=task and max_turns=-1. Check the operation,
+config hash and training allocation against training.json. Never spawn another
+worker, edit State, solve training tasks or write scoreboard.
 
-After Harbor fully terminates, validate the five exported final answers and
-nonempty Skill, raw training summary, runtime and cleanup. Return the ordinary
-cell YAML fields plus `training_protocol_version: 1`, `operation_id`,
-`trial_path`, `submission_path`, `private_learning_path`, `member_ids`,
-`skill_sha256`, `complete`. This is an explicit training-only extension;
-independent test workers return the unchanged ordinary cell protocol. A failed
-group has no fabricated score. The host keeps the diagnostic record outside
-scoreboard and publishes only after export/injection checks succeed.
+Wait for Harbor termination, verifier/artifact export and cleanup. Preserve all
+five final answers, full private evidence and the learned package. Empty indexed
+guidance can be valid; a missing package or failed/incomplete seal cannot.
+The host independently reruns verify-export before publication. Final verifier
+details are host diagnostics, never learning input.
+
+Return the ordinary cell YAML plus training_protocol_version: 1, operation_id,
+trial_path, submission_path, private_learning_path, member_ids, skill_sha256 and
+complete. This extension applies only to training. No fabricated score or
+complete flag can replace original evidence.
 
 ## Container training root
 
-You have only one batch delegation. Require all five configured input folders,
-the allowed environment access document and native `run_subagent`. Resolve your
-own App Data Dir and Agent State from Environment, not assumed host paths.
-Read training.json and the complete roles.md/tools.md. Use `/app` as inherited
-workspace and `/logs/agent/evo-harness/` for private learning material, never
-inside the learned package. Do not read benchmark repository, tests, solutions,
-hidden rulebooks, private service files, host scoreboards or held-out materials.
+You coordinate this one batch; you do not solve tasks yourself. The native
+user-prompt hook injects the complete contract, original trace_path, frozen
+profile and role files. Require native run_subagent and the five public member
+folders. Use only the fixed helpers for shell operations. Write request JSON
+inside private_learning/requests; do not write submission answers, State,
+native traces or role-authored candidates/decisions.
 
-0. On first entry create a batch-local journal under the private output directory;
-   require positive training_budget_usd plus host_operation_id/config_sha256 in
-   training.json, matching this delegation. Missing allocation blocks dispatch.
-   reserve only the training allocation already reserved by the host (do not
-   count these costs twice). On resume read it first. Stable semantic slots are
-   `batch-1/<task_id>/attempt-1/solver`, `.../reflector`, and `batch-1/evolver`.
-   Before each native call reserve its slot/request hash, then bind its native
-   Session id. A reserved/bound/completed slot is never dispatched again:
-   inspect that Session and its real trace/output, await a running child, or
-   reconcile completed work. Ambiguous dispatch is blocked, never retried by
-   changing ids. Formatting fixes reuse the same child. No automatic repeat
-   after an answer was attempted. Record actual terminated child and cost or
-   pending cost. This journal is method state, not an external scheduler.
-1. Inspect real time remaining; reserve the frozen compilation/export window
-   within the task's 6-hour solving limit. A missing/unreadable input blocks
-   the group; do not invent missing examples. Record pre-batch library and hash.
-2. For each configured member in order, invoke a fresh native Solver leaf
-   with its complete role text, exact task/attempt, input directory, answer path
-   `/app/submission/answers/<task_id>.json`, local judge URL from
-   environment_access.md, and helper path. Give the frozen H0 library only.
-   Include a literal JSON task grant in the native Solver prompt:
-   `{"evo_task":{"split":"train","task_id":"<id>","attempt_id":"attempt-1","inputs":["<exact allowed input paths>"]}}`.
-   Derive these files only from that member's public input directory plus
-   environment_access.md; no test/other-member paths. Solver must use
-   `read-material` for each granted text file before action; preserve binary
-   payload facts through paired tools and identify their hashes separately.
-   One leaf at a time; five tasks share the same business service. Wait for
-   completion. Record native Session id, model, thinking and inherited cwd.
-3. Use `capture` on every segment of that Solver's original trace (including
-   current completed segment), the actual answer, exact judge receipt and
-   input files. Bind the parent trace's subagent pointer. Check the actual
-   judge output appears in the Solver's trace. Infrastructure/HTTP/parse error
-   stops the batch; no self-scoring or extra attempt. No candidates from full
-   success. For negative feedback invoke one Reflector leaf with the complete
-   captured context and full role text; it returns a candidate JSON array.
-   Do not pass its candidates to later Solvers. Empty proposals are valid.
-4. After all five have captured successful judge calls, concatenate candidate
-   arrays without rewriting them. Invoke one Evolver leaf with the complete
-   batch candidates, their captured evidence and pre-batch library. Verify
-   actual reads in its trace, then `compile` the operations. If zero candidates,
-   the Evolver may return `[]`; preserve the library as an explicit no-op.
-5. `export` the resulting library to `/app/submission/skill/`. Keep private
-   contexts, candidates, operations, role traces/bindings and audit receipts
-   under `/logs/agent/evo-harness/` (Harbor agent logs are exported). Use `seal-training` to produce `training-export.json` from the five contexts,
-   candidates, decisions, pre-batch library and role audit requests. Every role
-   record binds original traces, model/Session, material file paths, full role
-   text and its sealed output. Store copies of role text/library in the private
-   directory before delegation; all audited materials must be in that directory.
-   The sealer records hashes and role provenance; do not hand-author a complete
-   flag in place of its checks.
-   Check all answers still match the judge-bound bytes. They are frozen once
-   feedback was obtained. Do not overwrite failed learning with an empty Skill.
-6. Wait for all native children, verify no active business writes remain and
-   return. The adapter then collects cost/trace and shuts down; the host worker
-   waits for Harbor verification/artifact export. Only the host Controller
-   installs the package into test Target State and starts evaluation.
+1. Read the frozen profile and injected method material. Initialize the private
+   budget journal using the host-reserved training allocation and operation/hash.
+   Use the exact canonical journal path from control.md; reserve the root's own
+   overhead at slot=controller. Reconcile tickets, claims and native children
+   before any new call. For each returned role call, reserve its exact derived
+   operation_id/slot/request_sha256 with your chosen reserve_usd before dispatch,
+   and bind the actual returned child id afterward. The root does not settle its
+   own or child expenses while running; the host accounts for the complete trial.
+   Respect the original solving timeout and reserve the frozen compilation
+   window; never extend the task or spend a historical allocation.
+2. In listed member order request role-request with role=solver and task_id.
+   The helper constructs the full role prompt, literal evo_task grant, public
+   text inputs, binary hashes, exact answer/judge paths and frozen runtime.
+   Invoke its returned run_subagent call unchanged. Await this leaf before the
+   next Solver; the service is shared. Do not send candidates to later Solvers.
+3. After the leaf returns, use status to locate original trace segments. Read
+   actual session metadata with read-material and bind session_id, source,
+   provider, model_id, workspace, agent_state and the parent trace. Use capture
+   with all trace segments, granted text inputs, exact answer, canonical feedback
+   path and judge_request path. The Solver's short judge receipt must bind the
+   full ledger, and all ledger chunks must have been read after that one judge
+   command. Its captured context output is
+   private_learning/contexts/<task_id>.json. The canonical judge command and
+   all read receipts must be present in the native trace. Transport, parse,
+   identity or evidence failure ends this batch as method_failed.
+4. For each negative captured execution, request one role=reflector for that
+   task and invoke the exact returned call. It reads its full role/context and
+   writes private_learning/roles/<task_id>/candidates.json, sealing it with
+   file-digest. Audit its original trace/material/output bindings. Successful
+   executions have no Reflector or candidate. Do not rewrite candidates.
+5. Once all five contexts and eligible Reflectors are complete, request
+   role=evolver. The helper concatenates the role-authored candidate arrays
+   without changing them. Invoke the returned call; the Evolver reads all
+   contexts, candidates and prebatch-library.json and writes decisions.json.
+   Zero candidates still requires a real Evolver call and explicit [] output.
+   Audit complete material reads and its output seal.
+6. Write a compile request using the five contexts, candidates.json,
+   decisions.json, prebatch-library.json and frozen limits; execute evo.py.
+   Export the resulting library with unchanged max_entries/max_bytes to the
+   new /app/submission/skill directory. Even a valid no-op exports the fixed
+   reader, selector and empty index. Private artifacts never enter this slot.
+7. Write private_learning/requests/seal-training.json with train_ids, contexts,
+   candidates, decisions, pre-batch library, skill, all Reflector/Evolver audit
+   requests, runtime and frozen limits/budgets; output must be
+   private_learning/training-export.json. Execute seal-training, then control's
+   verify-training. The stop hook rechecks this request and complete export.
+   Missing reflection/compilation/trace/seal evidence is failure, not no-op.
+8. Wait for all native children to finish and return their evidence paths and
+   costs/unknown liabilities. Harbor then exports artifacts and terminates.
+   The host, not this training root, installs the exact package and runs tests.
 
-The whole batch shares one training root context/workspace/service; each leaf
-has a scoped task conversation. This permitted delegation does not turn the
-group into five independent Harbor trials. Test receives only the frozen
-learned package through Agent State. The test image disables training judge;
-verify that deployment with a model-free probe, not a parameter name alone.
+The host restores H0 for five concurrent tests only after verify-freeze succeeds,
+then restores final for five concurrent tests after the complete H0 matrix.
+Each test is fresh and cannot access training judge. A valid no-op explicitly
+reuses the H0 matrix; failed learning produces neither final publication nor
+held-out completion. Ordinary RSI Benchmarks do not inherit this 5/5 contract.

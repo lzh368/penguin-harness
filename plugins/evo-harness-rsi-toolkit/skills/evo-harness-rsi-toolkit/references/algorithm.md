@@ -30,7 +30,12 @@ Record every model and the byte budget; do not call it an exact token budget.
 
 GDPevo adaptation: all five training members in one continuing Harbor task,
 one batch compilation before container teardown, frozen transfer to five new
-test containers. This is inspired by the paper's train-split transfer setting,
+test containers. This experiment profile trains and freezes first, then measures
+all five H0 cells concurrently, then all five final cells concurrently; it is
+not a new default order for ordinary RSI Benchmarks. The native control hook
+checks explicit Penguin role/worker requests and complete evidence, while the
+main Penguin still makes and performs every delegation and phase decision.
+This is inspired by the paper's train-split transfer setting,
 not online adaptation on the test stream or a replication of published scores.
 Only normalized score/correct is available; no gold, rubric explanation or
 reliable error attribution. This resembles sparse external feedback, not the
