@@ -5147,6 +5147,8 @@ Scenarios:
       "The plugin library has no self-evolution toolkit; optimizing with the default loop",
     methodBudgetHint:
       "This method sets its own budget: the paper's defaults reduced to a smoke profile, unless Focus says otherwise",
+    evoHarnessBudgetHint:
+      "One complete training batch, followed by compilation and frozen testing; confirm this experiment's budget before paid calls",
     methodOptimizerHint: (skill: string): string =>
       `The one that runs the method and edits the Test Agent; needs the ${skill} Skill`,
     methodMissingSkill: (plugin: string, skill: string): string =>
@@ -5163,6 +5165,19 @@ Scenarios:
         p.provider && p.modelId
           ? `- provider: \`${p.provider}\`\n- model_id: \`${p.modelId}\`\n`
           : "";
+      if (p.skill === "evo-harness-rsi-toolkit") {
+        return (
+          `Use the \`${p.skill}\` Skill for batch learning and frozen held-out evaluation.\n\n` +
+          `- test_agent_id: \`${p.targetAgentId}\`\n` +
+          `- benchmark_id: \`${p.benchmarkId}\`\n` +
+          `- runs: \`${p.runs}\` (test repetitions only)\n` +
+          pinned +
+          "Resolve the complete training batch, separate test Benchmark, fixed runtime and this experiment's explicit spending authorization before paid work. " +
+          "Use native learning and evaluation subagents; evaluation workers call Harbor, and the main Penguin publishes State and records complete test matrices in scoreboard.yaml. " +
+          "For GDPevo use one continuous five-task training group, compile once, and freeze before all five tests. " +
+          "Keep the compiled skills without a score-improvement gate; test results never select or revise them. Report scores, coverage, versions and all-role cost."
+        );
+      }
       return (
         `Use the \`${p.skill}\` Skill to run its method on the Test Agent against its frozen Benchmark.\n\n` +
         `- test_agent_id: \`${p.targetAgentId}\`\n` +

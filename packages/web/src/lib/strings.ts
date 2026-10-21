@@ -5348,6 +5348,7 @@ Benchmark：
      * budget.
      */
     methodBudgetHint: "这个方法用它自己的预算：论文默认值降为冒烟档，除非在「优化重点」里另行指定",
+    evoHarnessBudgetHint: "一次完整训练批次，编译后冻结测试；付费调用前确认本次实验预算",
     /** The optimizer field's hint under any other toolkit: the Skill that agent must carry. */
     methodOptimizerHint: (skill: string): string =>
       `运行该方法、修改被测智能体的一方；需要装有 ${skill} 技能`,
@@ -5370,6 +5371,19 @@ Benchmark：
         p.provider && p.modelId
           ? `- provider：\`${p.provider}\`\n- model_id：\`${p.modelId}\`\n`
           : "";
+      if (p.skill === "evo-harness-rsi-toolkit") {
+        return (
+          `请使用 \`${p.skill}\` 技能完成批次学习与冻结技能的独立测试。\n\n` +
+          `- test_agent_id：\`${p.targetAgentId}\`\n` +
+          `- benchmark_id：\`${p.benchmarkId}\`\n` +
+          `- runs：\`${p.runs}\`（仅指测试重复次数）\n` +
+          pinned +
+          "付费前统一核对完整训练批次、独立测试 Benchmark、固定运行时与本次预算授权。" +
+          "主 Penguin 调原生学习和评测子 Agent，评测 worker 调 Harbor，主 Penguin 发布 State 并将完整测试矩阵写入 scoreboard.yaml。" +
+          "GDPevo 使用一个五题连续训练组，整批结束编译一次，冻结后测试全部五题。" +
+          "保留编译后的技能，不设分数上涨门槛，不依据 test 选择或修订技能。报告逐题分数、覆盖、版本及全部角色费用。"
+        );
+      }
       return (
         `请使用 \`${p.skill}\` 技能，在冻结的 Benchmark 上对被测智能体运行它的方法。\n\n` +
         `- test_agent_id：\`${p.targetAgentId}\`\n` +

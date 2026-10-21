@@ -129,6 +129,9 @@ importers:
       '@penguinharness/model-development':
         specifier: workspace:*
         version: link:../../plugins/model-development
+      '@penguinharness/evo-harness-rsi-toolkit':
+        specifier: workspace:*
+        version: link:../../plugins/evo-harness-rsi-toolkit
       '@penguinharness/opro-rsi-toolkit':
         specifier: workspace:*
         version: link:../../plugins/opro-rsi-toolkit
@@ -238,6 +241,9 @@ importers:
       '@penguinharness/model-development':
         specifier: workspace:*
         version: link:../../plugins/model-development
+      '@penguinharness/evo-harness-rsi-toolkit':
+        specifier: workspace:*
+        version: link:../../plugins/evo-harness-rsi-toolkit
       '@penguinharness/opro-rsi-toolkit':
         specifier: workspace:*
         version: link:../../plugins/opro-rsi-toolkit
@@ -344,6 +350,9 @@ importers:
       '@penguinharness/model-development':
         specifier: workspace:*
         version: link:../../plugins/model-development
+      '@penguinharness/evo-harness-rsi-toolkit':
+        specifier: workspace:*
+        version: link:../../plugins/evo-harness-rsi-toolkit
       '@penguinharness/opro-rsi-toolkit':
         specifier: workspace:*
         version: link:../../plugins/opro-rsi-toolkit
@@ -831,6 +840,7 @@ importers:
 
   plugins/model-development: {}
 
+  plugins/evo-harness-rsi-toolkit: {}
   plugins/opro-rsi-toolkit: {}
 
   plugins/penguin-support: {}
@@ -1894,6 +1904,8 @@ packages:
   '@penguinharness/model-development@file:plugins/model-development':
     resolution: {directory: plugins/model-development, type: directory}
 
+  '@penguinharness/evo-harness-rsi-toolkit@file:plugins/evo-harness-rsi-toolkit':
+    resolution: {directory: plugins/evo-harness-rsi-toolkit, type: directory}
   '@penguinharness/opro-rsi-toolkit@file:plugins/opro-rsi-toolkit':
     resolution: {directory: plugins/opro-rsi-toolkit, type: directory}
 
@@ -6474,6 +6486,7 @@ snapshots:
 
   '@penguinharness/model-development@file:plugins/model-development': {}
 
+  '@penguinharness/evo-harness-rsi-toolkit@file:plugins/evo-harness-rsi-toolkit': {}
   '@penguinharness/opro-rsi-toolkit@file:plugins/opro-rsi-toolkit': {}
 
   '@penguinharness/penguin-support@file:plugins/penguin-support': {}
@@ -6544,6 +6557,7 @@ snapshots:
       '@penguinharness/goal': file:plugins/goal
       '@penguinharness/humanizer': file:plugins/humanizer
       '@penguinharness/model-development': file:plugins/model-development
+      '@penguinharness/evo-harness-rsi-toolkit': file:plugins/evo-harness-rsi-toolkit
       '@penguinharness/opro-rsi-toolkit': file:plugins/opro-rsi-toolkit
       '@penguinharness/penguin-support': file:plugins/penguin-support
       '@penguinharness/skill-porting': file:plugins/skill-porting
@@ -6585,6 +6599,7 @@ snapshots:
       '@penguinharness/goal': file:plugins/goal
       '@penguinharness/humanizer': file:plugins/humanizer
       '@penguinharness/model-development': file:plugins/model-development
+      '@penguinharness/evo-harness-rsi-toolkit': file:plugins/evo-harness-rsi-toolkit
       '@penguinharness/opro-rsi-toolkit': file:plugins/opro-rsi-toolkit
       '@penguinharness/penguin-support': file:plugins/penguin-support
       '@penguinharness/skill-porting': file:plugins/skill-porting
@@ -6621,6 +6636,7 @@ snapshots:
       '@penguinharness/goal': file:plugins/goal
       '@penguinharness/humanizer': file:plugins/humanizer
       '@penguinharness/model-development': file:plugins/model-development
+      '@penguinharness/evo-harness-rsi-toolkit': file:plugins/evo-harness-rsi-toolkit
       '@penguinharness/opro-rsi-toolkit': file:plugins/opro-rsi-toolkit
       '@penguinharness/penguin-support': file:plugins/penguin-support
       '@penguinharness/skill-porting': file:plugins/skill-porting

@@ -20,7 +20,13 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { OmniMessage } from "../src/omnimessage/index.js";
-import type { ModelRef, OpenContextOptions, OpenedContext, SystemConfig } from "../src/index.js";
+import type {
+  ModelRef,
+  OpenContextOptions,
+  OpenedContext,
+  Session,
+  SystemConfig,
+} from "../src/index.js";
 import {
   agentsMdPath,
   hooksDir,
@@ -36,7 +42,10 @@ import {
   DEFAULT_AGENT_ID,
   DEFAULT_PROJECT_ID,
   imageUrlMessage,
+  GenerativeModel,
+  installPlugin,
   installSkill,
+  libraryPlugin,
   loadProjectConfig,
   ModelSwitchRefusedError,
   saveProjectConfig,
@@ -462,6 +471,109 @@ describe("run_subagent spawning follows the PARENT session (never the Project de
       handle.dispose();
     }
   }
+
+  it("keeps Evo-Harness root delegation native and refuses depth-1 leaf delegation without a model request", async () => {
+    // Install the actual shipped method into an isolated Agent State. These guards fail
+    // before any provider request or network access if the bootstrap boundary changes.
+    const modelRequest = vi
+      .spyOn(GenerativeModel.prototype, "streamGenerate")
+      .mockImplementation(() => {
+        throw new Error("offline Evo-Harness capability probe must not request a model");
+      });
+    const networkRequest = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(
+        new Error("offline Evo-Harness capability probe must not access the network"),
+      );
+    let parent: Session | undefined;
+    let child: Awaited<ReturnType<SubagentRunner["spawn"]>> | undefined;
+    try {
+      const agent = await createAgent();
+      const plugin = libraryPlugin("evo-harness-rsi-toolkit");
+      expect(plugin).toBeDefined();
+      await installPlugin(tmpRoot, DEFAULT_PROJECT_ID, DEFAULT_AGENT_ID, plugin!);
+      const workspace = path.join(tmpRoot, "synthetic-evo-workspace");
+      await fs.mkdir(workspace);
+      parent = await agent.createSession({
+        workspaceDir: workspace,
+        provider: "anthropic",
+        modelId: "claude-sonnet-4-6",
+        thinkingLevel: "high",
+      });
+      const rootBootstrap = (
+        parent as unknown as {
+          ensureReady(): AsyncGenerator<OmniMessage>;
+        }
+      ).ensureReady();
+      let rootTools: string[] = [];
+      for await (const message of rootBootstrap) {
+        if (
+          message.type === "event_msg" &&
+          "type" in message.payload &&
+          message.payload.type === "tool_list_ready"
+        ) {
+          rootTools = message.payload.tools.map((tool) => tool.name);
+        }
+      }
+      expect(rootTools).toEqual(expect.arrayContaining(["run_subagent", "input_subagent"]));
+      expect((parent.metaMessage.payload as { system_prompt: string }).system_prompt).toContain(
+        "- `evo-harness-rsi-toolkit`",
+      );
+      expect(capturedLLMConfigs.list.at(-1)?.thinkingLevel).toBe("high");
+
+      child = await lastSpawnedRunner().spawn({
+        provider: "anthropic",
+        modelId: "claude-sonnet-4-6",
+        thinkingLevel: "high",
+      });
+      const childRun = child.run({ messages: [userText("SYNTHETIC Evo-Harness role probe.")] });
+      let childTools: string[] | undefined;
+      try {
+        const first = await childRun.next();
+        expect(first.done).toBe(false);
+        expect(first.value).toMatchObject({
+          type: "session_meta",
+          origin: [child.sessionId],
+          payload: {
+            provider: "anthropic",
+            model_id: "claude-sonnet-4-6",
+            workspace,
+            source: "subagent",
+          },
+        });
+        // tool_list_ready is emitted after native lazy setup and before LLM execution.
+        for (let event = 0; event < 20; event++) {
+          const next = await childRun.next();
+          expect(next.done).toBe(false);
+          const message = next.value as OmniMessage;
+          if (
+            message.type === "event_msg" &&
+            "type" in message.payload &&
+            message.payload.type === "tool_list_ready"
+          ) {
+            childTools = message.payload.tools.map((tool) => tool.name);
+            break;
+          }
+        }
+      } finally {
+        await childRun.return(null);
+      }
+      expect(childTools).toBeDefined();
+      expect(childTools).toContain("read_file");
+      expect(childTools).not.toContain("run_subagent");
+      expect(childTools).not.toContain("input_subagent");
+      expect(capturedLLMConfigs.list.at(-1)?.thinkingLevel).toBe("high");
+      // Also exercise the runtime guard: hiding the tools alone is insufficient.
+      await expect(lastSpawnedRunner().spawn({})).rejects.toThrow(/subagent depth limit 1 reached/);
+      expect(modelRequest).not.toHaveBeenCalled();
+      expect(networkRequest).not.toHaveBeenCalled();
+    } finally {
+      child?.dispose();
+      parent?.dispose();
+      modelRequest.mockRestore();
+      networkRequest.mockRestore();
+    }
+  });
 
   it("inherits the parent's model pair, thinking level, and workspace when the args omit them", async () => {
     const agent = await createAgent();

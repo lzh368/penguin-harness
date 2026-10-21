@@ -473,7 +473,9 @@ export function UseBenchmarkModal({
                 </>
               ) : (
                 <p className="text-xs text-gray-500 sm:col-span-2 sm:self-center dark:text-gray-400">
-                  {S.benchmark.methodBudgetHint}
+                  {optimizerSkill === "evo-harness-rsi-toolkit"
+                    ? S.benchmark.evoHarnessBudgetHint
+                    : S.benchmark.methodBudgetHint}
                 </p>
               )}
             </div>

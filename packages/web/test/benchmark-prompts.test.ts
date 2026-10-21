@@ -41,6 +41,45 @@ import {
   optimizeTail,
 } from "../src/features/benchmark/benchmark-prompts";
 
+describe("Evo-Harness method handoff", () => {
+  for (const [locale, dict] of [
+    ["en", en],
+    ["zh", zh],
+  ] as const) {
+    it(`keeps batch learning and held-out evaluation distinct (${locale})`, () => {
+      const text = dict.benchmark.rsiOptimizeTail({
+        skill: "evo-harness-rsi-toolkit",
+        targetAgentId: "evo-target",
+        benchmarkId: "gdpevo-train",
+        runs: 1,
+        provider: "confirmed-provider",
+        modelId: "confirmed-model",
+      });
+      for (const value of [
+        "evo-target",
+        "gdpevo-train",
+        "confirmed-provider",
+        "confirmed-model",
+        "scoreboard.yaml",
+        "Harbor",
+      ]) {
+        expect(text).toContain(value);
+      }
+      for (const value of [
+        "candidate_round_limit",
+        "desired_score",
+        "agent-optimization",
+        "smoke budget",
+        "冒烟档",
+      ]) {
+        expect(text).not.toContain(value);
+      }
+      expect(text).toMatch(locale === "en" ? /test repetitions only/ : /仅指测试重复次数/);
+      expect(text).toMatch(locale === "en" ? /explicit spending authorization/ : /本次预算授权/);
+    });
+  }
+});
+
 describe("benchmarkCreateTail", () => {
   it("names the Skill, the tested Agent and the layout the Skill writes", () => {
     const tail = benchmarkCreateTail("report-writer");

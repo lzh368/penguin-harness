@@ -1,0 +1,43 @@
+{
+  "name": "@penguinharness/evo-harness-rsi-toolkit",
+  "version": "0.2.16",
+  "description": "Evo-Harness: compile negative execution feedback into general and task-type skills, then freeze and evaluate through native Penguin workers.",
+  "keywords": [
+    "penguin-plugin",
+    "penguinharness",
+    "skills"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Prism-Shadow/penguin-harness.git",
+    "directory": "plugins/evo-harness-rsi-toolkit"
+  },
+  "files": [
+    "icon.svg",
+    "skills",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "penguin": {
+    "category": "rsi",
+    "title": "Evo-Harness RSI Toolkit",
+    "title_zh": "Evo-Harness 自进化工具包",
+    "description_zh": "按 Evo-Harness 的负反馈反思与批次编译学习技能，通过 Penguin 原生子 Agent、State 和评测协议完成冻结对比。",
+    "short_description": "Compile execution feedback into reusable skills.",
+    "short_description_zh": "从执行反馈按批次编译可复用技能。",
+    "quick_start": {
+      "skills": [
+        "evo-harness-rsi-toolkit"
+      ],
+      "prompt": "Use evo-harness-rsi-toolkit for one complete training batch and frozen held-out comparison. Resolve the Target, train/test Benchmarks, model and current experiment budget before paid calls.",
+      "prompt_zh": "使用 evo-harness-rsi-toolkit 完成一个训练批次与冻结技能的独立测试对比。付费调用前统一确认 Target、训练/测试 Benchmark、模型和本次预算。"
+    },
+    "icon": "icon.svg"
+  },
+  "scripts": {
+    "test": "python3 -B -m unittest discover -s tests -v"
+  }
+}
