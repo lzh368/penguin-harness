@@ -140,7 +140,9 @@ def training_bootstrap(meta, scratch, state, trace_path=None):
         f"Exact current trace_path: {trace_path}\nRequest directory: {private / 'requests'}\nSession scratchpad: {scratch}\n"
         f"Control helper: python3 -B {CONTROL} REQUEST.json\nMethod helper: python3 -B {TOOL} REQUEST.json\n"
         "Every control request includes trace_path (your current original native trace). "
-        "Use role-request to prepare each requested native call; then invoke run_subagent with its exact returned call. "
+        "Use role-request to prepare each requested native call; then invoke run_subagent with its exact short returned call, "
+        "including prompt_file and prompt_sha256. The native tool reads the complete immutable prompt for the child; "
+        "do not copy its text into a prompt argument or reconstruct the role instructions. "
         "After each Solver's native completed notification, use prepare-capture with only task_id and your trace_path; "
         "execute its returned exact command to capture the original evidence. Never hand-copy inputs or bindings. "
         "Only helpers run in this root's shell. Root write_file may write private request/evidence JSON, "
@@ -214,7 +216,7 @@ def format_request(req, meta, scratch, mode):
             continue
         if any(not r.get("origin") and r.get("payload", {}).get("type") == "text"
                and r["payload"].get("role") == "user" and r["payload"].get("sender") == "parent_agent"
-               and r["payload"].get("text") == launches[0]["call"]["prompt"] for r in child_rows):
+               and r["payload"].get("text") == evo.native_prompt(launches[0]["call"]) for r in child_rows):
             sessions.add(identity["session_id"])
     check(len(sessions) == 1, "format repair must bind the original native child Session")
     call = {"description": "Resend the existing evaluation YAML", "subagent_id": child_id, "prompt": FORMAT_PROMPT}
@@ -275,7 +277,7 @@ def verify_format_repairs(mode):
 
 
 def runtime_call(call, runtime):
-    check(isinstance(call, dict) and isinstance(call.get("prompt"), str) and call["prompt"].strip(), "complete native call required")
+    evo.native_prompt(call)
     check(not call.get("agent_id"), "role workers inherit this Agent; do not switch Agent")
     for key in ("provider", "model_id", "thinking_level"):
         check(call.get(key) == runtime[key], "native worker runtime mismatch: " + key)
@@ -528,7 +530,17 @@ def role_request(req, meta, scratch, mode):
                  "if draft validation fails, correct only your own unsealed draft and retry. This is receipt/format repair, never another Solver attempt, service call, or judge call. "
                  "Do not claim completion until complete=true. Generic file-digest is not a role seal. "
                  "Do not request parent steering. After successful sealing, do not change your output or retry learning.\n")
-    call = {"description": f"Evo-Harness {role}" + (f" {task}" if task else ""), "prompt": text,
+    # The coordinator copies only a short native call. Preserve the complete
+    # original role/grants in an immutable file; do not ask the model to retype
+    # thousands of exact characters through a truncated tool-result window.
+    prompt_path = private / "dispatch" / (evo.digest(slot.encode()) + ".prompt.txt")
+    raw_prompt = text.encode("utf-8")
+    if prompt_path.exists():
+        check(evo.regular(prompt_path).read_bytes() == raw_prompt, "registered role prompt changed")
+    else:
+        evo.write_once(prompt_path, raw_prompt)
+    call = {"description": f"Evo-Harness {role}" + (f" {task}" if task else ""),
+            "prompt_file": str(prompt_path), "prompt_sha256": evo.digest(raw_prompt),
             **{k: t["runtime"][k] for k in ("provider", "model_id", "thinking_level")}, "run_in_background": True}
     return write_ticket(scratch, mode, call, slot, role, {"task_id": task,
         **({"reflectors": req.get("reflectors", [])} if role == "evolver" else {})})
@@ -546,7 +558,7 @@ def worker_request(req, scratch, mode):
     field = "trainer_agent_id" if phase == "training" else "test_agent_id"
     agent = config[field].removeprefix("create:").strip()
     def line(key):
-        found = re.findall(r"^" + key + r":\s*(\S+)\s*$", call["prompt"], re.M)
+        found = re.findall(r"^" + key + r":\s*(\S+)\s*$", evo.native_prompt(call), re.M)
         check(len(found) == 1, "worker prompt needs one unambiguous " + key)
         return found[0]
     check(line("benchmark_id") == benchmark and line("test_agent_id") == agent, "worker identity differs from frozen protocol")
@@ -860,7 +872,7 @@ def prepare_capture(req, meta, scratch, mode):
                    if not row.get("origin") and row.get("type") == "model_msg"
                    and row.get("payload", {}).get("type") == "text"
                    and row["payload"].get("role") == "user" and row["payload"].get("sender") == "parent_agent"]
-        if not prompts or prompts[0] != ticket["call"]["prompt"]:
+        if not prompts or prompts[0] != evo.native_prompt(ticket["call"]):
             continue
         require_all_segments(session_id, segments)
         identity = segments[0][1]

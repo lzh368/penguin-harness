@@ -50,7 +50,7 @@
 import { modelVisiblePath } from "../../internal/model-visible-path.js";
 import path from "node:path";
 import { realpath } from "node:fs/promises";
-import { describeFsError, errorCode, localFsPort } from "./fs-port.js";
+import { describeFsError, errorCode, localFsPort, secretStoreName } from "./fs-port.js";
 import type { FsPort } from "./fs-port.js";
 import { imageUrlMessage, partialToolCallOutput, userText } from "../../omnimessage/index.js";
 import type { OmniMessage } from "../../omnimessage/index.js";
@@ -104,13 +104,6 @@ const NO_VISION_MODEL_MESSAGE =
   "to enable image reading.";
 
 /**
- * Secret stores the system prompt bans the model from reading; read_file refuses them by
- * basename regardless of directory. The tool needs its own guard because `permission: "r"`
- * makes it auto-approved under read-only approval (the shell tool stays rw-gated).
- */
-const SECRET_BASENAMES = new Set([".vault.toml", ".project_config.toml"]);
-
-/**
  * The secret-store name a path hits, or null. Checks the LOWERCASED basename of both the
  * lexical path and its realpath: a case-insensitive filesystem (macOS/Windows) opens
  * ".VAULT.TOML" as .vault.toml, and a symlink's own name says nothing about what it
@@ -126,11 +119,7 @@ async function secretStoreHit(resolved: string): Promise<string | null> {
     // Missing file / permission error: the lexical name is still checked below, and the
     // read path reports the real error afterwards.
   }
-  for (const name of [path.basename(resolved), path.basename(target)]) {
-    const lower = name.toLowerCase();
-    if (SECRET_BASENAMES.has(lower)) return lower;
-  }
-  return null;
+  return secretStoreName(resolved, target);
 }
 
 /** Renders one `cat -n` style line: 6-column right-aligned line number, tab, content. */

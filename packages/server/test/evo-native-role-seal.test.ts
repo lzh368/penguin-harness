@@ -1,6 +1,7 @@
 /** Real production parent/leaf/exec/trace with scripted model messages only. */
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { expect, it, vi } from "vitest";
@@ -18,11 +19,12 @@ import type { ChannelEvent } from "../src/runtime/channel.js";
 const run = promisify(execFile);
 const shellQuote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
 
-it("a native leaf seals against its in-flight original exec and parent dispatch, then audits after relocation", async () => {
+it("a native file-prompt leaf preserves its full task, seals, then audits without the original dispatch files", async () => {
   const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
   const calls = new WeakMap<object, { leaf: boolean; turns: number }>();
   let leafCommands: string[] = [];
   let dispatch: Record<string, unknown> = {};
+  let observedLeafPrompt: string | undefined;
   const model = vi
     .spyOn(GenerativeModel.prototype, "streamGenerate")
     .mockImplementation(async function* (this: GenerativeModel, params: GenerativeModelParameters) {
@@ -33,6 +35,13 @@ it("a native leaf seals against its in-flight original exec and parent dispatch,
           turns: 0,
         };
         calls.set(this, state);
+        if (state.leaf) {
+          const original = params.newMessages.find((message) => {
+            const p = message.payload as unknown as Record<string, unknown>;
+            return p.type === "text" && p.role === "user" && p.sender === "parent_agent";
+          });
+          observedLeafPrompt = (original?.payload as unknown as { text?: string })?.text;
+        }
       }
       const turn = state.turns++;
       if (!state.leaf && turn === 0) {
@@ -115,10 +124,11 @@ c=f.evo.role_contract(t,'reflector','train_001')
 Path(c['materials'][0]).write_text('SYNTHETIC role instructions.\\n'*200)
 Path(c['materials'][1]).write_bytes(Path(b.contexts[0]).read_bytes())
 candidate=b.candidates[0]; candidate['id']='train_001-attempt-1-c01'; Path(c['output']).write_bytes(f.evo.encoded([candidate]))
-prompt='native-seal-leaf-marker\\n'+json.dumps({'evo_role_seal':{**c,'parent_session_id':sys.argv[4]}},ensure_ascii=False)
-call={'prompt':prompt,'description':'SYNTHETIC native Reflector','provider':'custom','model_id':'synthetic-role-seal'}
+prompt='native-seal-leaf-marker\\r\\n'+('SYNTHETIC 刘 😀 e\\u0301 \\u2028 instruction\\r\\n'*600)+json.dumps({'evo_role_seal':{**c,'parent_session_id':sys.argv[4]}},ensure_ascii=False)
+d=private/'dispatch'; d.mkdir(); prompt_path=d/'native-reflector.prompt.txt'; prompt_path.write_bytes(prompt.encode('utf-8'))
+call={'prompt_file':str(prompt_path),'prompt_sha256':f.evo.digest(prompt_path.read_bytes()),'description':'SYNTHETIC native Reflector','provider':'custom','model_id':'synthetic-role-seal'}
 slot='reflector/train_001/attempt-1'; ticket={'session_id':sys.argv[4],'phase':'reflector','task_id':'train_001','slot':slot,'call':call}
-d=private/'dispatch'; d.mkdir(); (d/'ticket.json').write_bytes(f.evo.encoded(ticket))
+(d/'ticket.json').write_bytes(f.evo.encoded(ticket))
 canonical=json.dumps(call,ensure_ascii=False,sort_keys=True,separators=(',',':'))
 (d/(f.evo.digest(slot.encode())+'.claimed.json')).write_bytes(f.evo.encoded({'tool_call_id':'native-dispatch','request_sha256':f.evo.digest(canonical.encode())}))
 requests=[]
@@ -143,6 +153,10 @@ print(json.dumps({'helper':str(helper),'contract':c,'requests':requests,'call':c
       contract: Record<string, unknown>;
     };
     dispatch = prepared.call;
+    const promptBytes = await fs.readFile(String(dispatch.prompt_file));
+    expect(promptBytes.length).toBeGreaterThan(10000);
+    expect(JSON.stringify(dispatch).length).toBeLessThan(1000);
+    expect(dispatch).not.toHaveProperty("prompt");
     leafCommands = prepared.requests.map(
       (req) => "python3 -B " + shellQuote(prepared.helper) + " " + shellQuote(req),
     );
@@ -170,6 +184,17 @@ print(json.dumps({'helper':str(helper),'contract':c,'requests':requests,'call':c
     const leafMeta = messages.find((m) => m.type === "session_meta" && m.origin?.length);
     expect(sealed.session_id).toBe(payload(leafMeta!).session_id);
     expect(sealed.session_id).not.toBe(root.sessionId);
+    expect(observedLeafPrompt).toBe(promptBytes.toString("utf8"));
+    expect(createHash("sha256").update(observedLeafPrompt!, "utf8").digest("hex")).toBe(
+      dispatch.prompt_sha256,
+    );
+    const parentCall = messages.find(
+      (m) =>
+        !m.origin?.length &&
+        payload(m).type === "tool_call" &&
+        payload(m).tool_call_id === "native-dispatch",
+    );
+    expect(JSON.parse(String(payload(parentCall!).arguments))).toEqual(dispatch);
     // The same original receipts must survive host export relocation, including the
     // frozen training profile. Do not fabricate, rewrite or flatten native traces.
     const audited = await run("python3", [
@@ -189,15 +214,20 @@ dest=Path(sys.argv[4])/'relocated'; dest.mkdir(); mapping={}
 paths=[*req['traces'],str(parent[0]),*c['materials'],c['output'],str(Path(t['private_learning'])/'frozen-training.json')]
 for n,p in enumerate(paths):
  q=dest/str(n);shutil.copyfile(p,q);mapping[p]=str(q)
+shutil.rmtree(Path(t['private_learning'])/'dispatch')
 assert e.audit_role({**req,'path_map':mapping})['complete']
-print(json.dumps({'complete':True,'relocated':True,'native_trace_parts':len(traces)}))
+print(json.dumps({'complete':True,'relocated':True,'original_dispatch_removed':True,'native_trace_parts':len(traces)}))
 `,
       prepared.helper,
       String(sealed.session_id),
       root.sessionId,
       app.root,
     ]);
-    expect(JSON.parse(audited.stdout)).toMatchObject({ complete: true, relocated: true });
+    expect(JSON.parse(audited.stdout)).toMatchObject({
+      complete: true,
+      relocated: true,
+      original_dispatch_removed: true,
+    });
     expect(network).not.toHaveBeenCalled();
   } finally {
     await app.deps.manager.shutdown();

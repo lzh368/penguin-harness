@@ -43,6 +43,34 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def native_prompt(call):
+    """Resolve the exact native task without reconstructing it through a model.
+
+    This is a live registration/sealing check, not a dispatcher. The native
+    tool independently reads and hashes the same file before creating a child;
+    its original child trace still contains the complete task text.
+    """
+    require(isinstance(call, dict), "complete native call required")
+    if "prompt" in call:
+        require("prompt_file" not in call and "prompt_sha256" not in call,
+                "native task must use inline prompt or a hashed prompt file, never both")
+        text = call["prompt"]
+    else:
+        name, expected = call.get("prompt_file"), call.get("prompt_sha256")
+        require(isinstance(name, str) and Path(name).is_absolute(), "absolute native prompt_file required")
+        require(isinstance(expected, str) and re.fullmatch(r"[0-9a-f]{64}", expected),
+                "native prompt_file needs its exact SHA256")
+        path = regular(name)
+        require(path == path.resolve() and path.name.lower() not in (".vault.toml", ".project_config.toml"),
+                "native prompt file must be a canonical non-secret regular file")
+        with path.open("rb") as stream:
+            raw = stream.read(1024 * 1024 + 1)
+        require(len(raw) <= 1024 * 1024 and digest(raw) == expected, "native prompt file size or SHA256 changed")
+        text = raw.decode("utf-8")  # Preserve BOM, CRLF and Unicode exactly.
+    require(isinstance(text, str) and text.strip() and "\0" not in text, "complete native task text required")
+    return text
+
+
 def encoded(value):
     return (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2,
                        allow_nan=False) + "\n").encode()
@@ -951,7 +979,8 @@ def seal_role_output(req, request_path):
         if path.name.endswith(".claimed.json"):
             continue
         ticket = read(path)
-        if ticket.get("phase") == contract["role"] and ticket.get("task_id") == contract["task_id"] and ticket.get("call", {}).get("prompt") == prompts[0]:
+        if (ticket.get("phase") == contract["role"] and ticket.get("task_id") == contract["task_id"]
+                and native_prompt(ticket.get("call")) == prompts[0]):
             claim = read(path.parent / (digest(ticket["slot"].encode()) + ".claimed.json"))
             require(claim["request_sha256"] == digest(json.dumps(ticket["call"], sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()),
                     "role dispatch claim does not match its native task")
@@ -1383,7 +1412,7 @@ def verify_compilation(req):
 READER = '''---
 name: evo-harness-learned
 description: Select relevant frozen Evo-Harness procedures for the current task.
-version: 2026.10.21.9
+version: 2026.10.21.10
 ---
 
 Before business API calls or writing the task answer, use native read_file to read

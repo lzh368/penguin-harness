@@ -245,6 +245,8 @@ WSL 后端下，助手在发行版内运行，初始化时已把 `nodejs` 装进
 
 `run_subagent` 把一个能用单条 Prompt 完整描述的子任务交给子 Agent。它的两阶段流程与命令一致：前台窗口期（默认 300000ms）过后，子 Agent 转入后台并获得一个 `subagent_id`，之后由 `input_subagent` 操控。轮询等待期间，子 Agent 待审批的请求也会一并呈现。
 
+在内联 `prompt` 与 `prompt_file` 加 `prompt_sha256` 之间二选一。文件形式用于直接发送已准备好的任务，避免模型重抄：工具通过 Session 的文件系统沙箱有界读取不超过 1 MiB 的文件，核对必需的原始字节 SHA256（小写），再把完整 UTF-8 文本作为普通 `parent_agent` 消息交给子 Agent。相对路径按 Workspace 解析，路径各段不得是符号链接；应使用规范路径。URL、秘密存储文件及其别名、非普通文件、空文件或纯空白、NUL 字节、非法 UTF-8 均会在创建子 Agent 前拒绝；文件变化或哈希不匹配也不会创建子 Agent。换行、Unicode 和 UTF-8 BOM 原样保留，不经过 `read_file` 的编号或截断。已有内联调用行为不变。父工具调用 Trace 保留文件路径与哈希参数，子 Agent 原始 USER Trace 记录实际收到的完整消息；委托审计应绑定两者，不再假定父调用一定有内联 `prompt` 字段。
+
 `input_subagent` 覆盖四种操作：
 
 1. `prompt` 为空表示轮询。
@@ -272,7 +274,9 @@ Web App 的子 Agent 面板用**与主对话相同的输入框**（子 Agent 变
 ```ts
 // run_subagent
 {
-  prompt: string;          // required: the complete subtask (all context + the exact final output expected)
+  prompt?: string;         // 完整子任务，与文件形式互斥
+  prompt_file?: string;    // 本地 UTF-8 文件，<=1 MiB；必需 prompt_sha256，不同时传 prompt
+  prompt_sha256?: string;  // 原始文件字节 SHA256，64 位小写十六进制；仅与 prompt_file 使用
   agent_id?: string;       // the child Agent; defaults to the current Agent
   model_id?: string;       // the child Session's model, paired with provider; omit both to inherit the parent Session's model
   provider?: string;       // the provider group model_id belongs to; required whenever model_id is given

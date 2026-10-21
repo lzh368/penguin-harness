@@ -245,6 +245,8 @@ The branch is decided by the `VisionDescriberService` that the SDK injects into 
 
 `run_subagent` hands a subtask you can fully specify in one prompt to a child agent. It has the same two-phase shape as a command: after the foreground window (default 300000ms) the child moves to the background with a `subagent_id`, and `input_subagent` drives it from there. The child's pending approvals surface while a poll waits.
 
+Supply either inline `prompt`, or `prompt_file` together with `prompt_sha256`. The file form avoids retyping a prepared task: it reads at most 1 MiB through the Session's file-system sandbox, verifies the required lowercase SHA256 of those exact bytes, and delivers the complete UTF-8 text as the child's ordinary `parent_agent` message. Relative paths resolve against the Workspace; use a canonical path with no symlink components. URLs, secret stores (including aliases), non-regular files, empty/whitespace-only files, NUL bytes and invalid UTF-8 are rejected before a child is created. A changed file or hash mismatch also creates no child. Newlines, Unicode and a UTF-8 BOM are preserved; this is not a rendered `read_file` window. Existing inline calls keep their behavior. The parent tool-call Trace keeps the file path/hash arguments, while the child's original USER Trace records the actual complete message; callers auditing delegation must bind both records rather than expect an inline `prompt` field.
+
 `input_subagent` covers four actions:
 
 1. An empty `prompt` polls.
@@ -272,7 +274,9 @@ A message is a user input to the child, whatever its state: steering while it ru
 ```ts
 // run_subagent
 {
-  prompt: string;          // required: the complete subtask (all context + the exact final output expected)
+  prompt?: string;         // the complete subtask; mutually exclusive with the file form
+  prompt_file?: string;    // local UTF-8 file, <=1 MiB; requires prompt_sha256, no inline prompt
+  prompt_sha256?: string;  // exact file-byte SHA256, 64 lowercase hex; only with prompt_file
   agent_id?: string;       // the child Agent; defaults to the current Agent
   model_id?: string;       // the child Session's model, paired with provider; omit both to inherit the parent Session's model
   provider?: string;       // the provider group model_id belongs to; required whenever model_id is given

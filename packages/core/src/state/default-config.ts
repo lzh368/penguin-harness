@@ -815,7 +815,17 @@ function defaultBuiltinTools(): ToolDefinitionConfig[] {
           prompt: {
             type: "string",
             description:
-              "The complete task for the subagent: include all context it needs and the exact final output you expect back.",
+              "The complete task for the subagent: include all context it needs and the exact final output you expect back. Supply either prompt or prompt_file with prompt_sha256, never both.",
+          },
+          prompt_file: {
+            type: "string",
+            description:
+              "Alternative to prompt: a canonical local UTF-8 file containing the complete task, at most 1 MiB. Relative paths resolve against the workspace. No symlinks or secret stores; prompt_sha256 is required. The exact file text becomes the child's parent_agent message.",
+          },
+          prompt_sha256: {
+            type: "string",
+            description:
+              "Required with prompt_file only: SHA256 of the exact file bytes, as 64 lowercase hexadecimal characters. A mismatch fails before creating a child.",
           },
           agent_id: {
             type: "string",
@@ -849,7 +859,7 @@ function defaultBuiltinTools(): ToolDefinitionConfig[] {
               "Start the subagent in the background: return a subagent_id immediately without waiting. When it finishes, its answer arrives as an automatic user message — no polling needed. Good for dispatching parallel subtasks; message or steer it mid-run (and abort its current run) via input_subagent. Defaults to false.",
           },
         },
-        required: ["description", "prompt"],
+        required: ["description"],
       },
       permission: "rw",
       call_description: true,

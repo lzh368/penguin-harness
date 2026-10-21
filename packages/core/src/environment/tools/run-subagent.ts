@@ -44,6 +44,7 @@ import {
 import { collectWindow } from "./subagent/collect.js";
 import { clampYield, collectUntil, reportLabel, tailForReport } from "./background/index.js";
 import { describeArgumentError } from "./tool-arguments.js";
+import { readSubagentPromptFile } from "./subagent-prompt.js";
 
 /** Tool name constant (used only within this tool module, never exposed to Environment). */
 export const SUBAGENT_NAME = "run_subagent";
@@ -84,7 +85,44 @@ export function createSubagentTool(
         yield* fail("[run_subagent unavailable: no subagent session manager available]");
         return { stopReason: "fatal" };
       }
-      const prompt = typeof args.prompt === "string" ? args.prompt : "";
+      const fromFile = Object.hasOwn(args, "prompt_file");
+      if (
+        (fromFile && Object.hasOwn(args, "prompt")) ||
+        (!fromFile && Object.hasOwn(args, "prompt_sha256"))
+      ) {
+        yield* fail(
+          "[run_subagent error: use either prompt or prompt_file with prompt_sha256, never both]",
+        );
+        return { stopReason: "fatal" };
+      }
+      let prompt = typeof args.prompt === "string" ? args.prompt : "";
+      if (fromFile) {
+        if (
+          typeof args.prompt_file !== "string" ||
+          !args.prompt_file ||
+          typeof args.prompt_sha256 !== "string" ||
+          !/^[0-9a-f]{64}$/.test(args.prompt_sha256)
+        ) {
+          yield* fail(
+            "[run_subagent error: prompt_file requires a local path and prompt_sha256 with 64 lowercase hexadecimal characters]",
+          );
+          return { stopReason: "fatal" };
+        }
+        if (signal?.aborted) return { stopReason: "aborted" };
+        try {
+          prompt = await readSubagentPromptFile(args.prompt_file, args.prompt_sha256, ctx);
+        } catch (err) {
+          if (signal?.aborted) return { stopReason: "aborted" };
+          // Errors contain no file bytes; avoid returning raw filesystem errors
+          // from a sandbox/helper or embedding any credential in diagnostics.
+          const detail =
+            err instanceof Error && err.message.startsWith("prompt_file ")
+              ? err.message
+              : "prompt_file is unreadable or is not valid UTF-8 text";
+          yield* fail(`[run_subagent error: ${detail}]`);
+          return { stopReason: "fatal" };
+        }
+      }
       if (prompt.trim().length === 0) {
         yield* fail(
           describeArgumentError(definition, args, { argument: "prompt", kind: "missing" }),

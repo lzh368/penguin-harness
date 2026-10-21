@@ -52,7 +52,7 @@ permission: all native calls still pass the existing pre-tool checks.
 |---|---|---|
 | configure-controller | config: absolute frozen authorized experiment JSON | Returns mode with fixed config/protocol hashes and freeze/completion request paths. Main Session calls this before registering any worker. |
 | worker-request | phase: training/h0/final, call: complete native run_subagent arguments | Validates runtime, Benchmark, Target, case, run and prerequisites; returns exact call and ticket. Main Penguin invokes that call itself. |
-| role-request | role: solver/reflector/evolver; task_id for solver/reflector; reflectors: all completed audit-role requests for Evolver, in negative-task order | Training root receives complete fixed role prompt and exact native call. It invokes the returned call unchanged. |
+| role-request | role: solver/reflector/evolver; task_id for solver/reflector; reflectors: all completed audit-role requests for Evolver, in negative-task order | Writes the complete fixed role prompt once; returns a short native call with prompt_file and prompt_sha256. The root invokes that call unchanged. Native run_subagent reads and hashes the file before creating the child. |
 | format-request | subagent_id: the original completed evaluation worker handle | Controller only: returns one fixed formatting-only input_subagent call for the same worker's existing result. No tools, rerun or new scores are permitted. |
 | status | none | Mode, clock/compilation reserve, original native trace paths and call count; no dispatch. Use prepare-capture for Solver capture metadata; inspect actual child metadata using read-material for role audits. |
 | prepare-capture | task_id | Training root only, after the original Solver's native completed notification. Derives the exact ordered grant, registered child binding, all trace segments and canonical paths; validates evidence in a disposable private directory, then writes requests/capture-<task>-<attempt>.prepared.json once. Returns prepared=true/captured=false and short path/hash/command. Execute the command unchanged, unless context_exists/context_verified=true and command=null: then reuse the already captured context. |
@@ -60,8 +60,12 @@ permission: all native calls still pass the existing pre-tool checks.
 | verify-training | none | Revalidates the sealed group against its real private/requests/seal-training.json and training-export.json. |
 | verify-completion | none | Host verifies freeze and complete matrices; final host-request cost remains pending. |
 
-Use the returned call object verbatim, including prompt, provider, model_id,
-thinking_level and run_in_background=true. Guarded evaluation workers must run
+Use the returned call object verbatim, including prompt_file, prompt_sha256, provider, model_id,
+thinking_level and run_in_background=true for prepared learning roles. Do not
+read and retype the prompt file or replace it with an inline prompt: the native
+tool supplies its complete, hash-checked text as the child's original task.
+Ordinary evaluation worker requests may keep the shared inline prompt.
+Guarded evaluation workers must run
 in native background mode so their terminal status arrives as a harness
 notification, including for formatting-only recovery. Do not supply agent_id: the native worker
 inherits this Agent's installed method. Workspace and permission are inherited,

@@ -109,11 +109,11 @@ class ControlTests(unittest.TestCase):
         prepared = self.request(op="role-request", role="solver", task_id="train_001")
         call = prepared["call"]
         self.assertFalse(prepared["dispatched"])
-        self.assertIn('"task_id": "train_001"', call["prompt"])
-        self.assertIn('"op": "prepare-judge-request"', call["prompt"])
-        self.assertIn("makes zero judge calls", call["prompt"])
-        self.assertIn("read-material", call["prompt"])
-        self.assertIn(str(self.private / "roles/solver.md"), call["prompt"])
+        self.assertIn('"task_id": "train_001"', control.evo.native_prompt(call))
+        self.assertIn('"op": "prepare-judge-request"', control.evo.native_prompt(call))
+        self.assertIn("makes zero judge calls", control.evo.native_prompt(call))
+        self.assertIn("read-material", control.evo.native_prompt(call))
+        self.assertIn(str(self.private / "roles/solver.md"), control.evo.native_prompt(call))
         self.assertEqual(self.tool("run_subagent", call)["decision"], "deny")
         common = {"journal": prepared["journal"], "config_sha256": self.profile["config_sha256"]}
         control.evo.journal({**common, "action": "init", "controller_session_id": self.meta["session_id"], "budget_usd": 1})
@@ -122,13 +122,54 @@ class ControlTests(unittest.TestCase):
         control.evo.journal({**reserve, **{k: prepared[k] for k in ("operation_id", "slot", "request_sha256")}})
         self.assertEqual(self.tool("run_subagent", call), {})
         self.assertEqual(self.tool("run_subagent", call, "call-2")["decision"], "deny")
-        altered = {**call, "prompt": call["prompt"] + "Try again"}
+        altered = {**call, "prompt": control.evo.native_prompt(call) + "Try again"}
         self.assertEqual(self.tool("run_subagent", altered)["decision"], "deny")
 
     def test_next_solver_and_evolver_require_real_prior_contexts(self):
         for fields in ({"role": "solver", "task_id": "train_002"}, {"role": "evolver"}):
             with self.assertRaises((OSError, ValueError)):
                 self.request(op="role-request", **fields)
+
+    def test_long_role_task_is_immutable_file_not_model_recopied_text(self):
+        # Reproduce the real 10K+ role request and its five-character copy loss,
+        # using only synthetic instructions. No dispatcher or model is mocked
+        # into succeeding here: preparation itself makes no native call.
+        long_role = "SYNTHETIC role\r\n" + ("Unicode 刘 😀 word\n" * 1000)
+        with patch.object(control, "role_text", return_value=long_role):
+            prepared = self.request(op="role-request", role="solver", task_id="train_001")
+            again = self.request(op="role-request", role="solver", task_id="train_001")
+        call = prepared["call"]
+        self.assertEqual(prepared, again)
+        self.assertNotIn("prompt", call)
+        self.assertLess(len(control.canonical(prepared)), 2000)
+        text = control.evo.native_prompt(call)
+        self.assertIn(long_role, text)
+        raw = Path(call["prompt_file"]).read_bytes()
+        self.assertEqual(raw.decode("utf-8"), text)
+        self.assertEqual(control.evo.digest(raw), call["prompt_sha256"])
+        # The previous manual-copy failure no longer appears in the native
+        # arguments. A real file mutation must still fail closed.
+        Path(call["prompt_file"]).write_bytes(raw.replace(b" word", b"", 1))
+        with self.assertRaisesRegex(ValueError, "SHA256 changed"):
+            control.evo.native_prompt(call)
+        with patch.object(control, "role_text", return_value=long_role):
+            with self.assertRaisesRegex(ValueError, "role prompt changed"):
+                self.request(op="role-request", role="solver", task_id="train_001")
+
+    def test_prompt_transport_rejects_mixed_hashless_and_noncanonical_files(self):
+        prepared = self.request(op="role-request", role="solver", task_id="train_001")
+        call = prepared["call"]
+        variants = [{**call, "prompt": "do something else"},
+                    {k: v for k, v in call.items() if k != "prompt_sha256"},
+                    {**call, "prompt_sha256": "0" * 64}]
+        link = self.private / "linked-prompt.txt"
+        link.symlink_to(call["prompt_file"])
+        variants.append({**call, "prompt_file": str(link)})
+        for altered in variants:
+            with self.subTest(fields=sorted(altered)):
+                with self.assertRaises(ValueError):
+                    control.evo.native_prompt(altered)
+        self.assertEqual(control.evo.native_prompt({"prompt": "original inline task"}), "original inline task")
 
     def test_invalid_training_cannot_complete_or_become_empty_reuse(self):
         self.write(self.scratch / "GOAL.json", {"status": "complete", "ended": False})
@@ -184,7 +225,7 @@ class ControlTests(unittest.TestCase):
             {"type": "event_msg", "payload": {"type": "subagent", "session_id": session}},
             {"type": "model_msg", "payload": {"type": "tool_call_output", "tool_call_id": "launch-solver", "output": f"[subagent running in background with subagent_id {handle}; completion will arrive]"}}])
         binding = {**self.meta, "session_id": session, "source": "subagent", "parent_trace": str(self.trace)}
-        grants = [value["evo_task"] for value in evo.json_values(prepared["call"]["prompt"])
+        grants = [value["evo_task"] for value in evo.json_values(control.evo.native_prompt(prepared["call"]))
                   if isinstance(value, dict) and "evo_task" in value]
         self.assertEqual(len(grants), 1)
         helper = self.skill / "scripts/evo.py"
@@ -216,7 +257,7 @@ class ControlTests(unittest.TestCase):
         first = self.trace.parent / (session + "_001.jsonl")
         second = self.trace.parent / (session + "_002.jsonl")
         self.append_trace(first, [{"type": "session_meta", "payload": binding},
-            {"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "parent_agent", "text": prepared["call"]["prompt"]}}]
+            {"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "parent_agent", "text": control.evo.native_prompt(prepared["call"])}}]
             + reads(grants[0]["inputs"]))
         self.append_trace(second, [{"type": "session_meta", "payload": binding}]
             + pair(evo.judge_stdout(feedback), generated["command"]) + reads([paths["output"]]))
@@ -481,11 +522,16 @@ class ControlTests(unittest.TestCase):
             for row in rows:
                 handle.write(json.dumps(row) + "\n")
 
-    def format_fixture(self, completed=True):
+    def format_fixture(self, completed=True, from_file=False):
         mode = {"mode": "controller", "session_id": self.meta["session_id"], "config": "synthetic-unused",
                 "completion_request": str(self.scratch / "evo-guard/completion-request.json")}
         self.write(self.scratch / control.MARKER, mode)
         call = {"description": "SYNTHETIC evaluator", "prompt": "Read the unchanged shared evaluation.md", **self.runtime, "run_in_background": True}
+        if from_file:
+            raw = call.pop("prompt").encode("utf-8")
+            task = self.scratch / "evo-guard/worker-prompt.txt"
+            control.evo.write_once(task, raw)
+            call.update(prompt_file=str(task), prompt_sha256=control.evo.digest(raw))
         ticket = control.write_ticket(self.scratch, mode, call, "h0/CASE-001-synthetic/1", "h0")
         dispatch = Path(ticket["ticket"]).parent
         self.write(dispatch / (control.evo.digest(ticket["slot"].encode()) + ".claimed.json"), {"tool_call_id": "launch-worker"})
@@ -501,7 +547,7 @@ class ControlTests(unittest.TestCase):
         self.append_trace(self.trace, rows)
         child = self.trace.parent / "session-fixture-12345678_001.jsonl"
         child.write_text(json.dumps({"type": "session_meta", "payload": {**self.meta, "session_id": "session-fixture-12345678", "source": "subagent"}}) + "\n")
-        self.append_trace(child, [{"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "parent_agent", "text": call["prompt"]}}])
+        self.append_trace(child, [{"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "parent_agent", "text": control.evo.native_prompt(call)}}])
         return mode, child
 
     def test_format_repair_uses_same_completed_native_evaluator_and_never_dispatches_itself(self):
@@ -533,6 +579,20 @@ class ControlTests(unittest.TestCase):
             self.request(op="format-request", subagent_id="subagent-12345678")
         self.assertEqual(self.tool("input_subagent", {"subagent_id": "subagent-12345678", "prompt": control.FORMAT_PROMPT})["decision"], "deny")
 
+    def test_file_dispatched_worker_can_resend_existing_yaml_without_new_tools(self):
+        mode, child = self.format_fixture(from_file=True)
+        before = self.trace.read_bytes()
+        request = self.request(op="format-request", subagent_id="subagent-12345678")
+        self.assertEqual(self.trace.read_bytes(), before)
+        self.assertFalse(request["automatic_dispatch"])
+        self.assertEqual(self.tool("input_subagent", request["call"]), {})
+        self.append_trace(child, [
+            {"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "parent_agent", "text": control.FORMAT_PROMPT}},
+            {"type": "model_msg", "payload": {"type": "text", "role": "assistant", "text": "protocol_version: 1\nstatus: ok"}},
+        ])
+        control.verify_format_repairs(mode)
+        self.assertEqual(self.tool("input_subagent", request["call"], "duplicate-format")["decision"], "deny")
+
     def test_candidate_namespaces_and_limits_reach_fresh_role_prompts(self):
         # The binding validator has its own full trace tests; this checks the material
         # each freshly spawned role actually receives, including non-default budgets.
@@ -540,13 +600,13 @@ class ControlTests(unittest.TestCase):
                      "feedback": {"source": "penguin-evaluation"}} for task in self.profile["train_ids"]]
         with patch.object(control, "completed_context", side_effect=lambda t, task, parent: next(c for c in contexts if c["task_id"] == task)):
             contexts[0]["negative"] = True
-            reflector = self.request(op="role-request", role="reflector", task_id="train_001")["call"]["prompt"]
+            reflector = control.evo.native_prompt(self.request(op="role-request", role="reflector", task_id="train_001")["call"])
             self.assertIn("train_001-attempt-1-c01", reflector)
             self.assertIn('"op": "validate-candidates"', reflector)
             with self.assertRaisesRegex(ValueError, "completed Reflector audit"):
                 self.request(op="role-request", role="evolver")
             contexts[0]["negative"] = False
-            evolver = self.request(op="role-request", role="evolver")["call"]["prompt"]
+            evolver = control.evo.native_prompt(self.request(op="role-request", role="evolver")["call"])
             self.assertIn('"limits": {"general": 5, "topic": 5}', evolver)
             self.assertIn('"max_bytes": 16000', evolver)
             self.assertIn('"op": "validate-decisions"', evolver)
@@ -598,7 +658,7 @@ class ControlTests(unittest.TestCase):
             self.write(request_path, request)
             active = pair("exec_command", {}, {"cmd": f"python3 -B {helper} {request_path}"})
             self.append_trace(trace, [{"type": "session_meta", "payload": binding},
-                {"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "parent_agent", "text": prepared["call"]["prompt"]}}]
+                {"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "parent_agent", "text": control.evo.native_prompt(prepared["call"])}}]
                 + reads(materials) + [active[0]])
             with patch.object(evo, "__file__", str(helper)), patch.dict(os.environ, PENGUIN_SESSION_ID=binding["session_id"]):
                 sealed = evo.execute(request, str(request_path))
@@ -622,7 +682,7 @@ class ControlTests(unittest.TestCase):
                     feedback = evo.judge(request)
             inputs = [str(self.workspace / "train_tasks" / task / "instruction.md"), str(self.workspace / "environment_access.md")]
             rows = [{"type": "session_meta", "payload": binding},
-                    {"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "parent_agent", "text": prepared["call"]["prompt"]}}]
+                    {"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "parent_agent", "text": control.evo.native_prompt(prepared["call"])}}]
             rows += reads(inputs)
             rows += pair("exec_command", evo.judge_stdout(feedback), {"cmd": generated["command"]})
             rows += reads([paths["output"]])
@@ -660,7 +720,7 @@ class ControlTests(unittest.TestCase):
                 roles.append(audit)
         evolver = self.request(op="role-request", role="evolver", reflectors=roles)
         evolved_binding = delegate(evolver, "fixture-evolver-batch-1")
-        self.assertIn('"max_bytes": 16000', evolver["call"]["prompt"])
+        self.assertIn('"max_bytes": 16000', control.evo.native_prompt(evolver["call"]))
         candidates = self.private / "candidates.json"
         decisions = self.private / "decisions.json"
         ids = [candidate["id"] for candidate in evo.read(candidates)]
