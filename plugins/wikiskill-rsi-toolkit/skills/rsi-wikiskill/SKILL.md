@@ -1,7 +1,7 @@
 ---
 name: rsi-wikiskill
 description: Run or resume WikiSkill experiments in Penguin. Compile training traces into a persistent Wiki, propose one skill change per batch, and accept changes only when independent validation improves. Use for skill-based RSI with isolated evaluation, including GDPevo and externally specified Terminal-Bench tasks through Harbor.
-version: 2026.10.21.4
+version: 2026.10.21.5
 ---
 
 # WikiSkill 自进化
@@ -44,6 +44,7 @@ Wiki Maintainer、Skill Proposer、Evaluator、Companion Auditor 都由顶层 Co
 - train / validation / test 的 benchmark ID、case ID 列表和内容指纹；划分按原始题目身份去重，不能仅靠换 ID。通用探索可暂不指定 test，此时只称验证实验；具体 benchmark 方案可以提出更严格的要求。记录本实验共享 Wiki/Skill 的学习单元；若按领域分别学习，每个单元另用独立方案和 OUT，不暗中共享记忆。
 - 用户选择的 Target `provider`、`model_id`、thinking level，以及优化/评测角色的实际模型配置；角色可以按实验设计分别配置，调度时显式绑定，不能只在提示词里声明。记录非敏感端点或路由设置以便复现，不保存 API Key。一次实验中的 H0、候选和最终比较保持同一配置；切换渠道建立新实验，并在报告中区分条件。使用实验预先声明的评分器与聚合规则，不能为提高分数更换评分方式。
 - `max_iterations`、每题 `runs_per_case`、并发数和停止预算。用户未指定时，初步探索可采用 **2 轮、每题 1 次、串行**，注明这是初步探索配置。预估 Target 次数为 `Nval*R + K*(Ntrain+Nval)*R`，最终测试另计；预算不允许完整一轮时不启动它。
+- stage 前修订额度及安全入口也在开始前记录。新实验未另行指定时，已成功提交的提案最多修订一次；格式拒绝且未提交成功不算新版本，但仍受调用/费用预算约束。额度按提案版本替换计，格式修改不豁免，不增加 K 或试分；旧实验沿用其冻结规定。
 - `final_test_policy: reuse_unchanged`（新实验默认）或 `repeat`（事先计划的同状态波动测量）。开始学习前冻结；已有实验沿用原协议。具体工具、条件与报告口径见 [final-test.md](references/final-test.md)。
 - 测试复测另记 `repetition_mode: fixed_skill_test_repeats`、`test_repeats: 3`（可按用户方案调整）、重复ID、`std_ddof: 1`、每次测试预算及是否获准自动启动。它独立于学习轮数 K 和现有 campaign 的独立学习 replicas；冻结最终 Skill 和测试条件后、首次 test 前确定，测试结果不得反馈修改 Skill 或挑选重复次数。
 - `train_feedback_mode: score_only`（默认）或 `with_labels`；后者只用用户明确提供的训练标签出口，不读取私有 rubric 来造标签。
@@ -89,13 +90,13 @@ Harbor 接口用 [training-views.md](references/training-views.md) 的 `train_vi
 
 正文建议按“适用条件 → 所需信息 → 执行方法 → 结果用途 → 分支与边界”写；查询、计算、格式处理均可，但必须具体说明怎么解决问题。参数与规则来自当前任务，边界写在 Target 实际收到的正文，不只留在 PURPOSE。
 
-PURPOSE 引用训练证据，沿一个真实场景推演输入、规则、动作、中间结果及交付，再核对另一场景的边界和原有正确步骤。按学习指南区分结构自洽与业务依据，不把未知关系或猜测固定成规则。推演不重做题、不调用 judge；操作依据成立、效果未知可交 validation，缺前提先补正。后续轮次检查旧技能在本轮 train 是否触发、遵循及仍有缺口，不凭 validation 汇总猜业务原因。
+PURPOSE 对会改变结果的关键规则分别说明依据和条件，再沿一个真实场景推演输入、动作、中间结果及交付，并核对另一个边界场景。按学习指南复核 Wiki，历史答案仍是预测，一个例子不证明所有分支成立。推演不重做题、不调用 judge；操作依据成立、效果未知可交 validation，缺前提先补正。后续轮次检查旧技能在本轮 train 是否触发、遵循及仍有缺口，不凭 validation 汇总猜业务原因。
 
 `no_action`：无有据改动时记录理由，保留 Wiki/技能，消耗一轮并跳过重复 validation；这是工程约定。格式错误可在同一角色会话修正，不透露 validation 私有细节；仍不合法时停止，不伪装成算法拒绝。提案格式及完整准则见 [roles.md](references/roles.md) 和 [learning.md](references/learning.md)。
 
 ### 4. 构造并审计候选
 
-先让伴生审计检查提案证据、单技能范围、通用性与数据访问；问题由 Proposer 根据训练证据修正。再用 `state.py stage` 在候选副本上应用 proposal，核对真实 diff；精确补丁锚点不存在或重复、实际 SKILL 内容未变均失败。审计不创造新技能、不读评测答案；stage 后发现问题时保留 pending 并按状态文档停止处理，不手工覆盖候选。
+先让伴生审计检查提案证据、单技能范围、通用性与数据访问，核对正文每条改变结果的关键规则，不只核对一个成功推演。按 [learning.md](references/learning.md) 修订：恢复原角色会话，Wiki 错误交 Maintainer、候选交 Proposer，遵守冻结额度并复核全部关键发现。再用 `state.py stage` 在候选副本上应用 proposal，核对真实 diff；精确补丁锚点不存在或重复、实际 SKILL 内容未变均失败。审计不创造新技能、不读评测答案；stage 后发现问题时保留 pending 并按状态文档停止处理，不手工覆盖候选。
 
 审计区分“操作依据未核实”和“操作有依据、收益待验证”：前者 `unverified`，明显矛盾或强加无依据规则时 `fail`，不能降为 warning 放行；后者允许 `pass` 并记录效果未知。修正发生在 stage 前，不做额外试分。实际工具为只写一次的提案文件时，不覆盖已提交内容；保留修订及审计版本，适配器不支持安全修订则停止并报告。
 
