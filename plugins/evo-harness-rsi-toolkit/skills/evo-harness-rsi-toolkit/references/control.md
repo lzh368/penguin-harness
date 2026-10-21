@@ -29,6 +29,25 @@ helpers. It does not solve a task, call business/judge HTTP, write answers,
 edit State or author role output. Native role leaves perform those actions
 within their assigned scope. Neither wrapper nor Python helper owns a loop.
 
+Ending a turn while native background work is pending is an await boundary,
+not final experiment completion. The native stop hook receives a read-only
+snapshot of this Session's running children/commands and queued completion
+notices. Evo returns wait only at a normal, non-aborted boundary with real
+pending work; core rechecks that state and ends the current run before the Goal
+stop hook. It writes neither GOAL.json nor evo-acceptance.json. The existing
+native completion notification resumes the coordinator; no polling loop or
+external stage dispatcher is introduced. A queued failed/stopped notice waits
+only until its delivery so the coordinator can record the actual failure.
+
+After pending work has been delivered, final evidence validation is unchanged:
+missing training/export/freeze/test evidence cannot become successful completion.
+Already terminal Goals and abort/cutoff events never become waiting. This
+experiment uses an unbounded native Goal token budget and a separately supervised
+dollar budget. A positive native Goal token budget retains its existing Goal
+accounting/continuation behavior instead of using Evo's no-spin wait; this helper
+does not change the generic Goal budget protocol. Waiting also grants no tool
+permission: all native calls still pass the existing pre-tool checks.
+
 | op | Additional fields | Result and caller action |
 |---|---|---|
 | configure-controller | config: absolute frozen authorized experiment JSON | Returns mode with fixed config/protocol hashes and freeze/completion request paths. Main Session calls this before registering any worker. |

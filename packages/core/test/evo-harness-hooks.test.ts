@@ -106,9 +106,15 @@ async function enableHooks(enabled: boolean) {
 describe("Evo native hook installation and execution", () => {
   it("installs all three points, the guard bytes, and the method with the real installer", async () => {
     const [hook] = await listInstalledHooks(root, ...ids);
+    const manifest = JSON.parse(
+      await fs.readFile(
+        path.resolve(import.meta.dirname, `../../../plugins/${NAME}/package.json`),
+        "utf8",
+      ),
+    );
     expect(hook).toMatchObject({
       name: NAME,
-      version: "2026.10.21.3",
+      version: manifest.penguin.hooks.version,
       user_prompt: [{ command: "guard.mjs", timeout: 30, trigger: "prompt" }],
       pre_tool_use: [{ command: "guard.mjs", timeout: 30 }],
       stop: [{ command: "guard.mjs", timeout: 30 }],
@@ -463,5 +469,65 @@ describe("the actual installed Evo control.py behind native hooks", () => {
         await fs.readFile(path.join(scratch(current.sessionId), "evo-acceptance.json"), "utf8"),
       ),
     ).toMatchObject({ complete: false, status: "method_failed" });
+  });
+
+  it("waits through the installed guard and actual control before Goal, then strictly validates after native work settles", async () => {
+    await installPlugin(root, ...ids, libraryPlugin("goal")!);
+    const current = await session({ source: "cli" });
+    const tracePath = await trace("cli", current.sessionId);
+    await current.runUserPromptHook("goal", "synthetic background preparation", { budget: -1 });
+    const goalFile = path.join(scratch(current.sessionId), "GOAL.json");
+    const acceptanceFile = path.join(scratch(current.sessionId), "evo-acceptance.json");
+    await fs.writeFile(
+      path.join(scratch(current.sessionId), "EVO_CONTROL.json"),
+      JSON.stringify({
+        schema: 2,
+        mode: "controller",
+        configured: false,
+        session_id: current.sessionId,
+      }),
+    );
+    const before = await fs.readFile(goalFile, "utf8");
+    const lifecycle = {
+      schema: 1 as const,
+      subagents: [],
+      commands: [{ process_id: "proc-synthetic-owned", running: true }],
+      notices: [],
+      cutoff: false,
+      aborted: false,
+    };
+    const outcome = await runStopHooks(nativeHooks(current).stopHooks, {
+      sessionId: current.sessionId,
+      tracePath,
+      lifecycle,
+    });
+    expect(outcome.next).toBeNull();
+    expect(outcome.events).toHaveLength(1);
+    expect(outcome.events[0]?.payload).toMatchObject({
+      type: "hook",
+      name: NAME,
+      decision: "wait",
+      output: { awaiting_background: true, running_commands: 1 },
+    });
+    expect(await fs.readFile(goalFile, "utf8")).toBe(before);
+    await expect(fs.stat(acceptanceFile)).rejects.toMatchObject({ code: "ENOENT" });
+
+    // The native completion notice has now been consumed. No complete evidence
+    // was produced by this fixture: ending here must retain the original failure
+    // gate, not treat an earlier wait as acceptance.
+    const ended = await runStopHooks(nativeHooks(current).stopHooks, {
+      sessionId: current.sessionId,
+      tracePath,
+      lifecycle: { ...lifecycle, commands: [] },
+    });
+    expect(ended.next).toBeNull();
+    expect(JSON.parse(await fs.readFile(goalFile, "utf8"))).toMatchObject({
+      status: "blocked",
+      ended: true,
+    });
+    expect(JSON.parse(await fs.readFile(acceptanceFile, "utf8"))).toMatchObject({
+      complete: false,
+      status: "method_failed",
+    });
   });
 });

@@ -117,7 +117,7 @@ function validateResult(result, hook) {
       Object.keys(result).some((k) => !allowed.has(k)) ||
       (result.reason !== undefined && typeof result.reason !== "string") ||
       (result.decision !== undefined &&
-        !(hook === "stop" ? ["stop"] : ["allow", "deny"]).includes(result.decision)) ||
+        !(hook === "stop" ? ["stop", "wait"] : ["allow", "deny"]).includes(result.decision)) ||
       (result.output !== undefined &&
         (!object(result.output) ||
           Object.values(result.output).some(

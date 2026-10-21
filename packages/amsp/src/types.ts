@@ -32,7 +32,7 @@ export type Sender = "user" | "parent_agent" | "harness" | "server";
 export type CompactionReason = "context" | "turns" | "manual";
 export type CompactionMode = "summarize" | "discard";
 export type HookPoint = "stop" | "pre_tool_use" | "user_prompt";
-export type HookDecision = "continue" | "stop" | "allow" | "deny";
+export type HookDecision = "continue" | "stop" | "wait" | "allow" | "deny";
 export type SessionStatus = "idle" | "running" | "compacting";
 
 export interface TokenCounts {

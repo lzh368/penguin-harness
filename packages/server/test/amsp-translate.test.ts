@@ -41,6 +41,7 @@ import {
   assistantText,
   compactionBegin,
   compactionEnd,
+  hookEvent,
   partialText,
   partialThinking,
   partialToolCall,
@@ -97,6 +98,23 @@ const runDone = (events: AmspEvent[]) => {
 };
 
 describe("AMSP translator", () => {
+  it("preserves a native background wait hook without treating it as an experiment verdict", () => {
+    const { message } = startRun();
+    expect(
+      message(
+        hookEvent({ hook: "stop", name: "method", decision: "wait", output: { pending: true } }),
+      ),
+    ).toMatchObject([
+      {
+        type: "hook.fired",
+        hook: "stop",
+        name: "method",
+        decision: "wait",
+        output: { pending: true },
+      },
+    ]);
+  });
+
   it("a streamed assistant text reaches the caller as text.delta fragments and one text.done whose text equals the fragments joined", () => {
     const events = startRun().play([
       requestBegin(),

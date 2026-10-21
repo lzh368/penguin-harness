@@ -1024,6 +1024,69 @@ def block_goal(scratch, reason):
     evo.atomic(scratch / "evo-acceptance.json", evo.encoded({"complete": False, "status": "method_failed", "reason": reason}))
 
 
+def pending_stop(payload, meta, scratch, mode):
+    """Defer a normal Task boundary using only the native Session's live state.
+
+    Core owns and rechecks this snapshot. Waiting authorizes no new tool call and
+    proves no completion; existing pre-tool and final evidence checks stay intact.
+    Do not reconstruct liveness from traces, worker words or missing artifacts.
+    """
+    lifecycle = payload.get("lifecycle")
+    if lifecycle is None:
+        return None  # older native callers retain the terminal contract
+    check(isinstance(lifecycle, dict) and set(lifecycle) == {
+        "schema", "subagents", "commands", "notices", "cutoff", "aborted"}
+        and type(lifecycle["schema"]) is int and lifecycle["schema"] == 1,
+        "invalid native stop lifecycle")
+    check(all(type(lifecycle[key]) is bool for key in ("cutoff", "aborted")), "invalid native stop cutoff")
+    if lifecycle["cutoff"] or lifecycle["aborted"]:
+        return None
+    check(all(isinstance(lifecycle[key], list) for key in ("subagents", "commands", "notices")),
+          "invalid native pending work lists")
+    for child in lifecycle["subagents"]:
+        check(isinstance(child, dict) and set(child) == {"session_id", "subagent_id", "running"}
+              and isinstance(child["session_id"], str) and child["session_id"]
+              and (child["subagent_id"] is None or isinstance(child["subagent_id"], str) and child["subagent_id"])
+              and type(child["running"]) is bool, "invalid native child lifecycle")
+    for command in lifecycle["commands"]:
+        check(isinstance(command, dict) and set(command) == {"process_id", "running"}
+              and isinstance(command["process_id"], str) and command["process_id"]
+              and type(command["running"]) is bool, "invalid native command lifecycle")
+    for notice in lifecycle["notices"]:
+        check(isinstance(notice, dict) and set(notice) == {"kind", "id", "status"}
+              and notice["kind"] in ("command", "subagent")
+              and isinstance(notice["id"], str) and notice["id"]
+              and notice["status"] in ("completed", "failed", "stopped"), "invalid native completion notice")
+    running_children = sum(child["running"] and child["subagent_id"] is not None for child in lifecycle["subagents"])
+    running_commands = sum(command["running"] for command in lifecycle["commands"])
+    if not (running_children or running_commands or lifecycle["notices"]):
+        return None
+    if mode["mode"] == "training":
+        path, profile = training_profile(meta["agent_state"])
+        check(str(path) == mode["training_path"] and sha(path) == mode["training_sha256"]
+              and profile["private_learning"] == mode["private_learning"], "frozen training changed while awaiting work")
+    elif "config" in mode:
+        check(sha(mode["config"]) == mode["config_sha256"], "frozen experiment config changed while awaiting work")
+    goal_path = scratch / "GOAL.json"
+    if goal_path.exists():
+        goal = evo.read(evo.regular(goal_path))
+        if goal.get("ended") or goal.get("status") not in ("active", "wrapping_up"):
+            return None
+        budget = goal.get("budget", -1)
+        check(type(budget) in (int, float), "invalid native Goal budget")
+        if budget > 0:
+            # Let the existing Goal hook account/limit its token budget. This
+            # revision's no-spin waiting scope is the independently supervised
+            # dollar-budget experiment; no generic Goal accounting is changed.
+            return {"reason": "Native Goal token-budget flow retained; Evo background waiting is not supported for a positive Goal token budget",
+                    "output": {"awaiting_background": True, "native_goal_budget_flow": True}}
+        if goal.get("status") != "active":
+            return None
+    return {"decision": "wait", "reason": "Awaiting this Session's native background work; its completion notices resume the coordinator",
+            "output": {"awaiting_background": True, "running_workers": running_children,
+                       "running_commands": running_commands, "queued_notices": len(lifecycle["notices"])}}
+
+
 def hook(payload, state):
     event = payload["hook"]
     if not payload.get("trace_path"):
@@ -1080,6 +1143,9 @@ def hook(payload, state):
                 check(not host_executes_experiment(command), "host must delegate execution through registered native workers")
             return {}
         if event == "stop":
+            waiting = pending_stop(payload, meta, scratch, mode)
+            if waiting is not None:
+                return waiting
             accepted = training_final(meta, mode) if mode["mode"] == "training" else controller_final(mode)
             evo.atomic(scratch / "evo-acceptance.json", evo.encoded(accepted))
             return {"decision": "stop", "reason": "Evo method evidence verified", "output": {"complete": True}}

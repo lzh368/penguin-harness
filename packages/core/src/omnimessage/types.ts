@@ -484,8 +484,8 @@ export interface CompactionEndPayload extends RetryDetail {
   status: StopReason;
 }
 
-/** A hook's decision: at the stop point `continue` keeps the run going (its injected input follows as the next user message) and `stop` lets the run end; at the pre_tool_use point `allow` approves the call without asking and `deny` refuses it. */
-export type HookDecision = "continue" | "stop" | "allow" | "deny";
+/** A hook's decision: at stop, `continue` injects the next Task, `stop` lets the run end, and an eligible native-background `wait` defers remaining hooks until a completion notice. At pre_tool_use, `allow` approves the call and `deny` refuses it. */
+export type HookDecision = "continue" | "stop" | "wait" | "allow" | "deny";
 
 /**
  * Hook result event: one per non-void answer a hook gave at a hook point — `stop`,

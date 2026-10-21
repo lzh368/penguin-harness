@@ -477,109 +477,141 @@ describe("session-manager", () => {
     expect(queue).toHaveLength(0);
   });
 
-  it("end-to-end: a run_in_background command finishing after idle reaches the event channel as a harness user message", async () => {
-    // Full production chain with the REAL core pieces — Session, engine, Environment and an
-    // actual OS process — under the real SessionManager (loaded via the loader, which is
-    // what registers the notice listener). Only the LLM is scripted. This is the frontend's
-    // exact feed: the channel events asserted on are what SSE relays byte-for-byte.
-    sessions.updateApprovalMode("session-1", "allow-all");
-    const dir = await mkdtemp(path.join(tmpdir(), "penguin-bge2e-"));
-    const environment = new Environment({
-      workspaceDir: dir,
-      toolConfig: {
-        customTools: [
-          {
-            name: "exec_command",
-            description: "run",
-            permission: "rw",
-            timeoutMs: 120000,
-            maxOutputLength: 16000,
-          },
-        ],
-        mcpServers: [],
-      },
-    });
-    // Turn 1: launch a command that outlives the task; turn 2: final reply (task ends,
-    // session idle, process still running); turn 3 is the auto-started notice task. The
-    // command waits for a file the test writes once the Session is idle, so "finishing after
-    // idle" is an ordering the test makes rather than a race against a sleep.
-    const llm = new (class implements LLMInterface {
-      calls = 0;
-      inputs: OmniMessage[][] = [];
-      async *streamGenerate(
-        params: GenerativeModelParameters,
-      ): AsyncGenerator<OmniMessage, LLMOutcome> {
-        this.calls += 1;
-        this.inputs.push(params.newMessages);
-        if (this.calls === 1) {
-          yield toolCall({
-            name: "exec_command",
-            arguments: JSON.stringify({
-              cmd: "printf 'serving'; while [ ! -f release ]; do sleep 0.05; done",
-              run_in_background: true,
-            }),
-            toolCallId: "tc_bg",
-            stopReason: "completed",
+  it.each([false, true])(
+    "end-to-end: a run_in_background command finishing after idle reaches the event channel as a harness user message (explicit wait: %s)",
+    async (explicitWait) => {
+      // Full production chain with the REAL core pieces — Session, engine, Environment and an
+      // actual OS process — under the real SessionManager (loaded via the loader, which is
+      // what registers the notice listener). Only the LLM is scripted. This is the frontend's
+      // exact feed: the channel events asserted on are what SSE relays byte-for-byte.
+      sessions.updateApprovalMode("session-1", "allow-all");
+      const dir = await mkdtemp(path.join(tmpdir(), "penguin-bge2e-"));
+      const environment = new Environment({
+        workspaceDir: dir,
+        toolConfig: {
+          customTools: [
+            {
+              name: "exec_command",
+              description: "run",
+              permission: "rw",
+              timeoutMs: 120000,
+              maxOutputLength: 16000,
+            },
+          ],
+          mcpServers: [],
+        },
+      });
+      // Turn 1: launch a command that outlives the task; turn 2: final reply (task ends,
+      // session idle, process still running); turn 3 is the auto-started notice task. The
+      // command waits for a file the test writes once the Session is idle, so "finishing after
+      // idle" is an ordering the test makes rather than a race against a sleep.
+      const llm = new (class implements LLMInterface {
+        calls = 0;
+        inputs: OmniMessage[][] = [];
+        async *streamGenerate(
+          params: GenerativeModelParameters,
+        ): AsyncGenerator<OmniMessage, LLMOutcome> {
+          this.calls += 1;
+          this.inputs.push(params.newMessages);
+          if (this.calls === 1) {
+            yield toolCall({
+              name: "exec_command",
+              arguments: JSON.stringify({
+                cmd: "printf 'serving'; while [ ! -f release ]; do sleep 0.05; done",
+                run_in_background: true,
+              }),
+              toolCallId: "tc_bg",
+              stopReason: "completed",
+            });
+          } else {
+            yield assistantText(`reply ${this.calls}`);
+          }
+          yield tokenUsage(emptyTokenCounts(), {
+            cache_read: 0,
+            cache_write: 0,
+            output: 1,
+            total: 2,
           });
-        } else {
-          yield assistantText(`reply ${this.calls}`);
+          return { status: "completed" };
         }
-        yield tokenUsage(emptyTokenCounts(), {
-          cache_read: 0,
-          cache_write: 0,
-          output: 1,
-          total: 2,
-        });
-        return { status: "completed" };
-      }
-    })();
-    const session = new Session({
-      meta: {
-        session_id: "session-1",
-        provider: "custom",
-        model_id: "m1",
-        model_context_window: 100000,
-        system_prompt: "sp",
-        agent_state: dir,
-        workspace: dir,
-        source: "user",
-      },
-      bootstrap: async () => ({ llm }),
-      environment,
-      imagesDir: path.join(dir, "images"),
-      modelHasVision: true,
-    });
-    try {
-      const manager = makeManager(loaderOf(session as unknown as RuntimeSession));
-      const events = capture("session-1");
-      await manager.startTask("session-1", [userText("start a dev server")]);
-      await waitFor(() => manager.statusOf("session-1") === "idle" && llm.calls === 2, 5000);
-      // The task is over, the background process is still alive, and no notice exists yet —
-      // what follows is genuinely the idle-arrival path.
-      expect(events.some((e) => e.data.includes("background_task_done"))).toBe(false);
+      })();
+      let laterStopHooks = 0;
+      const session = new Session({
+        meta: {
+          session_id: "session-1",
+          provider: "custom",
+          model_id: "m1",
+          model_context_window: 100000,
+          system_prompt: "sp",
+          agent_state: dir,
+          workspace: dir,
+          source: "user",
+        },
+        bootstrap: async () => ({ llm }),
+        environment,
+        imagesDir: path.join(dir, "images"),
+        modelHasVision: true,
+        ...(explicitWait
+          ? {
+              hooks: {
+                stop: [
+                  {
+                    name: "method",
+                    run: async ({ lifecycle }) => ({
+                      decision:
+                        lifecycle!.commands.some((p) => p.running) || lifecycle!.notices.length
+                          ? ("wait" as const)
+                          : ("stop" as const),
+                    }),
+                  },
+                  {
+                    name: "later",
+                    run: async () => {
+                      laterStopHooks++;
+                      return { decision: "stop" as const };
+                    },
+                  },
+                ],
+              },
+            }
+          : {}),
+      });
+      try {
+        const manager = makeManager(loaderOf(session as unknown as RuntimeSession));
+        const events = capture("session-1");
+        await manager.startTask("session-1", [userText("start a dev server")]);
+        await waitFor(() => manager.statusOf("session-1") === "idle" && llm.calls === 2, 5000);
+        // The task is over, the background process is still alive, and no notice exists yet —
+        // what follows is genuinely the idle-arrival path.
+        expect(events.some((e) => e.data.includes("background_task_done"))).toBe(false);
+        expect(laterStopHooks).toBe(0);
+        if (explicitWait)
+          expect(events.some((e) => e.data.includes('"decision":"wait"'))).toBe(true);
 
-      // Let the command finish: its completion report must land on the channel as a harness
-      // user message and auto-start a task the model answers.
-      await writeFile(path.join(dir, "release"), "");
-      await waitFor(() => events.some((e) => e.data.includes("background_task_done")), 8000);
-      const notice = events.find((e) => e.data.includes("background_task_done"))!;
-      expect(notice.data).toContain('"sender":"harness"');
-      expect(notice.data).toContain('"role":"user"');
-      expect(notice.data).toContain("serving");
-      await waitFor(() => llm.calls === 3 && manager.statusOf("session-1") === "idle", 5000);
-      const turn3 = llm.inputs[2]!.map((m) => (m.payload as { text?: string }).text ?? "");
-      expect(turn3.join("\n")).toContain("[background_task_done]");
-      // The auto task's state flips were broadcast too (the frontend's input gating):
-      // one running per task, so the notice task makes it at least two.
-      const running = events.filter(
-        (e) => e.data.includes('"type":"task_state"') && e.data.includes('"state":"running"'),
-      );
-      expect(running.length).toBeGreaterThan(1);
-    } finally {
-      session.dispose();
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
+        // Let the command finish: its completion report must land on the channel as a harness
+        // user message and auto-start a task the model answers.
+        await writeFile(path.join(dir, "release"), "");
+        await waitFor(() => events.some((e) => e.data.includes("background_task_done")), 8000);
+        const notice = events.find((e) => e.data.includes("background_task_done"))!;
+        expect(notice.data).toContain('"sender":"harness"');
+        expect(notice.data).toContain('"role":"user"');
+        expect(notice.data).toContain("serving");
+        await waitFor(() => llm.calls === 3 && manager.statusOf("session-1") === "idle", 5000);
+        expect(laterStopHooks).toBe(explicitWait ? 1 : 0);
+        const turn3 = llm.inputs[2]!.map((m) => (m.payload as { text?: string }).text ?? "");
+        expect(turn3.join("\n")).toContain("[background_task_done]");
+        // The auto task's state flips were broadcast too (the frontend's input gating):
+        // one running per task, so the notice task makes it at least two.
+        const running = events.filter(
+          (e) => e.data.includes('"type":"task_state"') && e.data.includes('"state":"running"'),
+        );
+        expect(running.length).toBeGreaterThan(1);
+      } finally {
+        session.dispose();
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("LLM / tool failures in the message stream are persisted via drive (source=llm / environment, with the current Session context)", async () => {
     sessions.updateApprovalMode("session-1", "allow-all");

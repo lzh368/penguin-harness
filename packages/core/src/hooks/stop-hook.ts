@@ -3,15 +3,18 @@
  * **stop** hook point: the moment a Task ends (the model's final reply with no tool call,
  * or a cutoff — user abort, LLM failure, the max_turns cap).
  *
- * A hook is told only where to look — the Session id and the Trace file being written —
- * and derives everything else (token usage, turn counts, how the Task ended, its own state
- * files) from the Trace. It answers with a decision: `continue` keeps the run going — the
+ * A hook gets the Session id, Trace location and a minimal native lifecycle snapshot;
+ * it derives method state and token usage from its files and the Trace. It answers with
+ * a decision: `continue` keeps the run going — the
  * hook's `input` becomes the next Task's user message, inside the same `run` call — while
  * `stop` (or no answer at all) lets the run end. It may also ask for a background subagent
  * (`subagent`), which the Session spawns detached and records by session id. Every non-void
  * answer is recorded as one `hook` event message, streamed and written to the Trace; the
  * injected input is not in the event, it is the user message that follows it. The first
- * `continue` wins; the Session refuses to continue after a cutoff or once its signal is
+ * `continue` wins unless a hook explicitly requests a valid background `wait`: that ends
+ * this pass before later hooks and lets native background notices wake the Session. A
+ * previous hook's explicit stop prevents waiting. The
+ * Session refuses to continue after a cutoff or once its signal is
  * aborted (the answer is still recorded). A hook that throws is recorded with the error as
  * its reason and treated as having no opinion, so a broken hook never takes the run down.
  *
@@ -27,7 +30,21 @@ import { errorMessage, failedAnswer } from "./answer.js";
 import type { PreToolUseHook } from "./tool-hook.js";
 import type { UserPromptHook } from "./prompt-hook.js";
 
-/** What a stop hook is told: where the Session's record is. */
+/** Read-only ownership snapshot; deliberately excludes commands, prompts and outputs. */
+export interface StopHookLifecycle {
+  schema: 1;
+  subagents: { session_id: string; subagent_id: string | null; running: boolean }[];
+  commands: { process_id: string; running: boolean }[];
+  notices: {
+    kind: "command" | "subagent";
+    id: string;
+    status: "completed" | "failed" | "stopped";
+  }[];
+  cutoff: boolean;
+  aborted: boolean;
+}
+
+/** What a stop hook is told: the Session's record and its native background state. */
 export interface StopHookInput {
   sessionId: string;
   /**
@@ -37,6 +54,8 @@ export interface StopHookInput {
   tracePath?: string;
   /** The run's abort signal. */
   signal?: AbortSignal;
+  /** Optional for SDK compatibility. Only a native live/pending snapshot permits `wait`. */
+  lifecycle?: StopHookLifecycle;
 }
 
 /** A background subagent a hook asks for: spawned detached, its first user message being `prompt`. */
@@ -48,8 +67,8 @@ export interface HookSubagentRequest {
 
 /** A stop hook's answer; `undefined` (no answer) means "no opinion, nothing to record". */
 export interface StopHookResult {
-  /** `continue` keeps the run going with `input` as the next Task's user text; `stop` lets it end. Omitted: the hook only leaves a record. */
-  decision?: "continue" | "stop";
+  /** `wait` defers remaining hooks until native background work wakes the Session; it requires authoritative pending work and cannot carry input or spawn work. */
+  decision?: "continue" | "stop" | "wait";
   /** With `continue`: the next Task's user input text (a `continue` without one cannot continue and is recorded as-is). */
   input?: string;
   /** One line for people — the `hook` event carries it (hosts render it). */
@@ -108,29 +127,89 @@ export interface StopHooksOutcome {
   next: string | null;
 }
 
+/** A wait is a lifecycle operation, never an inference from a model's final text. */
+function canWait(input: StopHookInput): boolean {
+  const state = input.lifecycle;
+  return (
+    state?.schema === 1 &&
+    state.cutoff === false &&
+    state.aborted === false &&
+    Array.isArray(state.subagents) &&
+    Array.isArray(state.commands) &&
+    Array.isArray(state.notices) &&
+    !input.signal?.aborted &&
+    (state.subagents.some(
+      (child) =>
+        child.running === true &&
+        typeof child.subagent_id === "string" &&
+        child.subagent_id.length > 0,
+    ) ||
+      state.commands.some((command) => command.running === true) ||
+      state.notices.length > 0)
+  );
+}
+
 /**
  * Runs the stop hooks in registration order and turns every non-void answer into a `hook`
  * event. The first `continue` that carries an input decides the continuation; later ones are
  * recorded but not honored. A `subagent` request is handed to `spawn` and the child's session
  * id recorded on the event (`output.session_id`), with the child's session_meta following the
  * event; a failed spawn, or no spawner, is recorded in the reason. A throwing hook is
- * recorded with the error as its reason.
+ * recorded with the error as its reason. Only an explicit eligible `wait` ends the hook
+ * pass early; without it all prior stop/continue behavior is unchanged.
  */
 export async function runStopHooks(
   hooks: readonly StopHook[],
   input: StopHookInput,
   spawn?: (request: HookSubagentRequest) => Promise<HookSubagentSpawned>,
+  /** Session supplies a fresh snapshot around asynchronous hooks (a child may settle meanwhile). */
+  lifecycle?: () => StopHookLifecycle,
 ): Promise<StopHooksOutcome> {
   const events: OmniMessage[] = [];
   let next: string | null = null;
+  let priorStop = false;
   for (const hook of hooks) {
     let result: StopHookResult | void;
     try {
-      result = await hook.run(input);
+      result = await hook.run(lifecycle ? { ...input, lifecycle: lifecycle() } : input);
     } catch (err) {
       result = failedAnswer(err);
     }
     if (!result) continue;
+    if (result.decision === "wait") {
+      const current = lifecycle ? { ...input, lifecycle: lifecycle() } : input;
+      if (
+        !priorStop &&
+        canWait(current) &&
+        result.input === undefined &&
+        result.subagent === undefined
+      ) {
+        events.push(
+          hookEvent({
+            hook: "stop",
+            name: hook.name,
+            decision: "wait",
+            ...(result.reason !== undefined ? { reason: result.reason } : {}),
+            ...(result.output !== undefined ? { output: result.output } : {}),
+          }),
+        );
+        return { events, next: null };
+      }
+      // Unsupported/stale snapshots and cutoffs cannot strand a Session. Remaining
+      // hooks retain their existing behavior; no requested input or spawn is honored.
+      events.push(
+        hookEvent({
+          hook: "stop",
+          name: hook.name,
+          decision: "stop",
+          reason:
+            "background wait rejected: no eligible native pending work or invalid wait answer",
+          output: { wait_rejected: true },
+        }),
+      );
+      continue;
+    }
+    if (result.decision === "stop") priorStop = true;
     if (result.decision === "continue" && next === null && result.input) next = result.input;
     let output = result.output;
     let reason = result.reason;

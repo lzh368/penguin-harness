@@ -14,6 +14,7 @@ export type {
   SessionHooks,
   StopHook,
   StopHookInput,
+  StopHookLifecycle,
   StopHookResult,
   StopHooksOutcome,
 } from "./stop-hook.js";

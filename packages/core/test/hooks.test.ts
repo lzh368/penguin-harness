@@ -509,10 +509,18 @@ describe("Session stop hooks", () => {
     for await (const msg of session.run([userText("hello")])) stream.push(msg);
     // Two Tasks ran: the second on the hook's input.
     expect(llm.inputs).toEqual(["hello", "again"]);
-    // The hook is told where to look, nothing more.
+    // The hook gets record locations plus an ownership-only native lifecycle snapshot.
+    const lifecycle = {
+      schema: 1,
+      subagents: [],
+      commands: [],
+      notices: [],
+      cutoff: false,
+      aborted: false,
+    };
     expect(seen).toEqual([
-      { sessionId: "session-1", tracePath: "/traces/session-1_001.jsonl" },
-      { sessionId: "session-1", tracePath: "/traces/session-1_001.jsonl" },
+      { sessionId: "session-1", tracePath: "/traces/session-1_001.jsonl", lifecycle },
+      { sessionId: "session-1", tracePath: "/traces/session-1_001.jsonl", lifecycle },
     ]);
     // The stream: the hook event, then the injected user input, then the second Task.
     const kinds = stream.map((m) =>

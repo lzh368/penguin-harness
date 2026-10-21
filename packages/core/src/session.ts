@@ -35,7 +35,12 @@ import type { ModelRef } from "./state/project-config.js";
 import { sameModelRef } from "./state/project-config.js";
 import { imagesToScratchpadPaths } from "./internal/session-support.js";
 import { runStopHooks } from "./hooks/stop-hook.js";
-import type { HookSubagentSpawner, SessionHooks, StopHook } from "./hooks/stop-hook.js";
+import type {
+  HookSubagentSpawner,
+  SessionHooks,
+  StopHook,
+  StopHookLifecycle,
+} from "./hooks/stop-hook.js";
 import { runPreToolUseHooks } from "./hooks/tool-hook.js";
 import type { PreToolUseHook } from "./hooks/tool-hook.js";
 import { runUserPromptHooks } from "./hooks/prompt-hook.js";
@@ -667,6 +672,7 @@ export class Session {
           ...(opts?.signal ? { signal: opts.signal } : {}),
         },
         spawn ? (request) => spawn(request, approve) : undefined,
+        () => this.stopLifecycle(cutoff !== null, opts?.signal?.aborted ?? false),
       );
       for (const ev of outcome.events) {
         await this.writeTrace(ev, "hook event");
@@ -1187,6 +1193,25 @@ export class Session {
   /** All live subagent child sessions of this Session's Environment, for a host UI's subagents panel (see EnvironmentInterface.listBackgroundSubagents). */
   listBackgroundSubagents(): BackgroundSubagentInfo[] {
     return this.environment.listBackgroundSubagents?.() ?? [];
+  }
+
+  /** A stop hook needs ownership/liveness, never a child's prompt or command output. */
+  private stopLifecycle(cutoff: boolean, aborted: boolean): StopHookLifecycle {
+    return {
+      schema: 1,
+      subagents: this.listBackgroundSubagents().map(({ sessionId, subagentId, running }) => ({
+        session_id: sessionId,
+        subagent_id: subagentId,
+        running,
+      })),
+      commands: this.listBackgroundCommands().map(({ processId, running }) => ({
+        process_id: processId,
+        running,
+      })),
+      notices: this.pendingNotices.map(({ kind, id, status }) => ({ kind, id, status })),
+      cutoff,
+      aborted,
+    };
   }
 
   /**

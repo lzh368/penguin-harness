@@ -94,7 +94,9 @@ describe("Evo-Harness native plugin", () => {
               toolCallId: "selection",
             }),
           })) {
-            if (row.payload.type === "tool_call_output") output = row.payload.output;
+            if ("type" in row.payload && row.payload.type === "tool_call_output") {
+              output = row.payload.output;
+            }
           }
           return output;
         } finally {

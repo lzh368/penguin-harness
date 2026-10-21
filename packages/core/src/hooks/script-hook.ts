@@ -185,7 +185,8 @@ export function parseStopHookResult(value: unknown): StopHookResult | undefined 
   const v = objectAnswer(value);
   if (!v) return undefined;
   const result: StopHookResult = {};
-  if (v.decision === "continue" || v.decision === "stop") result.decision = v.decision;
+  if (v.decision === "continue" || v.decision === "stop" || v.decision === "wait")
+    result.decision = v.decision;
   if (typeof v.input === "string") result.input = v.input;
   if (typeof v.reason === "string") result.reason = v.reason;
   const output = scalarRecord(v.output);
@@ -342,7 +343,12 @@ export function scriptStopHook(
     async run(input: StopHookInput): Promise<StopHookResult | undefined> {
       return parseStopHookResult(
         await run(
-          { hook: "stop", session_id: input.sessionId, trace_path: input.tracePath },
+          {
+            hook: "stop",
+            session_id: input.sessionId,
+            trace_path: input.tracePath,
+            ...(input.lifecycle !== undefined ? { lifecycle: input.lifecycle } : {}),
+          },
           input.signal,
         ),
       );
