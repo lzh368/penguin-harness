@@ -138,8 +138,10 @@ native traces or role-authored candidates/decisions.
    an empty `.keep`; do not delete it or run a shell cleanup. The fixed export
    helper accepts exactly this placeholder at the installed training.json's
    bound destination. It builds and validates the complete package first,
-   retains the original placeholder in a unique sibling backup, then publishes
-   atomically without replacing an existing skill. It records source/profile
+   atomically moves only the original `.keep` file into a unique sibling backup,
+   records and rechecks its contents, mode and identity, then removes only the
+   empty original directory and publishes atomically without replacing an
+   existing skill. It never renames the original lower-layer directory. It records source/profile
    hashes, the backup location, package hash and publication status in
    private_learning/skill-export-publication.json. The backup stays beside the
    destination because /app and /logs/agent may use different filesystems.

@@ -1237,7 +1237,7 @@ def verify_compilation(req):
 READER = '''---
 name: evo-harness-learned
 description: Select relevant frozen Evo-Harness procedures for the current task.
-version: 2026.10.21.4
+version: 2026.10.21.5
 ---
 
 Before business API calls or writing the task answer, use native read_file to read
@@ -1311,32 +1311,126 @@ def validate_index_readability(raw):
 
 def rename_new(source, destination):
     """Linux atomic rename that never replaces even an empty destination."""
+    return rename_new_at(-100, source, -100, destination)
+
+
+def rename_new_at(source_fd, source, destination_fd, destination):
+    """The same no-replace operation, optionally anchored to opened directories."""
     libc = ctypes.CDLL(None, use_errno=True)
     rename = getattr(libc, "renameat2", None)
     require(rename is not None, "atomic no-replace export requires Linux renameat2")
     rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
     rename.restype = ctypes.c_int
     # AT_FDCWD, RENAME_NOREPLACE. Do not fall back to os.rename's overwrite.
-    if rename(-100, os.fsencode(source), -100, os.fsencode(destination), 1):
+    if rename(source_fd, os.fsencode(source), destination_fd, os.fsencode(destination), 1):
         code = ctypes.get_errno()
         raise OSError(code, os.strerror(code), str(destination))
+
+
+def placeholder_marker_fd(directory_fd):
+    """Inspect the exact opened directory, without following marker links."""
+    require(os.listdir(directory_fd) == [".keep"], "export destination is not the GDPevo empty .keep placeholder")
+    fd = os.open(".keep", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        require(stat.S_ISREG(info.st_mode) and info.st_size == 0 and info.st_nlink == 1
+                and stream.read(1) == b"", "GDPevo .keep must be an ordinary empty single-link file")
+    require(os.listdir(directory_fd) == [".keep"], "placeholder changed during inspection")
+    identity = os.fstat(directory_fd)
+    return {"directory_device": identity.st_dev, "directory_inode": identity.st_ino,
+            "directory_mode": stat.S_IMODE(identity.st_mode),
+            "marker_device": info.st_dev, "marker_inode": info.st_ino,
+            "marker_mode": stat.S_IMODE(info.st_mode), "marker_bytes": 0, "marker_sha256": digest(b"")}
+
+
+def same_directory(directory, fd):
+    current, opened = directory.lstat(), os.fstat(fd)
+    return (stat.S_ISDIR(current.st_mode)
+            and (current.st_dev, current.st_ino) == (opened.st_dev, opened.st_ino))
 
 
 def placeholder_marker(directory):
     """Recognize only convert.py's exact empty .keep directory, never clean it."""
     require(directory.is_dir() and not directory.is_symlink(), "export destination already exists")
-    require([p.name for p in directory.iterdir()] == [".keep"], "export destination is not the GDPevo empty .keep placeholder")
-    marker = directory / ".keep"
-    fd = os.open(marker, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    with os.fdopen(fd, "rb") as stream:
-        info = os.fstat(stream.fileno())
-        require(stat.S_ISREG(info.st_mode) and info.st_size == 0 and info.st_nlink == 1
-                and stream.read(1) == b"", "GDPevo .keep must be an ordinary empty single-link file")
-    require([p.name for p in directory.iterdir()] == [".keep"], "placeholder changed during inspection")
-    identity = directory.stat()
-    return {"directory_device": identity.st_dev, "directory_inode": identity.st_ino,
-            "marker_device": info.st_dev, "marker_inode": info.st_ino,
-            "marker_mode": stat.S_IMODE(info.st_mode), "marker_bytes": 0, "marker_sha256": digest(b"")}
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        marker = placeholder_marker_fd(fd)
+        require(same_directory(directory, fd), "placeholder directory changed during inspection")
+        return marker
+    finally:
+        os.close(fd)
+
+
+def copy_empty_placeholder(directory, original):
+    """Preserve its only permitted bytes/modes; inode identity stays in receipt."""
+    directory.mkdir()
+    write_once(directory / ".keep", b"")
+    os.chmod(directory / ".keep", original["marker_mode"])
+    os.chmod(directory, original["directory_mode"])
+    return placeholder_marker(directory)
+
+
+def remove_empty_placeholder(directory, backup, expected, record):
+    """Reserve the marker file, then rmdir; never rename a lower-layer directory.
+
+    Overlayfs can refuse a rename of image-layer directories with EXDEV even
+    between siblings, but supports file rename/copy-up. Retaining the actual
+    marker preserves even a late write between inspection and rename. A foreign
+    entry makes rmdir fail; directory-parent ownership remains the cooperative
+    training root's responsibility (rmdir has no inode-conditional POSIX form).
+    """
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    backup_fd = marker_fd = None
+    try:
+        backup_fd = os.open(backup, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        require(placeholder_marker_fd(fd) == expected and same_directory(directory, fd),
+                "placeholder changed before removal")
+        require(same_directory(backup, backup_fd) and not os.listdir(backup_fd), "placeholder backup changed")
+        marker_fd = os.open(".keep", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+        opened = os.fstat(marker_fd)
+        require(stat.S_ISREG(opened.st_mode) and opened.st_size == 0 and opened.st_nlink == 1
+                and (opened.st_dev, opened.st_ino) == (expected["marker_device"], expected["marker_inode"])
+                and os.read(marker_fd, 1) == b"", "placeholder marker changed before reservation")
+        rename_new_at(fd, ".keep", backup_fd, ".keep")
+        record["marker_removed"] = True
+        retained = os.fstat(marker_fd)
+        record["retained_marker_fd"] = {"device": retained.st_dev, "inode": retained.st_ino,
+                                        "bytes": retained.st_size, "mode": stat.S_IMODE(retained.st_mode)}
+        saved = placeholder_marker_fd(backup_fd)
+        record["backup_placeholder"] = saved
+        require(all(saved[key] == expected[key] for key in expected if key.startswith("marker_")),
+                "placeholder marker changed while being reserved")
+        require((saved["marker_device"], saved["marker_inode"]) == (retained.st_dev, retained.st_ino),
+                "reserved marker differs from retained original file")
+        record["backup_verified"] = True
+        require(same_directory(directory, fd), "placeholder directory changed before removal")
+        os.rmdir(directory)
+        record["placeholder_removed"] = True
+    finally:
+        if marker_fd is not None:
+            os.close(marker_fd)
+        if backup_fd is not None:
+            os.close(backup_fd)
+        os.close(fd)
+
+
+def restore_empty_marker(directory, expected):
+    """Repair only our original still-empty directory after a failed rmdir."""
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        require((info.st_dev, info.st_ino) == (expected["directory_device"], expected["directory_inode"])
+                and same_directory(directory, fd) and not os.listdir(fd), "placeholder changed before rollback")
+        marker_fd = os.open(".keep", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                            expected["marker_mode"], dir_fd=fd)
+        try:
+            os.fchmod(marker_fd, expected["marker_mode"])
+        finally:
+            os.close(marker_fd)
+        require(same_directory(directory, fd), "placeholder changed during rollback")
+        return placeholder_marker_fd(fd)
+    finally:
+        os.close(fd)
 
 
 def export_placeholder(dest):
@@ -1362,7 +1456,7 @@ def export_placeholder(dest):
     marker = placeholder_marker(dest)
     receipt = private / "skill-export-publication.json"
     require(not receipt.exists() and not receipt.is_symlink(), "prior export publication exists; reconcile without overwriting")
-    return {"schema": "evo-gdpevo-placeholder-publication-v1", "output": str(dest),
+    return {"schema": "evo-gdpevo-placeholder-publication-v2", "output": str(dest),
             "source": "tools/gdpevo/convert.py:write_training_run:workspace/submission/skill/.keep",
             "training_path": str(training_path), "training_sha256": digest(raw),
             "config_sha256": training["config_sha256"], "placeholder": marker,
@@ -1396,33 +1490,50 @@ def publish_skill(stage, dest, placeholder):
             os.rename(stage, dest)
         return
     package = validate_package(stage)
-    # /logs/agent is a host bind mount; /app is normally overlayfs. Keep both
-    # renames beside the destination, and write only the receipt across mounts.
+    # Never rename the image-layer directory: overlayfs may return EXDEV even
+    # within /app. Reserve only its marker file before removing the empty slot,
+    # then atomically publish only our newly created upper-layer stage.
     backup_root = Path(tempfile.mkdtemp(dir=dest.parent, prefix=".evo-skill-placeholder-"))
     backup = backup_root / "original"
     receipt = Path(placeholder["receipt"])
-    record = {**placeholder, "backup": str(backup), "skill_sha256": package["sha256"], "status": "prepared"}
+    backup.mkdir()
+    os.chmod(backup, placeholder["placeholder"]["directory_mode"])
+    record = {**placeholder, "backup": str(backup), "backup_placeholder": None, "backup_verified": False,
+              "backup_kind": "reserved_marker_file", "strategy": "reserve_marker_then_remove_empty_directory",
+              "skill_sha256": package["sha256"], "status": "prepared",
+              "marker_removed": False, "placeholder_removed": False}
     write_once(receipt, encoded(record))
-    moved = published = False
+    published = False
     try:
         require(placeholder_marker(dest) == placeholder["placeholder"], "placeholder changed before publication")
         require(digest(regular(placeholder["training_path"]).read_bytes()) == placeholder["training_sha256"],
                 "training profile changed before export")
-        rename_new(dest, backup)
-        moved = True
-        require(placeholder_marker(backup) == placeholder["placeholder"], "placeholder changed while being reserved")
+        remove_empty_placeholder(dest, backup, placeholder["placeholder"], record)
         rename_new(stage, dest)
         published = True
         record["status"] = "published"
         atomic(receipt, encoded(record))
     except BaseException as error:
         record.update(status="publication_failed", error_type=type(error).__name__, skill_published=published)
-        if moved and not published:
+        if record["marker_removed"] and not record["backup_verified"]:
+            # The actual marker may contain another writer's bytes or be a link.
+            # Keep it intact for reconciliation; do not synthesize an empty restore.
+            record["placeholder_restored"] = False
+        elif record["marker_removed"] and not published:
             try:
-                rename_new(backup, dest)
+                if record["placeholder_removed"]:
+                    # Preserve the backup even after rollback. This second empty
+                    # copy is upper-layer too; no image-layer rename is needed.
+                    restore = backup_root / "restore"
+                    copy_empty_placeholder(restore, placeholder["placeholder"])
+                    rename_new(restore, dest)
+                    restored = placeholder_marker(dest)
+                else:
+                    restored = restore_empty_marker(dest, placeholder["placeholder"])
                 record["placeholder_restored"] = True
-            except OSError as rollback_error:
-                # Another writer owns dest: preserve it and the original backup.
+                record["restored_placeholder"] = restored
+            except (OSError, ValueError) as rollback_error:
+                # Another writer owns dest: preserve it and the verified backup.
                 record.update(placeholder_restored=False, rollback_error_type=type(rollback_error).__name__)
         try:
             atomic(receipt, encoded(record))

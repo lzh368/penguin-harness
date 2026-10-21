@@ -56,7 +56,11 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(record["training_sha256"], self.evo.digest(self.training_path.read_bytes()))
         self.assertIn("convert.py:write_training_run", record["source"])
         original = Path(record["backup"])
-        self.assertEqual((original / ".keep").stat().st_ino, inode)
+        self.assertEqual(record["placeholder"]["marker_inode"], inode)
+        self.assertEqual(record["backup_kind"], "reserved_marker_file")
+        self.assertTrue(record["backup_verified"])
+        self.assertEqual(record["backup_placeholder"], self.evo.placeholder_marker(original))
+        self.assertEqual(record["placeholder"]["marker_mode"], record["backup_placeholder"]["marker_mode"])
         self.assertEqual(self.evo.filemap(original), {".keep": self.evo.digest(b"")})
         self.assertFalse((self.dest / ".keep").exists())
         self.assertNotIn("skill-export-publication.json", exported["files"])
@@ -125,7 +129,7 @@ class PublicationTests(unittest.TestCase):
             rename(source, destination)
         with patch.object(self.evo, "rename_new", side_effect=mount_checked):
             self.evo.export_skill(self.req)
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 1)
         self.assertTrue(self.receipt.is_file())
         self.assertEqual(self.evo.read(self.receipt)["status"], "published")
 
@@ -169,8 +173,11 @@ class PublicationTests(unittest.TestCase):
         with patch.object(self.evo, "rename_new", side_effect=fail_publish):
             with self.assertRaisesRegex(PermissionError, "publication failure"):
                 self.evo.export_skill(self.req)
-        self.assertEqual(self.marker.stat().st_ino, inode)
+        self.assertEqual(self.marker.read_bytes(), b"")
         receipt = self.evo.read(self.receipt)
+        self.assertEqual(receipt["placeholder"]["marker_inode"], inode)
+        self.assertTrue((Path(receipt["backup"]) / ".keep").is_file())
+        self.assertEqual(receipt["restored_placeholder"], self.evo.placeholder_marker(self.dest))
         self.assertTrue(receipt["placeholder_restored"])
         self.assertFalse(receipt["skill_published"])
         with self.assertRaisesRegex(ValueError, "prior export publication"):
@@ -192,10 +199,7 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual((Path(receipt["backup"]) / ".keep").read_bytes(), b"")
 
     def test_failed_publish_and_failed_rollback_cannot_bypass_receipt_when_dest_missing(self):
-        rename = self.evo.rename_new
         def fail_after_backup(source, destination):
-            if Path(source) == self.dest:
-                return rename(source, destination)
             raise PermissionError("synthetic publication and rollback failure")
         with patch.object(self.evo, "rename_new", side_effect=fail_after_backup):
             with self.assertRaisesRegex(PermissionError, "rollback failure"):
@@ -210,6 +214,136 @@ class PublicationTests(unittest.TestCase):
         self.assertFalse(self.dest.exists())
         self.assertEqual(self.evo.filemap(backup), before)
         self.assertEqual(self.evo.read(self.receipt), receipt)
+
+    def test_overlay_lower_directory_exdev_is_never_triggered(self):
+        """Image-layer directory rename fails despite matching st_dev; new upper stage does not."""
+        rename = self.evo.rename_new
+        calls = []
+        def overlay_rename(source, destination):
+            calls.append((Path(source), Path(destination)))
+            if Path(source) == self.dest:
+                raise OSError(errno.EXDEV, "overlay lower directory cannot be renamed", str(destination))
+            rename(source, destination)
+        with patch.object(self.evo, "rename_new", side_effect=overlay_rename):
+            exported = self.evo.export_skill(self.req)
+        self.assertEqual(exported, self.evo.validate_package(self.dest))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1], self.dest)
+        self.assertNotEqual(calls[0][0], self.dest)
+        receipt = self.evo.read(self.receipt)
+        self.assertTrue(receipt["marker_removed"])
+        self.assertTrue(receipt["placeholder_removed"])
+        self.assertEqual(receipt["schema"], "evo-gdpevo-placeholder-publication-v2")
+
+    def test_marker_reservation_failure_preserves_original_and_reserved_receipt(self):
+        identity = self.evo.placeholder_marker(self.dest)
+        rename_at = self.evo.rename_new_at
+        def blocked_marker(source_fd, source, destination_fd, destination):
+            if source == ".keep":
+                raise PermissionError("synthetic marker reservation denied")
+            return rename_at(source_fd, source, destination_fd, destination)
+        with patch.object(self.evo, "rename_new_at", side_effect=blocked_marker):
+            with self.assertRaisesRegex(PermissionError, "reservation denied"):
+                self.evo.export_skill(self.req)
+        self.assertEqual(self.evo.placeholder_marker(self.dest), identity)
+        receipt = self.evo.read(self.receipt)
+        self.assertFalse(receipt["marker_removed"])
+        self.assertFalse(receipt["placeholder_removed"])
+        self.assertEqual(list(Path(receipt["backup"]).iterdir()), [])
+        with self.assertRaisesRegex(ValueError, "prior export publication"):
+            self.evo.export_skill(self.req)
+
+    def test_rmdir_failure_restores_marker_without_renaming_lower_directory(self):
+        self.marker.chmod(0o640)
+        identity = self.evo.placeholder_marker(self.dest)
+        rmdir = self.evo.os.rmdir
+        def blocked_slot(path, **kwargs):
+            if Path(path) == self.dest:
+                raise OSError(errno.EBUSY, "synthetic occupied mount")
+            return rmdir(path, **kwargs)
+        with patch.object(self.evo.os, "rmdir", side_effect=blocked_slot), \
+             patch.object(self.evo, "rename_new", side_effect=AssertionError("no lower-layer rename allowed")):
+            with self.assertRaisesRegex(OSError, "occupied mount"):
+                self.evo.export_skill(self.req)
+        current = self.evo.placeholder_marker(self.dest)
+        self.assertEqual(current["directory_inode"], identity["directory_inode"])
+        self.assertEqual(current["marker_mode"], identity["marker_mode"])
+        receipt = self.evo.read(self.receipt)
+        self.assertTrue(receipt["marker_removed"])
+        self.assertFalse(receipt["placeholder_removed"])
+        self.assertTrue(receipt["placeholder_restored"])
+
+    def test_concurrent_file_during_rmdir_is_preserved_without_recursive_cleanup(self):
+        rmdir = self.evo.os.rmdir
+        def add_foreign(path, **kwargs):
+            if Path(path) == self.dest:
+                (self.dest / "foreign.txt").write_text("preserve concurrent data")
+            return rmdir(path, **kwargs)
+        with patch.object(self.evo.os, "rmdir", side_effect=add_foreign):
+            with self.assertRaises(OSError):
+                self.evo.export_skill(self.req)
+        self.assertEqual((self.dest / "foreign.txt").read_text(), "preserve concurrent data")
+        receipt = self.evo.read(self.receipt)
+        self.assertFalse(receipt["placeholder_removed"])
+        self.assertFalse(receipt["placeholder_restored"])
+        self.assertEqual((Path(receipt["backup"]) / ".keep").read_bytes(), b"")
+
+    def test_changed_marker_after_backup_is_not_unlinked(self):
+        write_once = self.evo.write_once
+        def changed_source(destination, data):
+            result = write_once(destination, data)
+            if Path(destination) == self.receipt:
+                self.marker.write_text("new data must survive")
+            return result
+        with patch.object(self.evo, "write_once", side_effect=changed_source):
+            with self.assertRaises(ValueError):
+                self.evo.export_skill(self.req)
+        self.assertEqual(self.marker.read_text(), "new data must survive")
+        receipt = self.evo.read(self.receipt)
+        self.assertFalse(receipt["marker_removed"])
+        self.assertEqual(list(Path(receipt["backup"]).iterdir()), [])
+
+    def test_late_marker_write_is_preserved_as_actual_file_and_never_published(self):
+        rename_at = self.evo.rename_new_at
+        def late_write(source_fd, source, destination_fd, destination):
+            if source == ".keep":
+                self.marker.write_text("concurrent content must survive")
+            return rename_at(source_fd, source, destination_fd, destination)
+        with patch.object(self.evo, "rename_new_at", side_effect=late_write):
+            with self.assertRaisesRegex(ValueError, "ordinary empty single-link"):
+                self.evo.export_skill(self.req)
+        receipt = self.evo.read(self.receipt)
+        self.assertEqual(receipt["status"], "publication_failed")
+        self.assertFalse(receipt["backup_verified"])
+        self.assertFalse(receipt["placeholder_removed"])
+        self.assertFalse(receipt["skill_published"])
+        self.assertEqual((Path(receipt["backup"]) / ".keep").read_text(), "concurrent content must survive")
+        self.assertEqual(list(self.dest.iterdir()), [])
+
+    def test_late_empty_marker_replacement_is_retained_and_identity_change_rejected(self):
+        rename_at = self.evo.rename_new_at
+        replacement = {}
+        def late_replace(source_fd, source, destination_fd, destination):
+            if source != ".keep":
+                return rename_at(source_fd, source, destination_fd, destination)
+            held = os.open(".keep", os.O_RDONLY, dir_fd=source_fd)
+            try:
+                os.unlink(".keep", dir_fd=source_fd)
+                self.marker.write_bytes(b"")
+                replacement["inode"] = self.marker.stat().st_ino
+                self.assertNotEqual(replacement["inode"], os.fstat(held).st_ino)
+                return rename_at(source_fd, source, destination_fd, destination)
+            finally:
+                os.close(held)
+        with patch.object(self.evo, "rename_new_at", side_effect=late_replace):
+            with self.assertRaisesRegex(ValueError, "marker changed while being reserved"):
+                self.evo.export_skill(self.req)
+        receipt = self.evo.read(self.receipt)
+        self.assertFalse(receipt["backup_verified"])
+        self.assertFalse(receipt["placeholder_removed"])
+        backup_marker = Path(receipt["backup"]) / ".keep"
+        self.assertEqual(backup_marker.stat().st_ino, replacement["inode"])
+        self.assertEqual(backup_marker.read_bytes(), b"")
 
     def test_generic_workspace_export_does_not_require_linux_libc(self):
         fresh = self.root / "generic-workspace/learned"
