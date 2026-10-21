@@ -383,6 +383,87 @@ describe("SessionManager.startGoal", () => {
     expect(finished).toEqual([expect.objectContaining({ outcome: "complete", used: 42 })]);
   });
 
+  it("keeps a waiting goal open and resumes its events on a native completion notice", async () => {
+    let notify: (() => void) | undefined;
+    let notices: OmniMessage[] = [];
+    let calls = 0;
+    const session = goalFakeSession(() => ++calls === 1 ? [
+      goalHook("continue", "active", 2, 50),
+      roundInput(2),
+      hookEvent({ hook: "stop", name: "evo", decision: "wait" }),
+    ] : [
+      goalHook("continue", "active", 3, 75),
+      roundInput(3),
+      goalHook("stop", "complete", 3, 100),
+    ]);
+    session.onBackgroundNotice = (listener) => { notify = listener; };
+    session.takeBackgroundNotices = () => { const pending = notices; notices = []; return pending; };
+    const manager = makeManager(session);
+    const events: ChannelEvent[] = [];
+    channels.get(ROW.sessionId).subscribe((event) => events.push(event));
+    await manager.startGoal(ROW.sessionId, {
+      messages: [userText("obj")], objective: "obj", budget: -1,
+    });
+    await waitFor(() => manager.statusOf(ROW.sessionId) === "idle");
+    expect(serverEvents(events).filter((e) => e.type === "goal_finished")).toEqual([]);
+    notices = [userText("native child completed", "harness")];
+    notify!();
+    await waitFor(() => calls === 2 && manager.statusOf(ROW.sessionId) === "idle");
+    const server = serverEvents(events);
+    expect(server.filter((e) => e.type === "goal_started")).toHaveLength(1);
+    expect(server.filter((e) => e.type === "goal_round").map((e) => [e.round, e.used]))
+      .toEqual([[1, 0], [2, 50], [3, 75]]);
+    expect(server.filter((e) => e.type === "goal_finished")).toEqual([
+      { type: "goal_finished", sessionId: ROW.sessionId, outcome: "complete", rounds: 3, used: 100 },
+    ]);
+    // A subsequent ordinary task has no stale goal tracking.
+    await manager.startTask(ROW.sessionId, [userText("ordinary task")]);
+    await waitFor(() => calls === 3 && manager.statusOf(ROW.sessionId) === "idle");
+    expect(serverEvents(events).filter((e) => e.type === "goal_finished")).toHaveLength(1);
+  });
+
+  it("does not treat a child's wait event as a parent goal wait", async () => {
+    const wait = hookEvent({ hook: "stop", name: "evo", decision: "wait" });
+    wait.origin = ["child"];
+    const session = goalFakeSession(() => [wait]);
+    const manager = makeManager(session);
+    const events: ChannelEvent[] = [];
+    channels.get(ROW.sessionId).subscribe((event) => events.push(event));
+    await manager.startGoal(ROW.sessionId, {
+      messages: [userText("obj")], objective: "obj", budget: -1,
+    });
+    await waitFor(() => manager.statusOf(ROW.sessionId) === "idle");
+    expect(serverEvents(events).filter((e) => e.type === "goal_finished")).toMatchObject([
+      { outcome: "aborted", rounds: 1 },
+    ]);
+  });
+
+  it("closes a resumed waiting goal on an infrastructure failure", async () => {
+    let notify: (() => void) | undefined;
+    let notices: OmniMessage[] = [];
+    let calls = 0;
+    const session = goalFakeSession(() => {
+      if (++calls > 1) throw new Error("synthetic resumed failure");
+      return [goalHook("continue", "active", 2, 25), roundInput(2),
+        hookEvent({ hook: "stop", name: "evo", decision: "wait" })];
+    });
+    session.onBackgroundNotice = (listener) => { notify = listener; };
+    session.takeBackgroundNotices = () => { const pending = notices; notices = []; return pending; };
+    const manager = makeManager(session);
+    const events: ChannelEvent[] = [];
+    channels.get(ROW.sessionId).subscribe((event) => events.push(event));
+    await manager.startGoal(ROW.sessionId, {
+      messages: [userText("obj")], objective: "obj", budget: -1,
+    });
+    await waitFor(() => manager.statusOf(ROW.sessionId) === "idle");
+    notices = [userText("native child failed", "harness")];
+    notify!();
+    await waitFor(() => calls === 2 && manager.statusOf(ROW.sessionId) === "idle");
+    expect(serverEvents(events).filter((e) => e.type === "goal_finished")).toMatchObject([
+      { outcome: "aborted", rounds: 2, used: 25 },
+    ]);
+  });
+
   it("closes the goal as aborted when the stream ends without the hook's terminal event", async () => {
     // A cut-off run (infrastructure failure upstream) must not leave the banner active.
     const session = goalFakeSession(() => [

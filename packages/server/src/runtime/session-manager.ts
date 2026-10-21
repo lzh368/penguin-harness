@@ -40,6 +40,7 @@ import path from "node:path";
 import {
   createAgent,
   findLatestTraceFile,
+  isEventMessage,
   isHookContinue,
   isHookInput,
   isSessionMeta,
@@ -535,6 +536,8 @@ export interface RuntimeEntry {
   abort: AbortController | null;
   /** The in-flight drive Promise (awaited during graceful shutdown). */
   running: Promise<void> | null;
+  /** Goal event counters retained across an explicit native background wait. */
+  waitingGoal?: { round: number; used: number; budget: number };
   /**
    * Agent config generation this runtime was built under (see
    * invalidateAgentRuntimes): once it falls behind the Agent's current generation,
@@ -1274,6 +1277,7 @@ export class SessionManager {
         objective,
         budget: args.budget,
       });
+      delete entry.waitingGoal;
       const gen = this.goalStream(entry, {
         input,
         budget: args.budget,
@@ -1296,7 +1300,8 @@ export class SessionManager {
    * goal_finished server event. `used` is what the hook last recorded in its event's
    * `output` — the same number its budget check used — so the UI never shows a different
    * figure. A stream that ends without the hook's terminal event (a cut-off run, an
-   * infrastructure failure) closes as `aborted`.
+   * infrastructure failure) closes as `aborted`. An explicit native background wait keeps
+   * the counters on the runtime entry; its automatically launched follow-up resumes this tap.
    */
   private async *goalStream(
     entry: RuntimeEntry,
@@ -1305,17 +1310,21 @@ export class SessionManager {
       budget: number;
       approve: ApproveFn;
       signal: AbortSignal;
+      resume?: boolean;
     },
   ): AsyncGenerator<OmniMessage> {
     const gen = entry.session.run(args.input, {
       approve: args.approve,
       signal: args.signal,
     });
-    let round = 0;
-    let used = 0;
+    const previous = args.resume ? entry.waitingGoal : undefined;
+    delete entry.waitingGoal;
+    let round = previous?.round ?? 0;
+    let used = previous?.used ?? 0;
     let finished = false;
+    let waiting = false;
     // Round 1's boundary is the seeded input itself: it never comes back out of `gen`.
-    for (const msg of args.input) {
+    for (const msg of previous ? [] : args.input) {
       if (isHookInput(msg)) {
         round++;
         this.publishEvent(entry, {
@@ -1331,6 +1340,15 @@ export class SessionManager {
     let continued = false;
     try {
       for await (const msg of gen) {
+        // Core emits wait only after validating native pending work. Child hook events
+        // are not the parent's lifecycle; an aborted stream never preserves a wait.
+        if ((!msg.origin || msg.origin.length === 0) && isEventMessage(msg)) {
+          if (msg.payload.type === "hook" && msg.payload.hook === "stop") {
+            waiting = msg.payload.decision === "wait";
+          } else if (msg.payload.type === "abort") {
+            waiting = false;
+          }
+        }
         if (isHookContinue(msg)) continued = true;
         if (continued && isHookInput(msg)) {
           continued = false;
@@ -1358,7 +1376,11 @@ export class SessionManager {
         }
         yield msg;
       }
-      if (!finished) this.finishAborted(entry, round, used);
+      if (!finished && waiting && !args.signal.aborted) {
+        entry.waitingGoal = { round, used, budget: args.budget };
+      } else if (!finished) {
+        this.finishAborted(entry, round, used);
+      }
     } catch (err) {
       // Core throws only on infrastructure failures: close the goal
       // as aborted, then let drive's defensive catch record the error. Guarded on
@@ -1405,10 +1427,15 @@ export class SessionManager {
     this.publishState(entry, "running");
 
     const approve = this.entryApprove(entry);
-    const gen = entry.session.run(input, {
-      approve,
-      signal: ac.signal,
-    });
+    const gen = entry.waitingGoal
+      ? this.goalStream(entry, {
+          input,
+          budget: entry.waitingGoal.budget,
+          approve,
+          signal: ac.signal,
+          resume: true,
+        })
+      : entry.session.run(input, { approve, signal: ac.signal });
     // This call's input user text is the whole title source: drive persists its first
     // words as the immediate fallback and hands it to the LLM as the generation material
     // (user input only — generation never waits for model output).
