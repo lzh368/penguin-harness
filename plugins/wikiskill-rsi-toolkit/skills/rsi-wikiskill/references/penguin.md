@@ -1,6 +1,8 @@
 # Penguin 执行接口
 
-供 Controller 和单次 evaluator 使用。基础 State/技能注入规则两种接口共用；本文件的 cell 启动、原生 Session 路径和 rubric 打分只适用于本地 Workspace。GDPevo 改读 [gdpevo.md](gdpevo.md) 和 [harbor.md](harbor.md)，使用 Harbor 容器、trial 与原始 verifier。不要同时加载另一份存在冲突的评测指令。
+供 Controller 和单次 evaluator 使用。基础 State/技能注入规则共用；本文件的 cell 启动、原生 Session 路径和 rubric 打分只适用于本地 Workspace。GDPevo 改读 [gdpevo.md](gdpevo.md) 和 [harbor.md](harbor.md)，Terminal-Bench 改读 [terminal-bench.md](terminal-bench.md)，使用 Harbor 环境、trial 与原始 verifier。不要同时加载另一份存在冲突的评测指令。
+
+先按 [experiment-spec.md](experiment-spec.md) 确认任务清单、学习单元和所选执行接口。网页上能选择一个 benchmark，或规划工具接受其 ID，都不能证明它已有 WikiSkill 执行适配；未接入的 runner 先完成适配与预检，不能退回普通 Workspace 只发题面来代替真实环境。
 
 ## Controller：接入和冻结
 
@@ -77,7 +79,7 @@ Controller 只读取 split 清单和指纹；validation/test 内容指纹由数�
 <!-- WIKISKILL_DERIVED_END -->
 ```
 
-首次基线前保存基础文件至 Controller 的私有实验存档；基础文件已含上述标记时停止并核对，不能叠加多段。每次从冻结基础文件和完整 render 输出重新构造文件，原子替换，只改派生段。不要人工摘要、截断、增加策略或插入 Wiki。检查拼接标记唯一，拒绝技能正文伪造限定标记。
+首次基线前保存基础文件至 Controller 的私有实验存档；基础文件已含上述标记时停止并核对，不能叠加多段。每次从冻结基础文件和完整 render 输出重新构造文件，原子替换，只改派生段。不要人工摘要、截断、增加策略或插入 Wiki。检查拼接标记唯一，拒绝技能正文伪造限定标记。新的外部清单实验使用 `state.py render --block` 直接生成包含两端标记的规范段，不再手工包一层；H0 的规范空段只有 BEGIN、一处换行、END。旧 GDPevo 已冻结注入字节保持不变。
 
 `accepted/skills` 和 `candidates/.../skills` 是 Controller 的真正技能文件；Target 接收它们的 `SKILL.md` 全文。默认不把这些目录复制到 Target，以免把 `PURPOSE.md` 一并暴露，也避免与按需加载重复。Target 不安装本优化 skill，技能目录初始为空。这个接入方式修改的是可重建的加载段；优化器的搜索空间仍只有技能文件。
 
@@ -118,7 +120,7 @@ model_id: <role_models.target.model_id>")
 
 根据成功协议中的 `session_id` 取训练 root Session，归档 `TARGET/traces/<date>/<session_id>_<index>.jsonl` 的全部分片（包含压缩前后）。验证 session_meta 的 canonical workspace、agent_state、provider、model。沿 subagent 事件引用补充 Target 的直接关联子 Session 及其分片；如有更深实际链路，完整追踪，不能混入 evaluator Session。
 
-在 `raw/rXXXX/<case>-<run>.md` 建不可变入口，列出 case 身份、原始文件 hash、全部分片及子轨迹路径、预测与反馈。Proposer 必须读取入口所指完整轨迹，入口本身的几行摘要不等于完成阅读。原始文件置于同一轮 raw 子目录，写入后只读并登记 hash。后续轮次加新目录，不覆盖旧文件。
+通用 Workspace 在 `raw/rXXXX/<case>-<run>.md` 建不可变入口，列出 case 身份、原始文件 hash、全部分片及子轨迹路径、预测与反馈。GDPevo/Harbor 使用 [training-views.md](training-views.md) 导出器生成 `raw/rXXXX/items/<编号>/index.md` 及完整原始分片，不另外手工导出或截断 JSON。Proposer 必须读取入口所指完整轨迹，入口本身的几行摘要不等于完成阅读。原始文件置于同一轮 raw 子目录，写入后只读并登记 hash。后续轮次加新目录，不覆盖旧文件。
 
 伴生审计接收经过筛选的工具访问路径/调用元数据；validation/test 输出与评分内容仍不共享。Controller 不为了审计而打开 validation/test trace：由对应 evaluator 就地审计访问范围，异常按 evaluation_failed 返回并在私有审计档案留证。只有 train 的完整 trace 可供优化器读取。
 
@@ -127,7 +129,7 @@ model_id: <role_models.target.model_id>")
 本节是叶子 worker 的完整任务。全程不发进度、评分解释、gold 或优化建议；最终只返回下述协议 JSON。JSON 同时是 YAML 1.2 子集，字段与主线单次评测契约一致，便于用标准库严格解析。
 
 1. 请求必须恰含八个字段且无冲突/重复；protocol_version=1，run 为正整数。case、agent、benchmark ID 不得越界。缺项返回 invalid_request，不启动执行。模型对必须完整。
-2. 仅定位请求的 Target/Case。拒绝路径穿越、符号链接逃逸。要求 `agent_state/system_config.yaml`、`benchmark_config.toml`、`<case>/statement/README.md`、`<case>/rubric/README.md`。rubric 总分恰为 100；标定 failed 或材料不全返回 benchmark_invalid。若任务是 GDPevo，启动前改走 Harbor 接口；其他未适配的外部 runner 返回 benchmark_invalid，不能复制题面后假装完成环境接入。
+2. 仅定位请求的 Target/Case。拒绝路径穿越、符号链接逃逸。Workspace 接口要求 `agent_state/system_config.yaml`、`benchmark_config.toml`、`<case>/statement/README.md`、`<case>/rubric/README.md`。rubric 总分恰为 100；标定 failed 或材料不全返回 benchmark_invalid。GDPevo 或已冻结外部清单的 Terminal-Bench 在启动前改走相应 Harbor 接口；其他未适配的外部 runner 返回 benchmark_invalid，不能复制题面后假装完成环境接入。
 3. 顶层 version（缺省 1）必须等于 expected_version；记录 Target 配置的 `model.thinking_level`（缺省 medium）。快照所有 State 文件内容 hash（排除 vault，禁止读凭证）、statement/rubric 内容 hash。之后不能改 Agent、benchmark 或 scoreboard。
 4. 在 `TARGET/workspaces/` 下创建唯一绝对 Workspace，仅复制 statement 的**内容**，让 README.md 位于 Workspace 根。Target 不得见 rubric/gold/evaluator 资料；同时核对已配置的隔离策略。快照执行前 Workspace，记录启动尝试。
 5. 用现成已验证的 CLI，逐行设变量并启动一次前台执行：

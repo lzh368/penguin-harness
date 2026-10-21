@@ -86,7 +86,7 @@ class CampaignCLITest(unittest.TestCase):
         return result.stderr
 
     def initialize(self, **kwargs):
-        return self.cli("init", "--profile", self.profile_path, "--out", self.campaign,
+        return self.cli("init", "--final-test-policy", "repeat", "--profile", self.profile_path, "--out", self.campaign,
                         "--penguin-home", kwargs.pop("home", self.home),
                         "--project-id", kwargs.pop("project", "offline_project"),
                         "--agent-prefix", kwargs.pop("prefix", "wiki"), **kwargs)

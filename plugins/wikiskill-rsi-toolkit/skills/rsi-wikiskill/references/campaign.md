@@ -1,6 +1,12 @@
 # GDPevo 三次独立实验入口
 
+本文的 r1/r2/r3 都包含重新学习。一次学习后的三次固定 Skill 测试使用独立 [test-repeats.md](test-repeats.md) 协议；不能调用本页 `verify-replica` 把只做测试的 r2/r3 当作完整学习。本文历史汇总的总体标准差 ddof=0 保留；新测试复测报告样本标准差 ddof=1，明确标注，不能混用。
+
+> 新实验最终测试按 [final-test.md](final-test.md) 执行：冻结 `reuse_unchanged` 时，最终业务技能为空且有效状态/评测条件一致，只做 test-H0 并保存 skip 回执；下文“两套 test”对有技能变化或预先选择 `repeat` 的实验成立。旧冻结实验保持旧协议。
+
 `scripts/campaign.py` 负责本项目 GDPevo 配置的身份冻结、评测矩阵及复算汇总；真实执行仍按本技能与 Harbor 接口。这是可选的实验管理工具；普通 Web 实验可以由当前 Controller 按本技能直接准备 Target 和清单，不依赖工作区的 `rsi.py`。工具从所选 profile 读取模型，不限定某个服务商，也不创建 Penguin Agent、模型 Session、baseline 分数或审计 pass。
+
+本工具验证固定的 GDPevo profile，不是通用 benchmark 入口。[experiment_spec.py](../scripts/experiment_spec.py) 只生成另一种 `planning_only` 规划文件，不能传给这里的 `init`，也不能替代既有 profile/campaign。不要放宽旧工具的任务 allowlist 来接入新的数据集。
 
 ```bash
 python3 <skill>/scripts/campaign.py init \
@@ -31,6 +37,10 @@ python3 <skill>/scripts/campaign.py summary --campaign <campaign>
 ```
 
 汇总重新验证六份原始矩阵，不信任预写 summary；缺题、额外题、失败、重复 Session、模型或部署声明漂移均拒绝。输出每次 H0/final/差值、三次算术均值、总体标准差（ddof=0）、六领域均值及可追溯 hash。它证明矩阵内部一致，不代替原始审计真实性和算法流程审查。
+
+自动进入下一副本之前另用 `campaign.py verify-replica --campaign <campaign> --replica r1`：它从 `state.json` 和原始矩阵复算 `validation-H0`、`train-rNNNN`、存在候选的 `validation-rNNNN`、`test-H0/test-final`，核对 accepted/candidate 技能 hash、决策分数与 evaluation ID。`no_action` 轮不应重复验证。缺失/额外计划、pending、未到停止条件或分数/决策不一致时返回非零，监督器必须停止接力。文件命名与本节约定不同的旧实验先人工映射审核，不为通过校验覆盖原件。运行状态和费用门见 [operations.md](operations.md)。
+
+复算同时检查部署版本：一个版本只能对应一个技能集合，训练与验证随进化不能回退版本；测试使用的版本不能早于进化末版。连续 phase 未换 State 可以复用版本，恢复旧技能必须递增版本。两套 test 均在技能冻结后执行，不限定彼此先后；版本检查只证明账本一致，实际部署仍由 Harbor 回执与 trace 审计证明。决策记录中的 `previous_best` 也须与重放的历史最好分一致。
 
 本工具约定三个不同的 Controller/Target ID，共享一个隔离的宿主 Penguin 数据根和模型配置，各自 OUT、Wiki、技能、会话、容器和学习历史互不共享。专用 Controller ID 是这个工具的约定，WikiSkill 通用入口只要求干净的 Controller 定义及每次全新的 Session。smoke 另用 `<前缀>_controller_smoke` / `<前缀>_target_smoke` 和独立目录；smoke 不写正式 campaign，不导入它的轨迹或成绩。
 
