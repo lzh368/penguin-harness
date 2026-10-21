@@ -40,7 +40,7 @@
     },
     "icon": "icon.svg",
     "hooks": {
-      "version": "2026.10.21.5",
+      "version": "2026.10.21.6",
       "user_prompt": [
         {
           "command": "guard.mjs",

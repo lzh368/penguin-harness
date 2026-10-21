@@ -108,7 +108,12 @@ native traces or role-authored candidates/decisions.
    full ledger, and all ledger chunks must have been read after that one judge
    command. Its captured context output is
    private_learning/contexts/<task_id>.json. The canonical judge command and
-   all read receipts must be present in the native trace. Transport, parse,
+   all feedback read receipts must be present in the native trace. Each granted
+   public input must have complete helper receipts or exact successful native
+   read_file windows covering the entire file before the judge. Partial,
+   truncated, failed or foreign-path reads do not qualify; use read-material
+   for truncated native output, lines over 2000 UTF-16 units or files at least
+   8 MiB. Learning-role materials and feedback still require helper receipts. Transport, parse,
    identity or evidence failure ends this batch as method_failed.
 4. For each negative captured execution, request one role=reflector for that
    task and invoke the exact returned call. It reads its full role/context and

@@ -449,8 +449,8 @@ def role_request(req, meta, scratch, mode):
         # The Solver fills the existing API URL from its public access document;
         # the helper checks the canonical identity and never permits another attempt.
         text += "\n" + json.dumps(grant, ensure_ascii=False)
-        text += "\nFirst satisfy the learned reader inherited in your Agent State: use native read_file for the public task and full learned SKILL.md/index.json, then run its foreground selector and observe its complete output. Only after selection run the audited read-material commands below; they do not replace the reader's native read_file requirement.\n"
-        text += f"\nRead full role file {role_file} and all granted text using read-material."
+        text += "\nFirst satisfy the learned reader inherited in your Agent State: use native read_file for the public task and full learned SKILL.md/index.json, then run its foreground selector and observe its complete output. After selection, complete all public inputs before solving. A complete native read_file of a granted public input also satisfies its read audit; do not duplicate that read through the helper. Use read-material for any incomplete or truncated native input; this does not replace the learned reader's own native read_file requirement.\n"
+        text += f"\nRead full role file {role_file} using read-material. Read every granted public input completely, either with exact successful native read_file windows (all lines, before judge) or read-material chunks. Native output with any truncation, a line over 2000 UTF-16 units, or a file at least 8 MiB needs read-material instead. This public-input option never applies to the feedback ledger or learning-role materials."
         text += f"\nFinal answer: {Path(t['answer_dir']) / (task + '.json')}\n"
         text += "Use judge exactly once via one standalone helper command. Never probe judge directly. "
         text += "After feedback, do not revise the answer or call the service again.\n"

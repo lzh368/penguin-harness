@@ -16,6 +16,7 @@ import json
 import math
 import os
 from pathlib import Path
+import posixpath
 import re
 import shlex
 import stat
@@ -715,6 +716,127 @@ def verify_reads(view, paths, path_map=None):
     return verify_material_records(view, material_records(paths, path_map))[0]
 
 
+def native_read_count(value, default):
+    """The native read_file count coercion (JS Number/floor), without eval."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        # ECMAScript whitespace; Python strip additionally removes U+0085.
+        value = value.strip(" \t\n\r\v\f\u00a0\u1680\u2000\u2001\u2002\u2003\u2004"
+                            "\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff")
+        try:
+            if re.fullmatch(r"0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+", value):
+                value = float(int(value, 0))
+            elif re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", value):
+                value = float(value)
+            else:
+                return None
+        except (ValueError, OverflowError):
+            return None
+    if type(value) not in (int, float):
+        return None
+    try:
+        number = float(value)
+        return math.floor(number) if math.isfinite(number) else None
+    except (ValueError, OverflowError):
+        return None
+
+
+def native_file_read(view, path, content, before_call_id=None):
+    """Prove complete public text from exact original native read_file windows.
+
+    Match the frozen Penguin renderer, not numbered text found inside arbitrary
+    outputs. Ordinary pagination is allowed; truncated windows, long lines and
+    scan-cap files still need read-material. This is intentionally used only for
+    Solver public inputs, never feedback or sealed learning-role materials.
+    """
+    workspace = view.get("binding", {}).get("workspace", "")
+    if not posixpath.isabs(workspace) or not posixpath.isabs(path):
+        return None
+    if "\0" in content or len(content.encode()) >= 8 * 1024 * 1024:
+        return None
+    lines = content.split("\n")
+    if content.endswith("\n") or not content:
+        lines.pop()
+    lines = [line[:-1] if line.endswith("\r") else line for line in lines]
+    if any(len(line.encode("utf-16-le")) // 2 > 2000 for line in lines):
+        return None
+    rows = [f"{number:6}\t{line}" for number, line in enumerate(lines, 1)]
+    positions = observation_positions(view)
+    boundary = None
+    if before_call_id is not None:
+        boundaries = [called for pair, (called, _) in zip(view["pairs"], positions)
+                      if pair["call"]["payload"].get("tool_call_id") == before_call_id]
+        if len(boundaries) != 1:
+            return None
+        boundary = boundaries[0]
+    covered, empty_at = {}, None
+    for pair, (called, observed) in zip(view["pairs"], positions):
+        call, result = pair["call"]["payload"], pair["observation"]["payload"]
+        if (call.get("name") != "read_file" or result.get("stop_reason") != "completed"
+                or result.get("images") or called >= observed
+                or boundary is not None and observed >= boundary):
+            continue
+        try:
+            args = json.loads(call["arguments"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not isinstance(args, dict):
+            continue
+        target = args.get("file_path")
+        if not isinstance(target, str) or not target or "\0" in target or re.match(r"https?://", target, re.I):
+            continue
+        # Container source paths are lexical POSIX identities, including during
+        # host relocation. Never resolve them through the reviewing host's FS.
+        # Node path.resolve collapses double-leading slashes; normpath alone
+        # preserves exactly two on POSIX Python.
+        actual = "/" + posixpath.normpath(posixpath.join(workspace, target)).lstrip("/")
+        expected_path = "/" + posixpath.normpath(path).lstrip("/")
+        if actual != expected_path:
+            continue
+        offset = native_read_count(args.get("offset"), 1)
+        limit = native_read_count(args.get("limit"), 2000)
+        if offset is None or limit is None or limit <= 0:
+            continue
+        offset = max(1, offset)
+        if not rows:
+            if result.get("output") == f'"{target}" is an empty file (0 lines).':
+                empty_at = observed if empty_at is None else min(empty_at, observed)
+            continue
+        if offset > len(rows):
+            continue
+        end = min(offset + limit - 1, len(rows))
+        expected = rows[offset - 1:end]
+        if "\r\n" in content:
+            expected = expected + ["(file uses CRLF line endings)"]
+        if end < len(rows):
+            expected = expected + [f"[file has {len(rows)} lines total; showing {offset}-{end} — call again with offset to continue]"]
+        if result.get("output") != "\n".join(expected):
+            continue
+        for number in range(offset, end + 1):
+            covered[number] = min(covered.get(number, observed), observed)
+    if not rows:
+        return empty_at
+    return max(covered.values()) if len(covered) == len(rows) else None
+
+
+def verify_solver_inputs(view, records, before_call_id=None):
+    """Keep helper receipts, with full native reads for granted public files."""
+    receipts, last_read, missing = material_read_status(view, records)
+    unresolved = {item["path"] for item in missing}
+    for path, content, fingerprint in records:
+        if path not in unresolved:
+            continue
+        require(digest(content.encode()) == fingerprint, "public input fingerprint differs")
+        observed = native_file_read(view, path, content, before_call_id)
+        if observed is not None:
+            unresolved.remove(path)
+            last_read = max(last_read, observed)
+    missing = [item for item in missing if item["path"] in unresolved]
+    require(not missing, "material not fully read: " + (f"{missing[0]['path']} offset {missing[0]['offset']}" if missing else ""))
+    return receipts, last_read
+
+
 def standalone_helper_request(pair, view):
     """Recognize one literal foreground helper invocation, without shell evaluation."""
     call = pair["call"].get("payload", {})
@@ -1056,7 +1178,6 @@ def capture(req):
         require(any(m["payload"].get("role") == "user" and m["payload"].get("type") == "text"
                     and contains_json(m["payload"]["text"], grant) for m in view["messages"]),
                 "input files not bound to the native task delegation")
-        verify_reads(view, req["inputs"])
     # The result must originate from the exact single-operation helper call.
     judge_receipt = None
     if fb.get("source") != "penguin-evaluation":
@@ -1064,6 +1185,7 @@ def capture(req):
                 and req["feedback"] == fb["feedback_path"], "capture paths differ from judged attempt")
         judge_receipt = verify_judge_evidence(view, fb, req["judge_request"])
         require(fb["request"]["answer"] == json.loads(answer_bytes), "judge submitted a different answer")
+        verify_solver_inputs(view, material_records(req["inputs"]), judge_receipt["tool_call_id"])
     inputs = []
     for source in req["inputs"]:
         raw = regular(source).read_bytes()
@@ -1114,7 +1236,8 @@ def validate_contexts(contexts, train_ids, path_map=None):
             require(any(m["payload"].get("role") == "user" and m["payload"].get("type") == "text"
                         and contains_json(m["payload"]["text"], grant) for m in actual["messages"]), "input grant changed")
             try:
-                verify_material_records(actual, [(s["source"], s["text"], s["sha256"]) for s in c["inputs"]])
+                verify_solver_inputs(actual, [(s["source"], s["text"], s["sha256"]) for s in c["inputs"]],
+                                     c["judge_request"]["tool_call_id"])
             except ValueError as exc:
                 raise ValueError("captured input absent from Solver observations") from exc
             require(verify_judge_evidence(actual, c["feedback"], c["judge_request"]["path"], path_map)
@@ -1237,7 +1360,7 @@ def verify_compilation(req):
 READER = '''---
 name: evo-harness-learned
 description: Select relevant frozen Evo-Harness procedures for the current task.
-version: 2026.10.21.5
+version: 2026.10.21.6
 ---
 
 Before business API calls or writing the task answer, use native read_file to read

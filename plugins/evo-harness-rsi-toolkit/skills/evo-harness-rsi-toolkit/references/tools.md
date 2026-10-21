@@ -95,7 +95,13 @@ Additional operations:
   and request path per exec; no variables or batch loops. Do not pipe, redirect
   or background receipts; their canonical output must remain in the
   native tool observation. `capture` accepts only inputs named in the native
-  user/parent task grant and actually read through these receipts.
+  user/parent task grant and actually read through these receipts, or through
+  exact successful native read_file output for Solver public inputs only.
+  Native windows must cover every line before the single judge, match the frozen
+  bytes as rendered by Penguin, and contain no truncation or error wrapper.
+  Lines over 2000 UTF-16 units or files at least 8 MiB need read-material.
+  Empty files require a successful native empty-file observation. This option
+  does not apply to feedback ledgers or Reflector/Evolver materials.
 - `seal-role-output`: role=reflector/evolver, task_id for Reflector only; guarded
   training leaves call this from their own native Session. It derives fixed
   materials/output/validation from training.json and the registered parent task,

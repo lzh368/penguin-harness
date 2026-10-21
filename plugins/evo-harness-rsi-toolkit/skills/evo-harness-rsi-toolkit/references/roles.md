@@ -11,7 +11,8 @@ events. `input_subagent` addresses the returned subagent id; never assume a
 leaf has either subagent tool (Penguin 0.2.16 maximum depth is 1).
 
 Every prompt includes the complete relevant section below plus the bound
-task/attempt id, allowed material paths and output path. Read every assigned material and this role text through `read-material` at
+task/attempt id, allowed material paths and output path. Except for Solver public
+inputs described below, read every assigned material and this role text through `read-material` at
 offsets 0, 4000, 8000, ... until end=total; require full JSON tool output for
 each 4000-character chunk. This supplies machine-auditable read receipts.
 Use exactly one foreground helper invocation per exec: python3 -B followed by
@@ -37,10 +38,15 @@ Read the installed training.json beside the method Skill for the exact frozen
 train_ids/attempt and canonical path policy; it contains no other member's
 answers. First satisfy the inherited learned reader: use native read_file for
 the public task and the complete learned SKILL.md/index.json, run its foreground
-selector, and observe its full output. Only then execute the audited
-read-material operations; these do not replace the reader's native read_file
-requirement. Read the complete assigned role file and every granted text input with
-read-material, retaining all full chunks. Solve exactly the assigned training task, using its public instruction and
+selector, and observe its full output. Read the complete assigned role file with
+read-material. Every granted public input must be fully observed before solving:
+complete successful native read_file output also satisfies that input's audit,
+so do not duplicate a full native read with the helper. Normal offset/limit pages
+may cover a file together, with every numbered line observed. Truncated output,
+a line over 2000 UTF-16 units, or files at least 8 MiB require read-material
+chunks instead. Native input observations must finish before the single judge.
+This option applies only to granted public inputs; feedback and Reflector/Evolver
+materials still require helper receipts. Solve exactly the assigned training task, using its public instruction and
 payloads, environment_access.md and allowed business service. Select guidance
 from the fixed pre-batch learned Skill before acting. Leave the final answer
 at the assigned submission path. Do not inspect siblings' answers, candidate
