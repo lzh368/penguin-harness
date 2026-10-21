@@ -42,6 +42,8 @@ WikiSkill 接收实验方案，不内置某个数据集的划分比例。Skill �
 
 `config.role_models` 必须显式提供 `controller`、`target`、`evaluator`、`wiki_maintainer`、`skill_proposer`、`companion_auditor` 六项，每项恰为 `provider`、`model_id`、`thinking_level`。不填 Key；模型/档位是否可用由执行适配核对。`train_feedback_mode` 为 `score_only` 或 `with_labels`；后者仍需合法训练标签出口，规划声明本身不授予答案访问权限。`replicas` 为非空且不重复的 ID 数组，`independent_replicas` 必须为 `true`；其余次数、并发、超时和 turn 上限为正整数。
 
+由有权限的评测/适配角色核对输入契约：题目若引用已解示例、规则表或来源优先级约定，记录实际提供的位置及允许的获取途径；学习角色不得为此浏览 held-out 题目。总分反馈不等于已解示例，输出枚举也不等于决策规则。未提供的材料如实记入实验限制，无法满足必要输入时在准备阶段修复或停止；不能从私有 rubric/答案补入，也不能默默把 score_only 改成 with_labels。已完成的受限输入实验保留原配置及成绩，修订输入或反馈协议需要另一个版本的实验，不能回填历史证据。
+
 当前规划协议与通用状态工具约定一致：`scoring.direction="higher_is_better"`、`normalization="linear_to_0_100"`、`aggregation="mean"`、`success_rule="normalized_score_equals_100"`，raw 上下限是有限且严格递增的数字。执行适配必须落实并记录转换；规划工具不转换实际 reward。使用不同评分语义时先适配，不能只给它换一个名称。
 
 ```bash

@@ -1,7 +1,7 @@
 ---
 name: rsi-wikiskill
 description: Run or resume WikiSkill experiments in Penguin. Compile training traces into a persistent Wiki, propose one skill change per batch, and accept changes only when independent validation improves. Use for skill-based RSI with isolated evaluation, including GDPevo and externally specified Terminal-Bench tasks through Harbor.
-version: 2026.10.21.3
+version: 2026.10.21.4
 ---
 
 # WikiSkill 自进化
@@ -79,19 +79,19 @@ Harbor 接口用 [training-views.md](references/training-views.md) 的 `train_vi
 
 ### 2. Wiki Maintainer
 
-从当轮训练记录分层抽样，最多 5 条失败、3 条成功；每条给 Maintainer 的轨迹视图最多 15,000 字符，记录采样种子/ID及截断方式，保留原文件。Harbor 使用导出 manifest 的 selected 视图，不另行挑选。让 Maintainer 先串起视图可见的任务要求、输入/规则、实际处理和交付结果，缺少环节明确待查。保留有独立依据的正确子步骤及待验证的有用做法，不把未满分等同于全部失败，也不把 Target 自检通过当作正确性或排除失分原因的证明。每个模式区分任务约束、工具事实、Target 自拟解释与 Maintainer 假设，记录条件、动作、结果、反例和未知之处；更新 `wiki/patterns/`、完整 `index.md` 并追加 `logs.md`。新证据削弱旧模式时同步修正索引和正文，不累积互相冲突的建议。
+目标是从训练经验提炼可复用的解题方法：什么条件下取哪些数据，依据什么规则执行查询、关联、计算或操作，得到什么结果并用于完成任务。按 [learning.md](references/learning.md) 保存“目标 → 输入及来源 → 实际步骤 → 最终产物 → 已知反馈 → 方法及边界”，而不只是失败现象或检查提醒。
+
+从当轮训练记录分层抽样，最多 5 条失败、3 条成功；每条视图最多 15,000 字符，记录采样种子/ID及截断方式，保留原文件。Harbor 使用导出 manifest 的 selected 视图，不另挑选。分清题面规则、工具事实、Target 推断与评分反馈；缺失内容不当作未做，中间已修正的错误不当作最终错误，总分不证明局部判断。更新 `wiki/patterns/`、完整 `index.md` 并追加 `logs.md`，同步纠正已被证据推翻的模式。
 
 ### 3. Skill Proposer
 
-开启新会话，只给角色指令、允许的路径和训练清单。它从 Wiki 索引、历史 `skill-impact.md`、训练结果摘要和当前技能开始，至少读四个不同训练任务的完整轨迹，查证后围绕一个可检验的行为变化输出一个结构化 proposal。先在 PURPOSE 用现有 train 记录展开原动作与新动作的推演，检查实际触发、可核对的中间结果和不应改变的正确步骤；这不调用 judge，也不算性能评测。后续轮次检查已接受规则在新 train 中是否触发、是否遵循及仍存的缺口。每条新规则在 PURPOSE 留下证据和反例/未知范围，Target 所见 SKILL 正文写明启用及跳过条件；不能把局部经验升级为无条件的业务规定。具体准则与格式见学习指南和角色文档。
+开启新会话，只给角色指令、允许路径和训练清单。从 Wiki、历史 `skill-impact.md`、摘要和当前技能开始，至少完整读四个本轮不同训练任务的轨迹。复核 Wiki 后，选择一个有依据的操作流程：**单次修改一个 Skill，可以包含围绕同一目标的完整多步方法；不必缩成一个小检查，也不要求覆盖所有训练题。** 可编译已做过的有用步骤或修正缺口，不能拼互不相关的总清单。
 
-`no_action`：记录理由，保留 Wiki 和技能，消耗一轮，跳过重复 validation。本规则是工程约定。格式错误可在同一角色会话修正；不要向它透露 validation 私有细节。修正仍不合法时停止本轮，不把错误伪装成算法拒绝。
+正文建议按“适用条件 → 所需信息 → 执行方法 → 结果用途 → 分支与边界”写；查询、计算、格式处理均可，但必须具体说明怎么解决问题。参数与规则来自当前任务，边界写在 Target 实际收到的正文，不只留在 PURPOSE。
 
-提案必须给出至少一处具体的训练内操作依据及可检查结果：可以编译 Target 已做过的有用步骤，也可以修正行为缺口，如实区分两者。仅增加“不确定”标注，或把原有猜测替换为未经支持的字段映射，不能代替操作依据。一个技能围绕一个机制；每个必需步骤的输入与适用条件都要成立，不能用宽泛入口套用特定任务的业务检查。按 [learning.md](references/learning.md) 先修正缺口；实际操作合理而提分未知的候选仍可进入 validation。训练数据可能缺少业务规则或字段级反馈，如实保留这个限制，不用补造规则强行产出技能。
+PURPOSE 引用训练证据，沿一个真实场景推演输入、规则、动作、中间结果及交付，再核对另一场景的边界和原有正确步骤。按学习指南区分结构自洽与业务依据，不把未知关系或猜测固定成规则。推演不重做题、不调用 judge；操作依据成立、效果未知可交 validation，缺前提先补正。后续轮次检查旧技能在本轮 train 是否触发、遵循及仍有缺口，不凭 validation 汇总猜业务原因。
 
-检查类技能须区分“计算或结构自洽”与“业务判断有依据”。跨字段的互斥、包含或决策关系本身也要有证据，不能只因两个字段各有说明就认定它们互相约束。依赖未知关系的检查只能触发查证，不能强制改写答案；自定规则与依此生成的答案相符，不是独立的正确性证据。
-
-优先把有依据的计算、查询或决策过程编译为可执行步骤；不能因“加强检查”容易描述就跳过证据更强的方向。每个检查须说明冲突后如何核对规则、检查实现和答案，再决定修正哪一方；不预设自写断言永远正确。完整训练记录优先于 Wiki 中未经核实的解释，提案不得继承已被原记录推翻的前提。
+`no_action`：无有据改动时记录理由，保留 Wiki/技能，消耗一轮并跳过重复 validation；这是工程约定。格式错误可在同一角色会话修正，不透露 validation 私有细节；仍不合法时停止，不伪装成算法拒绝。提案格式及完整准则见 [roles.md](references/roles.md) 和 [learning.md](references/learning.md)。
 
 ### 4. 构造并审计候选
 
