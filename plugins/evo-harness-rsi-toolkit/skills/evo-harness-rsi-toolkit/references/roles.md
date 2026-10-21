@@ -14,14 +14,22 @@ Every prompt includes the complete relevant section below plus the bound
 task/attempt id, allowed material paths and output path. Read every assigned material and this role text through `read-material` at
 offsets 0, 4000, 8000, ... until end=total; require full JSON tool output for
 each 4000-character chunk. This supplies machine-auditable read receipts.
-Penguin exec_command has no per-call max_output_tokens argument: its output
-capacity is the fixed State-level maxOutputLength prepared by state.md. If a
-chunk is truncated, stop and report that capacity/setup mismatch; do not change
-State, invent a larger tool argument or repeat judge. Pair actions/results and
-retain pointers to the original traces. Run read-material and file-digest in the
-foreground, with their complete stdout returned by exec_command; do not pipe,
-redirect or background these receipt operations. Record tool-call evidence of those reads in the parent
-audit. An acknowledgment or a path in the prompt alone is not proof of reading.
+Use exactly one foreground helper invocation per exec: python3 -B followed by
+the literal absolute helper path and literal absolute request path. Write the
+request with native write_file first. Never combine read-material calls, use
+shell variables or loops, pipe, redirect, or background receipts. Await every
+complete receipt; independent parallel reads must all finish before sealing.
+Penguin exec_command has no per-call max_output_tokens argument; capacity is the
+fixed State maxOutputLength. If a receipt is truncated or missing, reread that
+single offset with the same helper in the same leaf; never change State or
+repeat judge. Record original trace evidence, not copied or parent-read receipts.
+Guarded Reflector/Evolver outputs use the fixed seal-role-output request supplied
+in their prompt, not file-digest. The helper verifies the leaf's complete actual
+reads and draft structure. On missing offsets, the same leaf reads those chunks
+and retries sealing; on structural errors, it fixes its own unsealed draft.
+These repairs add no Solver attempt or scoring call. Once sealed, do not edit
+the output. Ordinary unguarded RSI continues to use file-digest after all reads.
+An acknowledgment or a path in the prompt alone is not proof of reading.
 
 ## Solver (group training leaf)
 
@@ -87,7 +95,7 @@ Keep uncertainty visible; zero candidates is valid. Write the array to the
 assigned file, then use the prompt's validate-candidates request to check its
 schema, references and namespace before sealing. You may correct your own draft
 until this validation succeeds, without new task attempts or new feedback.
-Then call file-digest and return its receipt. After sealing the output is fixed;
+Then use the fixed seal-role-output request for guarded training (file-digest only for unguarded RSI) and return the successful receipt. After sealing the output is fixed;
 the coordinator cannot repair or rewrite it. You do not edit State.
 
 ## Evolver
@@ -113,7 +121,7 @@ can observe it completely. Shorten metadata if draft validation rejects it.
 The selector later enforces max_entries and the combined max_bytes budget.
 Validate your own draft decisions with that request before sealing: this checks
 the same compilation/export constraints without publishing State or changing
-content. Correct any structural or size errors yourself before file-digest;
+content. Correct any structural or size errors yourself before sealing;
 do not ask the coordinator to rewrite or synthesize your decisions.
 
 Compile both general operating patterns and localized task-type procedures.
@@ -126,5 +134,5 @@ Exported bodies contain methods and scope only, without raw training answers,
 traces, per-task feedback dumps or private scoring material. Evidence provenance
 stays in the private method records. Do not generate executable support code.
 No test data, test scores, extra training passes, model changes or acceptance
-thresholds. Seal your output with `file-digest` and return the receipt. You do not publish
+thresholds. Seal your output using the fixed seal-role-output request in guarded training (file-digest only for unguarded RSI) and return the successful receipt. You do not publish
 Target State.

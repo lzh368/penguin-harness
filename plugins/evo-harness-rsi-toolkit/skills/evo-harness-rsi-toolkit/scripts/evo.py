@@ -9,6 +9,7 @@ sys.dont_write_bytecode = True
 
 import contextlib
 import ast
+import ctypes
 import fcntl
 import hashlib
 import json
@@ -17,6 +18,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import stat
 import tempfile
 import urllib.error
 import urllib.parse
@@ -260,7 +262,7 @@ def prepare_judge_request(req):
             "model_calls": 0, "judge_calls": 0}
 
 
-def trace_view(paths, expected, path_map=None):
+def trace_view(paths, expected, path_map=None, active_call=None):
     """Preserve complete action/result pairs, with raw sources and no head/tail cut."""
     messages, sources, metas = [], [], []
     for path in paths:
@@ -297,6 +299,11 @@ def trace_view(paths, expected, path_map=None):
             key = p["tool_call_id"]
             require(key not in results, "duplicate tool output")
             results[key] = message
+    if active_call is not None:
+        require(set(calls) - set(results) == {active_call} and not (set(results) - set(calls)),
+                "only the current seal call may lack its tool result")
+        require(messages[-1] == calls[active_call], "current seal must be the last native action")
+        del calls[active_call]
     require(set(calls) == set(results), "incomplete action/observation pairing")
     return {"binding": expected, "sources": sources, "truncated": False,
             "messages": messages, "pairs": [{"call": calls[k], "observation": results[k]} for k in calls]}
@@ -655,22 +662,25 @@ def helper_observation(pair, view):
     return False
 
 
-def verify_material_records(view, records):
+def material_read_status(view, records, standalone=False):
     # Build this once per trace. Searching every output anew for every chunk
     # made a one-megabyte captured context take seconds to audit, and five
     # contexts could exceed the native hook timeout during sealing/freezing.
     indexed = {}
     positions = observation_positions(view)
     for pair, (_, observed) in zip(view["pairs"], positions):
-        if not helper_observation(pair, view):
+        if not (standalone_helper_request(pair, view) if standalone else helper_observation(pair, view)):
             continue
-        for value in json_values(pair["observation"]["payload"]["output"]):
+        values = list(json_values(pair["observation"]["payload"]["output"]))
+        if standalone and len(values) != 1:
+            continue
+        for value in values:
             if not isinstance(value, dict):
                 continue
             key = (value.get("material_path"), value.get("sha256"), value.get("offset"))
             if isinstance(key[0], str) and isinstance(key[1], str) and type(key[2]) is int:
                 indexed.setdefault(key, []).append((value, observed))
-    receipts = []
+    receipts, missing = [], []
     last_read = -1
     for path, content, fingerprint in records:
         # Complete fixed-size chunks must be present as actual tool outputs.
@@ -679,9 +689,17 @@ def verify_material_records(view, records):
             expected = {"material_path": str(path), "sha256": fingerprint, "offset": offset,
                         "end": end, "total": len(content), "text": content[offset:end]}
             observed = [position for value, position in indexed.get((str(path), fingerprint, offset), []) if value == expected]
-            require(observed, f"material not fully read: {path} offset {offset}")
-            last_read = max(last_read, min(observed))
+            if not observed:
+                missing.append({"path": str(path), "offset": offset})
+            else:
+                last_read = max(last_read, min(observed))
         receipts.append({"path": str(path), "sha256": fingerprint})
+    return receipts, last_read, missing
+
+
+def verify_material_records(view, records, standalone=False):
+    receipts, last_read, missing = material_read_status(view, records, standalone)
+    require(not missing, "material not fully read: " + (f"{missing[0]['path']} offset {missing[0]['offset']}" if missing else ""))
     return receipts, last_read
 
 
@@ -697,15 +715,189 @@ def verify_reads(view, paths, path_map=None):
     return verify_material_records(view, material_records(paths, path_map))[0]
 
 
+def standalone_helper_request(pair, view):
+    """Recognize one literal foreground helper invocation, without shell evaluation."""
+    call = pair["call"].get("payload", {})
+    if call.get("name") != "exec_command":
+        return None
+    args = json.loads(call["arguments"])
+    command = args.get("cmd", args.get("command", ""))
+    command = command.strip() if isinstance(command, str) else command
+    if not isinstance(command, str) or args.get("run_in_background") or any(c in command for c in "$`\n;|&><"):
+        return None
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return None
+    allowed = {str(Path(__file__).resolve())}
+    state = view.get("binding", {}).get("agent_state")
+    if state:
+        allowed.add(str(Path(state) / "skills/evo-harness-rsi-toolkit/scripts/evo.py"))
+    if (len(argv) == 4 and argv[:2] == ["python3", "-B"] and argv[2] in allowed
+            and Path(argv[2]).is_absolute() and Path(argv[3]).is_absolute()):
+        return argv[3]
+    return None
+
+
+def role_contract(training, role, task_id=None):
+    """Frozen engineering inputs; never chooses or changes learning content."""
+    require(training.get("guard_version") == 2, "role sealing requires guarded training")
+    require(role in ("reflector", "evolver"), "only learning roles seal outputs")
+    private = Path(training["private_learning"])
+    role_file = str(private / "roles" / (role + ".md"))
+    contexts = [str(private / "contexts" / (task + ".json")) for task in training["train_ids"]]
+    if role == "reflector":
+        require(task_id in training["train_ids"], "role task is outside the frozen batch")
+        context = str(private / "contexts" / (task_id + ".json"))
+        output = str(private / "roles" / task_id / "candidates.json")
+        materials = [role_file, context]
+        validation = {"op": "validate-candidates", "contexts": [context], "train_ids": [task_id],
+                      "candidates": output, "candidate_prefix": task_id + "-" + training["attempt_id"] + "-"}
+    else:
+        require(task_id is None, "batch Evolver has no task_id")
+        output = str(private / "decisions.json")
+        materials = [role_file, str(private / "candidates.json"), str(private / "prebatch-library.json"), *contexts]
+        validation = {"op": "validate-decisions", "contexts": contexts, "train_ids": training["train_ids"],
+                      "candidates": materials[1], "library": materials[2], "decisions": output,
+                      **{key: training[key] for key in ("limits", "max_entries", "max_bytes")}}
+    return {"schema": 1, "role": role, "task_id": task_id, "config_sha256": training["config_sha256"],
+            "materials": materials, "output": output, "validation": validation}
+
+
+def guarded_role_contract(req):
+    if req.get("role") not in ("reflector", "evolver"):
+        require(not req.get("require_role_seal"), "guarded role identity is missing")
+        return None
+    role_text = req.get("role_text_path")
+    path = str(Path(role_text).parent.parent / "frozen-training.json") if role_text else ""
+    mapped = req.get("path_map", {}).get(path, path)
+    if not mapped or not Path(mapped).is_file():
+        require(not req.get("require_role_seal"), "guarded role needs frozen-training.json")
+        return None
+    training = read(mapped)
+    if training.get("guard_version") != 2:
+        require(not req.get("require_role_seal"), "guarded role profile is missing")
+        return None
+    contract = role_contract(training, req["role"], req.get("task_id"))
+    require(len(req["materials"]) == len(contract["materials"]) and set(req["materials"]) == set(contract["materials"])
+            and req["outputs"] == [contract["output"]]
+            and role_text == contract["materials"][0], "role audit differs from frozen material/output contract")
+    return contract
+
+
+def role_seal_receipt(contract, session_id, reads, output_sha256):
+    return {"op": "seal-role-output", "complete": True, "role": contract["role"],
+            "task_id": contract["task_id"], "session_id": session_id,
+            "config_sha256": contract["config_sha256"], "file_path": contract["output"],
+            "sha256": output_sha256, "materials": reads}
+
+
+def seal_role_output(req, request_path):
+    """A native learning leaf checks its own observations before sealing its draft.
+
+    The server injects PENGUIN_SESSION_ID for this leaf's exec. No request may
+    supply another Session, trace list, material scope or path remapping. The
+    only ignored unmatched action is this currently executing seal command.
+    """
+    require(set(req) <= {"op", "role", "task_id"} and req.get("op") == "seal-role-output",
+            "seal request accepts only op, role and assigned task_id")
+    require(request_path and Path(request_path).is_absolute(), "seal request path must be absolute")
+    helper = regular(__file__).resolve()
+    state = helper.parents[3]
+    training = read(helper.parent.parent / "training.json")
+    private = Path(training["private_learning"])
+    require(read(private / "frozen-training.json") == training, "frozen training profile changed")
+    contract = role_contract(training, req["role"], req.get("task_id"))
+    session_id = ident(os.environ.get("PENGUIN_SESSION_ID", ""))
+    trace_root = state.parent / "traces"
+    traces = sorted(trace_root.rglob(session_id + "_*.jsonl"))
+    require(traces, "current native Session has no original trace")
+    rows = [json.loads(line) for path in traces for line in regular(path).read_bytes().splitlines()]
+    metas = [row["payload"] for row in rows if row.get("type") == "session_meta" and not row.get("origin")]
+    require(metas and all(meta["session_id"] == session_id and meta["source"] == "subagent"
+                         and Path(meta["agent_state"]).resolve() == state for meta in metas),
+            "seal must run in the assigned original native leaf Session")
+    meta = metas[0]
+    for key in ("provider", "model_id"):
+        require(meta[key] == training["runtime"][key], "leaf runtime differs from frozen training")
+    prompts = [row["payload"]["text"] for row in rows if not row.get("origin")
+               and row.get("type") == "model_msg" and row.get("payload", {}).get("type") == "text"
+               and row["payload"].get("role") == "user" and row["payload"].get("sender") == "parent_agent"]
+    require(prompts, "native leaf has no original parent task")
+    tickets = []
+    for path in sorted((private / "dispatch").glob("*.json")):
+        if path.name.endswith(".claimed.json"):
+            continue
+        ticket = read(path)
+        if ticket.get("phase") == contract["role"] and ticket.get("task_id") == contract["task_id"] and ticket.get("call", {}).get("prompt") == prompts[0]:
+            claim = read(path.parent / (digest(ticket["slot"].encode()) + ".claimed.json"))
+            require(claim["request_sha256"] == digest(json.dumps(ticket["call"], sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()),
+                    "role dispatch claim does not match its native task")
+            tickets.append((ticket, claim))
+    require(len(tickets) == 1, "seal needs exactly one registered native role dispatch")
+    ticket, claim = tickets[0]
+    expected_grant = {"evo_role_seal": {**contract, "parent_session_id": ticket["session_id"]}}
+    require(any(value == expected_grant for value in json_values(prompts[0])), "parent role sealing grant differs from frozen inputs")
+    parent_trace = None
+    parent_call = False
+    for path in sorted(trace_root.rglob(ticket["session_id"] + "_*.jsonl")):
+        for line in regular(path).read_bytes().splitlines():
+            row = json.loads(line); payload = row.get("payload", {})
+            if row.get("origin"):
+                continue
+            if row.get("type") == "event_msg" and payload.get("type") == "subagent" and payload.get("session_id") == session_id:
+                parent_trace = str(path)
+            if (row.get("type") == "model_msg" and payload.get("type") == "tool_call"
+                    and payload.get("name") == "run_subagent" and payload.get("tool_call_id") == claim["tool_call_id"]
+                    and json.loads(payload["arguments"]) == ticket["call"]):
+                parent_call = True
+    require(parent_trace and parent_call, "native child is not bound to its registered parent call")
+    binding = {key: meta[key] for key in ("session_id", "source", "provider", "model_id", "workspace", "agent_state")}
+    binding["parent_trace"] = parent_trace
+    calls = [row["payload"] for row in rows if not row.get("origin") and row.get("type") == "model_msg" and row.get("payload", {}).get("type") == "tool_call"]
+    require(calls, "current seal tool call is absent from native trace")
+    active = calls[-1]
+    require(standalone_helper_request({"call": {"payload": active}}, {"binding": binding}) == str(request_path),
+            "seal must be one literal foreground helper command in the current native Session")
+    view = trace_view([str(path) for path in traces], binding, active_call=active["tool_call_id"])
+    records = material_records(contract["materials"])
+    reads, _, missing = material_read_status(view, records, standalone=True)
+    if missing:
+        return {"op": "seal-role-output", "complete": False, "sealed": False,
+                "missing_reads": missing[:64], "missing_read_count": len(missing), "more_missing_reads": len(missing) > 64,
+                "next_action": "In this same leaf, read each listed offset in one standalone literal helper exec; await complete output, then retry sealing to check any remaining offsets. Do not rerun Solver/judge or ask the parent to edit content."}
+    validation = contract["validation"]
+    if contract["role"] == "reflector":
+        validate_candidate_file(validation)
+    else:
+        validate_decisions(validation)
+    receipt = role_seal_receipt(contract, session_id, reads, digest(regular(contract["output"]).read_bytes()))
+    for pair in view["pairs"]:
+        if standalone_helper_request(pair, view):
+            for prior in json_values(pair["observation"]["payload"]["output"]):
+                if isinstance(prior, dict) and prior.get("op") == "seal-role-output" and prior.get("complete") is True:
+                    require(prior == receipt, "role output or materials changed after successful sealing")
+    return receipt
+
+
 def audit_role(req):
     view = trace_view(req["traces"], req["binding"], req.get("path_map"))
-    reads, last_read = verify_material_records(view, material_records(req["materials"], req.get("path_map")))
+    contract = guarded_role_contract(req)
+    materials = contract["materials"] if contract else req["materials"]
+    reads, last_read = verify_material_records(view, material_records(materials, req.get("path_map")), standalone=contract is not None)
     outputs = []
     positions = observation_positions(view)
     for path in req.get("outputs", []):
         receipt = {"file_path": path, "sha256": digest(regular(req.get("path_map", {}).get(path, path)).read_bytes())}
-        require(any(called > last_read and helper_observation(pair, view)
-                    and contains_json(pair["observation"]["payload"]["output"], receipt)
+        expected = role_seal_receipt(contract, req["binding"]["session_id"], reads, receipt["sha256"]) if contract else receipt
+        if contract:
+            previous = [value for pair in view["pairs"] if standalone_helper_request(pair, view)
+                        for value in json_values(pair["observation"]["payload"]["output"])
+                        if isinstance(value, dict) and value.get("op") == "seal-role-output" and value.get("complete") is True]
+            require(previous and all(value == expected for value in previous),
+                    "role output must remain as first sealed in native trace")
+        require(any(called > last_read and (standalone_helper_request(pair, view) if contract else helper_observation(pair, view))
+                    and contains_json(pair["observation"]["payload"]["output"], expected)
                     for pair, (called, _) in zip(view["pairs"], positions)),
                 "role output must be sealed in native trace after all assigned materials were read")
         outputs.append(receipt)
@@ -773,11 +965,13 @@ def seal_training(req):
     contexts = [read(p) for p in req["contexts"]]
     validated = validate_contexts(contexts, req["train_ids"])
     training_root = verify_training_root(contexts, req["roles"])
+    guarded = any(c["feedback"].get("source") == "evo-judge"
+                  and read(c["feedback"]["training_snapshot"]).get("guard_version") == 2 for c in contexts)
     validate_candidates(read(req["candidates"]), validated)
     roles, trace_paths, reflected = [], set(), []
     sessions = {c["trace"]["binding"]["session_id"] for c in contexts}
     for role in req["roles"]:
-        audit_role(role)
+        audit_role({**role, "require_role_seal": guarded})
         require(role["role"] in ("reflector", "evolver"), "invalid learning role")
         require(role["role_text_path"] in role["materials"], "role text missing")
         require(len(role["outputs"]) == 1, "one role output required")
@@ -1043,7 +1237,7 @@ def verify_compilation(req):
 READER = '''---
 name: evo-harness-learned
 description: Select relevant frozen Evo-Harness procedures for the current task.
-version: 2026.10.21.3
+version: 2026.10.21.4
 ---
 
 Before business API calls or writing the task answer, use native read_file to read
@@ -1115,13 +1309,137 @@ def validate_index_readability(raw):
                 f"index.json line {number} exceeds native read_file's 2000 UTF-16 unit limit; shorten trigger/scope metadata")
 
 
+def rename_new(source, destination):
+    """Linux atomic rename that never replaces even an empty destination."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    rename = getattr(libc, "renameat2", None)
+    require(rename is not None, "atomic no-replace export requires Linux renameat2")
+    rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+    rename.restype = ctypes.c_int
+    # AT_FDCWD, RENAME_NOREPLACE. Do not fall back to os.rename's overwrite.
+    if rename(-100, os.fsencode(source), -100, os.fsencode(destination), 1):
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code), str(destination))
+
+
+def placeholder_marker(directory):
+    """Recognize only convert.py's exact empty .keep directory, never clean it."""
+    require(directory.is_dir() and not directory.is_symlink(), "export destination already exists")
+    require([p.name for p in directory.iterdir()] == [".keep"], "export destination is not the GDPevo empty .keep placeholder")
+    marker = directory / ".keep"
+    fd = os.open(marker, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        require(stat.S_ISREG(info.st_mode) and info.st_size == 0 and info.st_nlink == 1
+                and stream.read(1) == b"", "GDPevo .keep must be an ordinary empty single-link file")
+    require([p.name for p in directory.iterdir()] == [".keep"], "placeholder changed during inspection")
+    identity = directory.stat()
+    return {"directory_device": identity.st_dev, "directory_inode": identity.st_ino,
+            "marker_device": info.st_dev, "marker_inode": info.st_ino,
+            "marker_mode": stat.S_IMODE(info.st_mode), "marker_bytes": 0, "marker_sha256": digest(b"")}
+
+
+def export_placeholder(dest):
+    """An installed, immutable training profile binds the one allowed placeholder."""
+    require(dest.is_absolute() and dest == dest.resolve() and ".." not in dest.parts,
+            "placeholder destination must be canonical without symlinks")
+    helper = regular(__file__).resolve()
+    training_path = helper.parent.parent / "training.json"
+    require(training_path.is_file(), "export destination already exists; no installed GDPevo training profile")
+    raw = regular(training_path).read_bytes()
+    training = json.loads(raw)
+    workspace = Path(training["workspace"])
+    private = Path(training["private_learning"])
+    require(training.get("guard_version") == 2
+            and training["train_ids"] == [f"train_{i:03d}" for i in range(1, 6)]
+            and re.fullmatch(r"[0-9a-f]{64}", training["config_sha256"])
+            and workspace.is_absolute() and workspace == workspace.resolve()
+            and dest == workspace / "submission/skill"
+            and Path(training["answer_dir"]) == workspace / "submission/answers",
+            "only the frozen GDPevo training submission/skill placeholder is supported")
+    require(private.is_absolute() and private == private.resolve() and private.is_dir()
+            and not private.is_relative_to(dest.parent), "placeholder evidence must stay in private_learning")
+    marker = placeholder_marker(dest)
+    receipt = private / "skill-export-publication.json"
+    require(not receipt.exists() and not receipt.is_symlink(), "prior export publication exists; reconcile without overwriting")
+    return {"schema": "evo-gdpevo-placeholder-publication-v1", "output": str(dest),
+            "source": "tools/gdpevo/convert.py:write_training_run:workspace/submission/skill/.keep",
+            "training_path": str(training_path), "training_sha256": digest(raw),
+            "config_sha256": training["config_sha256"], "placeholder": marker,
+            "receipt": str(receipt)}
+
+
+def check_prior_publication(dest):
+    """A failed publication stays reserved even if both publish and rollback fail."""
+    training_path = Path(__file__).resolve().parent.parent / "training.json"
+    if not training_path.is_file():
+        return
+    training = read(regular(training_path))
+    if training.get("guard_version") != 2 or "workspace" not in training:
+        return
+    bound = Path(training["workspace"]) / "submission/skill"
+    if dest.resolve() != bound.resolve():
+        return  # validate-decisions and verify_compilation use fresh temp slots.
+    receipt = Path(training["private_learning"]) / "skill-export-publication.json"
+    require(not receipt.exists() and not receipt.is_symlink(),
+            "prior export publication exists; reconcile without overwriting")
+
+
+def publish_skill(stage, dest, placeholder):
+    if placeholder is None:
+        if sys.platform.startswith("linux"):
+            rename_new(stage, dest)
+        else:
+            # Generic workspace/H0 exports retain their existing native support
+            # outside GDPevo's Linux containers; no libc extension is required.
+            require(not dest.exists() and not dest.is_symlink(), "export destination already exists")
+            os.rename(stage, dest)
+        return
+    package = validate_package(stage)
+    # /logs/agent is a host bind mount; /app is normally overlayfs. Keep both
+    # renames beside the destination, and write only the receipt across mounts.
+    backup_root = Path(tempfile.mkdtemp(dir=dest.parent, prefix=".evo-skill-placeholder-"))
+    backup = backup_root / "original"
+    receipt = Path(placeholder["receipt"])
+    record = {**placeholder, "backup": str(backup), "skill_sha256": package["sha256"], "status": "prepared"}
+    write_once(receipt, encoded(record))
+    moved = published = False
+    try:
+        require(placeholder_marker(dest) == placeholder["placeholder"], "placeholder changed before publication")
+        require(digest(regular(placeholder["training_path"]).read_bytes()) == placeholder["training_sha256"],
+                "training profile changed before export")
+        rename_new(dest, backup)
+        moved = True
+        require(placeholder_marker(backup) == placeholder["placeholder"], "placeholder changed while being reserved")
+        rename_new(stage, dest)
+        published = True
+        record["status"] = "published"
+        atomic(receipt, encoded(record))
+    except BaseException as error:
+        record.update(status="publication_failed", error_type=type(error).__name__, skill_published=published)
+        if moved and not published:
+            try:
+                rename_new(backup, dest)
+                record["placeholder_restored"] = True
+            except OSError as rollback_error:
+                # Another writer owns dest: preserve it and the original backup.
+                record.update(placeholder_restored=False, rollback_error_type=type(rollback_error).__name__)
+        try:
+            atomic(receipt, encoded(record))
+        except OSError:
+            pass  # The initial receipt and same-filesystem backup remain.
+        raise
+
+
 def export_skill(req):
     entries = read(req["library"])
     validate_entries(entries, req["limits"])
     require(type(req["max_entries"]) is int and 0 < req["max_entries"] <= 5, "invalid injection count")
     require(type(req["max_bytes"]) is int and req["max_bytes"] > 0, "invalid byte budget")
     dest = Path(req["output"])
-    require(not dest.exists(), "export destination already exists")
+    require(not dest.is_symlink(), "export destination is a symlink")
+    check_prior_publication(dest)
+    placeholder = export_placeholder(dest) if dest.exists() else None
     dest.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=dest.parent, prefix=".skill-") as tmp:
         stage = Path(tmp) / "skill"
@@ -1139,7 +1457,7 @@ def export_skill(req):
         index_raw = encoded(index)
         validate_index_readability(index_raw)
         write_once(stage / "index.json", index_raw)
-        os.rename(stage, dest)
+        publish_skill(stage, dest, placeholder)
     return {"files": filemap(dest), "sha256": digest(encoded(filemap(dest))), "empty": not entries}
 
 
@@ -1225,6 +1543,7 @@ def execute(req, request_path=None):
                "capture": capture, "capture-evaluation": capture, "compile": compile_batch,
                "validate-candidates": validate_candidate_file, "validate-decisions": validate_decisions,
                "read-material": material, "audit-role": audit_role,
+               "seal-role-output": lambda r: seal_role_output(r, request_path),
                "seal-training": seal_training,
                "file-digest": lambda r: {"file_path": r["path"], "sha256": digest(regular(r["path"]).read_bytes())},
                "export": export_skill, "journal": journal,

@@ -114,7 +114,9 @@ native traces or role-authored candidates/decisions.
    task and invoke the exact returned call. It reads its full role/context and
    writes private_learning/roles/<task_id>/candidates.json. Candidate ids use
    the fixed task/attempt prefix; the role validates its own draft before
-   file-digest. Audit its original trace/material/output bindings. Successful
+   seal-role-output. The same child resolves any missing-read/structure error
+   before a successful seal; root never sends another instruction or rewrites it.
+   Audit its original trace/material/output bindings. Successful
    executions have no Reflector or candidate. Do not rewrite candidates.
 5. Once all five contexts and eligible Reflectors are complete, request
    role=evolver with reflectors containing every negative task's original
@@ -127,12 +129,26 @@ native traces or role-authored candidates/decisions.
    before sealing. Invoke the returned call; the Evolver reads all
    contexts, candidates and prebatch-library.json and writes decisions.json.
    Zero candidates still requires a real Evolver call and explicit [] output.
-   Audit complete material reads and its output seal.
+   It uses seal-role-output to verify complete actual reads and structure; any
+   missing-read repair occurs in that same child before success. Audit its seal.
 6. Write a compile request using the five contexts, candidates.json,
    decisions.json, prebatch-library.json and frozen limits; execute evo.py.
    Export the resulting library with unchanged max_entries/max_bytes to the
-   new /app/submission/skill directory. Even a valid no-op exports the fixed
-   reader, selector and empty index. Private artifacts never enter this slot.
+   /app/submission/skill directory. GDPevo precreates this directory with only
+   an empty `.keep`; do not delete it or run a shell cleanup. The fixed export
+   helper accepts exactly this placeholder at the installed training.json's
+   bound destination. It builds and validates the complete package first,
+   retains the original placeholder in a unique sibling backup, then publishes
+   atomically without replacing an existing skill. It records source/profile
+   hashes, the backup location, package hash and publication status in
+   private_learning/skill-export-publication.json. The backup stays beside the
+   destination because /app and /logs/agent may use different filesystems.
+   Any other content, nonempty marker, symlink, prior export receipt or already
+   exported skill is an error; preserve it and report rather than clearing it.
+   If publication fails, the helper attempts a no-overwrite rollback and keeps
+   the receipt/backup on conflict. Do not automatically retry that export.
+   Even a valid no-op exports the fixed reader, selector and empty index.
+   Private artifacts never enter the skill slot.
 7. Write private_learning/requests/seal-training.json with train_ids, contexts,
    candidates, decisions, pre-batch library, skill, all Reflector/Evolver audit
    requests, runtime and frozen limits/budgets; output must be

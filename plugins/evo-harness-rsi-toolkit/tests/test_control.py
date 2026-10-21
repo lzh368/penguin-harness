@@ -1,6 +1,7 @@
 """Synthetic native-hook requests; no model, Harbor or benchmark service calls."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shlex
 import shutil
@@ -51,7 +52,7 @@ class ControlTests(unittest.TestCase):
             "max_entries": 5, "max_bytes": 16000, "output": str(self.state / "skills/evo-harness-learned")})
         self.meta = {"session_id": "synthetic-root", "agent_state": str(self.state), "workspace": str(self.workspace),
                      "source": "cli", "provider": "fixture", "model_id": "no-model"}
-        self.trace = self.state.parent / "traces/root.jsonl"
+        self.trace = self.state.parent / "traces/synthetic-root_001.jsonl"
         self.trace.parent.mkdir()
         self.trace.write_text(json.dumps({"type": "session_meta", "payload": self.meta}) + "\n")
         self.scratch = self.state.parent / "scratchpad/synthetic-root"
@@ -266,6 +267,21 @@ class ControlTests(unittest.TestCase):
             ])
             evo.journal({**common, "action": "bind", "operation_id": prepared["operation_id"], "external_id": session_id})
             return {**self.meta, "session_id": session_id, "source": "subagent", "parent_trace": str(self.trace)}
+        def seal_leaf(prepared, binding, materials, role, task=None):
+            trace = self.trace.parent / (binding["session_id"] + "_001.jsonl")
+            request = {"op": "seal-role-output", "role": role, **({"task_id": task} if task else {})}
+            request_path = self.private / "requests" / (binding["session_id"] + "-seal.json")
+            self.write(request_path, request)
+            active = pair("exec_command", {}, {"cmd": f"python3 -B {helper} {request_path}"})
+            self.append_trace(trace, [{"type": "session_meta", "payload": binding},
+                {"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "parent_agent", "text": prepared["call"]["prompt"]}}]
+                + reads(materials) + [active[0]])
+            with patch.object(evo, "__file__", str(helper)), patch.dict(os.environ, PENGUIN_SESSION_ID=binding["session_id"]):
+                sealed = evo.execute(request, str(request_path))
+            self.assertTrue(sealed["complete"])
+            active[1]["payload"]["output"] = json.dumps(sealed)
+            self.append_trace(trace, [active[1]])
+            return trace
         contexts, roles = [], []
         for n, task in enumerate(self.profile["train_ids"], 1):
             prepared = self.request(op="role-request", role="solver", task_id=task)
@@ -307,9 +323,7 @@ class ControlTests(unittest.TestCase):
                 self.assertTrue(checked["complete"])
                 self.assertEqual(candidate_path.read_bytes(), draft_before)
                 materials = [str(self.private / "roles/reflector.md"), str(output)]
-                reflect_trace = self.trace.parent / (reflect_binding["session_id"] + ".jsonl")
-                self.append_trace(reflect_trace, [{"type": "session_meta", "payload": reflect_binding}] + reads(materials)
-                    + pair("exec_command", {"file_path": str(candidate_path), "sha256": control.sha(candidate_path)}, {"cmd": f"python3 -B {helper} {self.private / 'fixture-digest-request.json'}"}))
+                reflect_trace = seal_leaf(reflector, reflect_binding, materials, "reflector", task)
                 audit = {"role": "reflector", "task_id": task, "role_text_path": materials[0], "traces": [str(reflect_trace)],
                          "binding": reflect_binding, "materials": materials, "outputs": [str(candidate_path)]}
                 evo.audit_role(audit)
@@ -331,9 +345,7 @@ class ControlTests(unittest.TestCase):
         self.assertTrue(checked["complete"])
         self.assertEqual(decisions.read_bytes(), before_decisions)
         materials = [str(self.private / "roles/evolver.md"), str(candidates), str(self.private / "prebatch-library.json"), *contexts]
-        evolved_trace = self.trace.parent / (evolved_binding["session_id"] + ".jsonl")
-        self.append_trace(evolved_trace, [{"type": "session_meta", "payload": evolved_binding}] + reads(materials)
-            + pair("exec_command", {"file_path": str(decisions), "sha256": control.sha(decisions)}, {"cmd": f"python3 -B {helper} {self.private / 'fixture-digest-request.json'}"}))
+        evolved_trace = seal_leaf(evolver, evolved_binding, materials, "evolver")
         roles.append({"role": "evolver", "role_text_path": materials[0], "traces": [str(evolved_trace)], "binding": evolved_binding,
                       "materials": materials, "outputs": [str(decisions)]})
         compiled = self.private / "compiled.json"

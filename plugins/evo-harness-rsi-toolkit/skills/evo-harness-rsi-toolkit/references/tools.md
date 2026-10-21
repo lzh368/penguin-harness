@@ -4,7 +4,7 @@ Run `python3 -B <Skill>/scripts/evo.py <request.json>`. It performs one requeste
 operation, prints JSON, and exits 2 on invalid input. Never import it with
 bytecode enabled in a plugin tree. Paths below are explicitly resolved by the
 caller. Captured evidence and sealed role outputs are immutable; do not fix a role's JSON
-by editing its output. Before its own file-digest seal, a role may validate and
+by editing its output. Before its own output seal, a role may validate and
 correct its draft with validate-candidates or validate-decisions, using only its
 already assigned training evidence. Ordinary RSI may use only the shared protocol's existing-result
 formatting repair. The guarded continuous profile forbids free-form child
@@ -91,12 +91,21 @@ neither a compact receipt alone nor a parent-written feedback copy is sufficient
 Additional operations:
 - `read-material`: path, offset (default 0); returns a 4000-character chunk with
   exact bytes hash, text, offset/end/total. Roles repeat until end=total. Require
-  untruncated foreground exec_command output. Do not pipe, redirect or background
-  read-material/file-digest receipts; their canonical output must remain in the
+  untruncated foreground exec_command output. Use one literal absolute helper
+  and request path per exec; no variables or batch loops. Do not pipe, redirect
+  or background receipts; their canonical output must remain in the
   native tool observation. `capture` accepts only inputs named in the native
   user/parent task grant and actually read through these receipts.
-- `file-digest`: path; prints file_path/sha256, sealing a role-authored output in
-  its native trace. A later parent rewrite invalidates the role audit.
+- `seal-role-output`: role=reflector/evolver, task_id for Reflector only; guarded
+  training leaves call this from their own native Session. It derives fixed
+  materials/output/validation from training.json and the registered parent task,
+  checks every actual read and validates the unsealed draft. Missing offsets
+  return complete=false/sealed=false; the same leaf reads those chunks and
+  retries, without any new solving or scoring. Success includes file_path/sha256,
+  role/Session/config identity and material hashes. Output is then immutable.
+  The only permitted unpaired trace action is this currently running seal call.
+- `file-digest`: path; prints file_path/sha256 for ordinary unguarded RSI or
+  inspection. It cannot replace guarded Reflector/Evolver sealing.
 - `audit-role`: traces, binding, materials (paths), outputs (paths); verifies
   full material receipts and output seals in actual paired tool results.
 - `verify-package`: path; validates the fixed reader/selector, index, every

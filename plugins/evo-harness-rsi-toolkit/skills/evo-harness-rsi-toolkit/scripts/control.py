@@ -425,7 +425,7 @@ def role_request(req, meta, scratch, mode):
     text += f"\nExact helper: {TOOL}\nPrivate evidence: {private}\n"
     text += ("\nHelper requests are JSON files you write with write_file. Execute python3 -B EXACT_HELPER ABS_REQUEST.json. "
              'Full reads use {"op":"read-material","path":"ABS_MATERIAL","offset":0}; repeat offsets 4000,8000,... until end=total. '
-             'Seal your assigned output using {"op":"file-digest","path":"ABS_OUTPUT"}. '
+             'Each read-material exec must contain exactly one helper invocation with a literal absolute helper and request path; no variables, shell loops, batching, pipes or redirection. Independent reads may be parallel native tool calls with distinct request files; await every full receipt before sealing. '
              "Do not edit helpers, State, role text or evidence. Only the Solver uses its exact judge template below.\n")
     role_file = private / "roles" / (role + ".md")
     if role == "solver":
@@ -470,10 +470,10 @@ def role_request(req, meta, scratch, mode):
         out.parent.mkdir(parents=True, exist_ok=True)
         text += f"\nEvery candidate id must start with {task}-{t['attempt_id']}- (for example {task}-{t['attempt_id']}-c01); this prevents collisions between independent Reflectors.\n"
         text += f"\nTask/attempt: {task}/{t['attempt_id']}\nRead {role_file} and {private / 'contexts' / (task + '.json')} in full.\nOutput only to {out}.\n"
-        text += "Before file-digest, validate your own output and correct any structural error using: " + json.dumps({
+        text += "Before sealing, validate your own output and correct any structural error using: " + json.dumps({
             "op": "validate-candidates", "contexts": [str(private / "contexts" / (task + ".json"))],
             "train_ids": [task], "candidates": str(out), "candidate_prefix": task + "-" + t["attempt_id"] + "-"})
-        text += "\nAfter validation succeeds, seal with file-digest. Do not change it after sealing.\n"
+        text += "\nAfter validation succeeds, use seal-role-output below. Do not change output after a successful seal.\n"
         slot = f"reflector/{task}/{t['attempt_id']}"
     else:
         contexts = [completed_context(t, task_id, meta) for task_id in t["train_ids"]]
@@ -489,7 +489,7 @@ def role_request(req, meta, scratch, mode):
             check(audit.get("role") == "reflector" and audit.get("outputs") == [output]
                   and context_path in audit.get("materials", [])
                   and str(private / "roles/reflector.md") in audit["materials"], "wrong Reflector material/output audit")
-            evo.audit_role(audit)
+            evo.audit_role({**audit, "require_role_seal": True})
             values = evo.read(output)
             check(all(candidate["id"].startswith(task_id + "-" + t["attempt_id"] + "-") for candidate in values),
                   "Reflector candidate ids need their frozen task/attempt namespace")
@@ -509,13 +509,24 @@ def role_request(req, meta, scratch, mode):
                  "Keep trigger/scope concise: each exported index.json physical line must fit 2000 UTF-16 code units, including JSON escaping and indentation, so native read_file can observe it completely. "
                  "The reader selects at most max_entries entries and max_bytes combined bytes. "
                  "Before sealing, validate your own decisions with validate-decisions using the paths and frozen budgets below; "
-                 "correct your own invalid JSON before file-digest, never ask the coordinator to rewrite it.\n")
+                 "correct your own invalid JSON before seal-role-output, never ask the coordinator to rewrite it.\n")
         text += "Validation request: " + json.dumps({"op": "validate-decisions", "train_ids": t["train_ids"],
             "contexts": [str(private / "contexts" / (task_id + ".json")) for task_id in t["train_ids"]],
             "candidates": str(target), "decisions": str(private / "decisions.json"), "library": str(private / "prebatch-library.json"),
             **{key: t[key] for key in ("limits", "max_entries", "max_bytes")}})
-        text += f"\nOutput operations to {private / 'decisions.json'} and seal with file-digest. Zero candidates requires [] and a real Evolver return.\n"
+        text += f"\nOutput operations to {private / 'decisions.json'} and seal with seal-role-output. Zero candidates requires [] and a real Evolver return.\n"
         slot = "evolver/batch-1"
+    if role in ("reflector", "evolver"):
+        contract = evo.role_contract(t, role, task if role == "reflector" else None)
+        text += "\n" + json.dumps({"evo_role_seal": {**contract, "parent_session_id": meta["session_id"]}}, ensure_ascii=False)
+        text += "\nSeal request: " + json.dumps({"op": "seal-role-output", "role": role,
+                    **({"task_id": task} if role == "reflector" else {})})
+        text += ("\nWrite the seal request in your scratchpad, then execute one foreground python3 -B command using the literal absolute helper and request paths. "
+                 "The helper discovers your current native Session from its server-injected environment and checks all your original trace segments, fixed materials and draft structure. "
+                 "If complete=false, read each missing offset in this same leaf with a separate read-material exec and retry seal; "
+                 "if draft validation fails, correct only your own unsealed draft and retry. This is receipt/format repair, never another Solver attempt, service call, or judge call. "
+                 "Do not claim completion until complete=true. Generic file-digest is not a role seal. "
+                 "Do not request parent steering. After successful sealing, do not change your output or retry learning.\n")
     call = {"description": f"Evo-Harness {role}" + (f" {task}" if task else ""), "prompt": text,
             **{k: t["runtime"][k] for k in ("provider", "model_id", "thinking_level")}, "run_in_background": True}
     return write_ticket(scratch, mode, call, slot, role, {"task_id": task,
