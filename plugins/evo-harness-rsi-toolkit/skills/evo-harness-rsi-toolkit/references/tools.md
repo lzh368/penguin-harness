@@ -22,7 +22,7 @@ of entry objects (`id,level,topic?,trigger,scope,body`), initially `[]`.
 | validate-candidates | contexts, train_ids, candidates, candidate_prefix | Read-only draft check for the Reflector before output sealing; no rewritten content |
 | validate-decisions | compile fields except output, plus max_entries/max_bytes | Read-only compile/export validation, including native reader index-line capacity, in a temporary directory before Evolver sealing; no published State |
 | judge | split=train, task_id, attempt_id, train_ids, url, answer (JSON file), output; request file itself must have the canonical judge_request path | Writes full canonical ledger with raw feedback and hashes; CLI returns a short ledger path/hash/byte-count receipt |
-| capture | split=train, task_id, attempt_id, train_ids, answer, feedback (canonical receipt path), judge_request (canonical JSON path), inputs (text file paths), traces (all Solver JSONL segment paths), binding, output | Full context; requires exactly one canonical native judge exec and rejects changed or extra feedback |
+| capture | split=train, task_id, attempt_id, train_ids, answer, feedback (canonical receipt path), judge_request (canonical JSON path), inputs (text file paths), traces (all Solver JSONL segment paths), binding, output | Full context; requires exactly one canonical native judge exec and rejects changed or extra feedback. Guarded group roots obtain this request through control.py prepare-capture, never by copying grant paths. |
 | capture-evaluation | capture fields except feedback and judge_request, plus evaluation and evaluation_identity as described below | Bound native workspace feedback and captured context; no HTTP receipt |
 | compile | train_ids, contexts (captured files), candidates (array file), decisions (Evolver array file), library, limits, output | Validated new internal library; no learned prose is invented |
 | export | library, limits, max_entries, max_bytes, output (new directory) | Data-only learned package with fixed reader/selector and full file hashes |
@@ -89,6 +89,18 @@ its exact ledger hash and all complete native read chunks occurring after judge;
 neither a compact receipt alone nor a parent-written feedback copy is sufficient.
 
 Additional operations:
+- Guarded group `control.py prepare-capture`: only op, trace_path (the current
+  original root trace) and task_id. After the Solver's native completed notice,
+  derive exact metadata from its registered dispatch, original parent/child
+  trace and literal USER grant. The helper validates through existing capture
+  in a disposable private directory, writes only a deterministic request and
+  returns a short path/hash/command with prepared=true/captured=false. Run that
+  command unchanged to publish the actual context; preparation is not capture
+  completion. Wrong old request files remain unchanged, conflicting canonical
+  requests are refused, identical requests still revalidate the real evidence.
+  If the canonical context already exists and matches that revalidation, the
+  receipt gives context_exists/context_verified=true, its path/hash and
+  command=null. Reuse that context; do not publish or score it again.
 - `read-material`: path, offset (default 0); returns a 4000-character chunk with
   exact bytes hash, text, offset/end/total. Roles repeat until end=total. Require
   untruncated foreground exec_command output. Use one literal absolute helper

@@ -164,6 +164,236 @@ class ControlTests(unittest.TestCase):
             audits.append(str(path))
         return audits
 
+    def capture_preparation_fixture(self):
+        """Real capture evidence and native dispatch; synthetic HTTP/model only."""
+        evo, task = control.evo, "train_001"
+        for name in ("input/payloads/answer_template.json", "input/payloads/ticket_batch.csv", "input/prompt.txt"):
+            path = self.workspace / "train_tasks" / task / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("Synthetic public material.\n")
+        prepared = self.request(op="role-request", role="solver", task_id=task)
+        common = {"journal": prepared["journal"], "config_sha256": self.profile["config_sha256"]}
+        evo.journal({**common, "action": "init", "controller_session_id": self.meta["session_id"], "budget_usd": 1})
+        reserve = {**common, "action": "reserve", "controller_trace": str(self.trace), "reserve_usd": 0.1, "role": "synthetic"}
+        evo.journal({**reserve, "operation_id": "controller", "slot": "controller", "request_sha256": "controller"})
+        evo.journal({**reserve, **{key: prepared[key] for key in ("operation_id", "slot", "request_sha256")}})
+        self.assertEqual(self.tool("run_subagent", prepared["call"], "launch-solver"), {})
+        session, handle = "synthetic-solver-one", "subagent-synthetic-one"
+        self.append_trace(self.trace, [
+            {"type": "model_msg", "payload": {"type": "tool_call", "name": "run_subagent", "tool_call_id": "launch-solver", "arguments": json.dumps(prepared["call"])}},
+            {"type": "event_msg", "payload": {"type": "subagent", "session_id": session}},
+            {"type": "model_msg", "payload": {"type": "tool_call_output", "tool_call_id": "launch-solver", "output": f"[subagent running in background with subagent_id {handle}; completion will arrive]"}}])
+        binding = {**self.meta, "session_id": session, "source": "subagent", "parent_trace": str(self.trace)}
+        grants = [value["evo_task"] for value in evo.json_values(prepared["call"]["prompt"])
+                  if isinstance(value, dict) and "evo_task" in value]
+        self.assertEqual(len(grants), 1)
+        helper = self.skill / "scripts/evo.py"
+        paths = evo.judge_paths(self.profile, task, "attempt-1")
+        self.write(Path(paths["answer"]), {"synthetic": task})
+        with patch.object(evo, "__file__", str(helper)):
+            generated = evo.prepare_judge_request({"task_id": task, "url": "http://127.0.0.1:9003/api/judge"})
+            with patch.object(evo.urllib.request, "build_opener") as opener:
+                response = opener.return_value.open.return_value.__enter__.return_value
+                response.status = 200
+                response.read.return_value = b'{"score": 1, "correct": true}'
+                feedback = evo.judge(evo.read(generated["judge_request"]))
+                self.assertEqual(opener.return_value.open.call_count, 1)
+        count = 0
+        def pair(output, command):
+            nonlocal count
+            count += 1
+            return [{"type": "model_msg", "payload": {"type": "tool_call", "name": "exec_command",
+                     "tool_call_id": f"child-{count}", "arguments": json.dumps({"cmd": command})}},
+                    {"type": "model_msg", "payload": {"type": "tool_call_output", "tool_call_id": f"child-{count}",
+                     "output": json.dumps(output)}}]
+        def reads(paths):
+            rows = []
+            for path in paths:
+                for offset in range(0, max(1, len(Path(path).read_text())), 4000):
+                    rows += pair(evo.material({"path": path, "offset": offset}),
+                                 f"python3 -B {helper} {self.private / 'requests/read-fixture.json'}")
+            return rows
+        first = self.trace.parent / (session + "_001.jsonl")
+        second = self.trace.parent / (session + "_002.jsonl")
+        self.append_trace(first, [{"type": "session_meta", "payload": binding},
+            {"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "parent_agent", "text": prepared["call"]["prompt"]}}]
+            + reads(grants[0]["inputs"]))
+        self.append_trace(second, [{"type": "session_meta", "payload": binding}]
+            + pair(evo.judge_stdout(feedback), generated["command"]) + reads([paths["output"]]))
+        self.append_trace(self.trace, [{"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "harness",
+            "text": f"[background_task_done]\nkind: subagent\nid: {handle}\nstatus: completed\n[/background_task_done]\nSynthetic result."}}])
+        return {"prepared": prepared, "binding": binding, "traces": [first, second], "inputs": grants[0]["inputs"], "paths": paths}
+
+    def test_prepare_capture_derives_exact_grant_and_segments_then_original_capture_runs(self):
+        fixture = self.capture_preparation_fixture()
+        wrong = self.private / "requests/capture-train_001.json"
+        self.write(wrong, {"inputs": [str(self.workspace / "train_tasks/train_001/input/instruction.md")]})
+        evidence = [self.trace, *fixture["traces"], wrong, *(Path(path) for path in fixture["paths"].values())]
+        before = {str(path): path.read_bytes() for path in evidence}
+        caller = self.private / "requests/prepare-capture.json"
+        self.write(caller, {"op": "prepare-capture", "trace_path": str(self.trace), "task_id": "train_001"})
+        self.assertEqual(self.tool("exec_command", {"cmd": f"python3 -B {control.CONTROL} {caller}"}), {})
+        with patch.object(control.evo.urllib.request, "build_opener", side_effect=AssertionError("no new judge")):
+            receipt = control.execute(control.evo.read(caller))
+            prepared = Path(receipt["request_path"])
+            request = control.evo.read(prepared)
+            self.assertEqual(request["inputs"], fixture["inputs"])
+            self.assertIn(str(self.workspace / "train_tasks/train_001/instruction.md"), request["inputs"])
+            self.assertEqual(request["traces"], [str(path) for path in fixture["traces"]])
+            self.assertEqual(request["binding"], fixture["binding"])
+            self.assertFalse(Path(request["output"]).exists())
+            self.assertFalse(receipt["captured"])
+            self.assertTrue(receipt["prepared"])
+            self.assertEqual(receipt["model_calls"], receipt["judge_calls"], 0)
+            self.assertLess(len(json.dumps(receipt)), 2048)
+            stamp = prepared.stat().st_mtime_ns
+            self.assertEqual(control.execute(control.evo.read(caller)), receipt)
+            self.assertEqual(prepared.stat().st_mtime_ns, stamp)
+            self.assertEqual(self.tool("exec_command", {"cmd": receipt["command"]}), {})
+            control.evo.capture(request)
+            control.completed_context(self.profile, "train_001", self.meta)
+        self.assertEqual({path: Path(path).read_bytes() for path in before}, before)
+
+    def test_prepare_capture_rejects_overrides_and_preserves_conflicting_request(self):
+        self.capture_preparation_fixture()
+        with self.assertRaises(ValueError):
+            self.request(op="prepare-capture", task_id="train_001", inputs=[])
+        receipt = self.request(op="prepare-capture", task_id="train_001")
+        destination = Path(receipt["request_path"])
+        changed = control.evo.read(destination)
+        changed["inputs"].reverse()
+        self.write(destination, changed)
+        original = destination.read_bytes()
+        with self.assertRaisesRegex(ValueError, "existing capture request differs"):
+            self.request(op="prepare-capture", task_id="train_001")
+        self.assertEqual(destination.read_bytes(), original)
+        self.assertFalse((self.private / "contexts/train_001.json").exists())
+
+    def test_prepare_capture_checks_real_evidence_before_publishing_metadata(self):
+        fixture = self.capture_preparation_fixture()
+        output = self.private / "requests/capture-train_001-attempt-1.prepared.json"
+        second = fixture["traces"][1]
+        original = second.read_bytes()
+        rows = [json.loads(line) for line in original.splitlines()]
+        second.write_text("\n".join(json.dumps(row) for row in rows[:3]) + "\n")
+        with self.assertRaises(ValueError):
+            self.request(op="prepare-capture", task_id="train_001")
+        self.assertFalse(output.exists())
+        self.assertFalse((self.private / "contexts/train_001.json").exists())
+        second.write_bytes(original)
+        self.assertTrue(self.request(op="prepare-capture", task_id="train_001")["prepared"])
+
+    def test_prepare_capture_requires_registered_original_child_and_completed_notice(self):
+        fixture = self.capture_preparation_fixture()
+        root_bytes = self.trace.read_bytes()
+        root_rows = [json.loads(line) for line in root_bytes.splitlines()]
+        for excluded in ("tool_call", "subagent", "text"):
+            self.trace.write_text("\n".join(json.dumps(row) for row in root_rows
+                if row.get("payload", {}).get("type") != excluded) + "\n")
+            with self.subTest(excluded=excluded), self.assertRaises(ValueError):
+                self.request(op="prepare-capture", task_id="train_001")
+        self.trace.write_bytes(root_bytes)
+        ticket = control.evo.read(fixture["prepared"]["ticket"])
+        claim = Path(fixture["prepared"]["ticket"]).parent / (control.evo.digest(ticket["slot"].encode()) + ".claimed.json")
+        data = control.evo.read(claim)
+        self.write(claim, {**data, "request_sha256": "0" * 64})
+        with self.assertRaisesRegex(ValueError, "claim"):
+            self.request(op="prepare-capture", task_id="train_001")
+        self.assertFalse((self.private / "requests/capture-train_001-attempt-1.prepared.json").exists())
+
+    def test_prepare_capture_rejects_foreign_ambiguous_and_linked_child_evidence(self):
+        fixture = self.capture_preparation_fixture()
+        first = fixture["traces"][0]
+        original = first.read_bytes()
+        rows = [json.loads(line) for line in original.splitlines()]
+        for field, value in (("source", "cli"), ("provider", "foreign"),
+                             ("agent_state", str(self.root / "foreign-state")),
+                             ("workspace", str(self.root / "foreign-workspace"))):
+            changed = json.loads(json.dumps(rows))
+            changed[0]["payload"][field] = value
+            first.write_text("\n".join(json.dumps(row) for row in changed) + "\n")
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "identity changed"):
+                self.request(op="prepare-capture", task_id="train_001")
+        first.write_bytes(original)
+        other = self.trace.parent / "synthetic-another_001.jsonl"
+        changed = json.loads(json.dumps(rows[:2]))
+        changed[0]["payload"]["session_id"] = "synthetic-another"
+        self.append_trace(other, changed)
+        self.append_trace(self.trace, [{"type": "event_msg", "payload": {"type": "subagent", "session_id": "synthetic-another"}}])
+        with self.assertRaisesRegex(ValueError, "unambiguous"):
+            self.request(op="prepare-capture", task_id="train_001")
+        other.unlink()
+        outside = self.private / "outside-child.jsonl"
+        first.rename(outside)
+        first.symlink_to(outside)
+        with self.assertRaisesRegex(ValueError, "outside allowed"):
+            self.request(op="prepare-capture", task_id="train_001")
+        self.assertFalse((self.private / "requests/capture-train_001-attempt-1.prepared.json").exists())
+
+    def test_prepare_capture_resolves_old_parent_segment_and_revalidates_unchanged_request(self):
+        fixture = self.capture_preparation_fixture()
+        resumed = self.trace.parent / "synthetic-root_002.jsonl"
+        self.append_trace(resumed, [{"type": "session_meta", "payload": self.meta}])
+        request = {"op": "prepare-capture", "trace_path": str(resumed), "task_id": "train_001"}
+        receipt = control.execute(request)
+        data = control.evo.read(receipt["request_path"])
+        self.assertEqual(data["binding"]["parent_trace"], str(self.trace))
+        prepared = Path(receipt["request_path"])
+        before = prepared.read_bytes()
+        second = fixture["traces"][1]
+        original = second.read_bytes()
+        rows = [json.loads(line) for line in original.splitlines()]
+        second.write_text("\n".join(json.dumps(row) for row in rows[:3]) + "\n")
+        with self.assertRaises(ValueError):
+            control.execute(request)
+        self.assertEqual(prepared.read_bytes(), before)
+        self.assertEqual(list(self.private.glob("capture-check-*")), [])
+        self.assertFalse((self.private / "contexts/train_001.json").exists())
+        second.write_bytes(original)
+        self.assertEqual(control.execute(request), receipt)
+
+    def test_prepare_capture_never_omits_damaged_original_solver_or_parent_segments(self):
+        fixture = self.capture_preparation_fixture()
+        destination = self.private / "requests/capture-train_001-attempt-1.prepared.json"
+        for session, content in ((fixture["binding"]["session_id"], b'{"partial":'),
+                                 (self.meta["session_id"], b'{"partial":'),
+                                 (self.meta["session_id"], (json.dumps({"type": "session_meta", "payload": self.meta}) + '\n{"damaged":\n').encode())):
+            broken = self.trace.parent / (session + "_003.jsonl")
+            broken.write_bytes(content)
+            with self.subTest(session=session, content=content), self.assertRaises(ValueError):
+                self.request(op="prepare-capture", task_id="train_001")
+            self.assertFalse(destination.exists())
+            self.assertEqual(broken.read_bytes(), content)
+            broken.unlink()
+        # A different live Session's incomplete initial write is not evidence for
+        # this Solver and cannot cause its valid original segments to be omitted.
+        (self.trace.parent / "unrelated_003.jsonl").write_bytes(b'{"partial":')
+        self.assertTrue(self.request(op="prepare-capture", task_id="train_001")["prepared"])
+
+    def test_prepare_capture_recovery_revalidates_existing_context_without_second_write(self):
+        fixture = self.capture_preparation_fixture()
+        receipt = self.request(op="prepare-capture", task_id="train_001")
+        self.assertFalse(receipt["context_exists"])
+        control.evo.capture(control.evo.read(receipt["request_path"]))
+        context = Path(receipt["context_path"])
+        evidence = [context, Path(receipt["request_path"]), self.trace, *fixture["traces"]]
+        before = {str(path): (path.read_bytes(), path.stat().st_mtime_ns) for path in evidence}
+        with patch.object(control.evo.urllib.request, "build_opener", side_effect=AssertionError("no judge")):
+            recovered = self.request(op="prepare-capture", task_id="train_001")
+        self.assertTrue(recovered["prepared"] and recovered["context_exists"] and recovered["context_verified"])
+        self.assertFalse(recovered["captured"])
+        self.assertIsNone(recovered["command"])
+        self.assertEqual(recovered["context_sha256"], control.sha(context))
+        self.assertEqual({str(path): (path.read_bytes(), path.stat().st_mtime_ns) for path in evidence}, before)
+        changed = control.evo.read(context)
+        changed["negative"] = True
+        self.write(context, changed)
+        conflicting = context.read_bytes()
+        with self.assertRaisesRegex(ValueError, "existing context differs"):
+            self.request(op="prepare-capture", task_id="train_001")
+        self.assertEqual(context.read_bytes(), conflicting)
+        self.assertEqual(Path(receipt["request_path"]).read_bytes(), before[receipt["request_path"]][0])
+
     def test_prepare_seal_copies_frozen_profile_without_large_stdout_or_dispatch(self):
         audits = self.seal_preparation_fixture(large=True)
         before = {str(p): p.read_bytes() for p in (self.trace, *(Path(p) for p in audits))}
@@ -356,7 +586,8 @@ class ControlTests(unittest.TestCase):
                 {"type": "model_msg", "payload": {"type": "tool_call", "name": "run_subagent", "tool_call_id": call_id,
                     "arguments": json.dumps(prepared["call"])}},
                 {"type": "event_msg", "payload": {"type": "subagent", "session_id": session_id}},
-                {"type": "model_msg", "payload": {"type": "tool_call_output", "tool_call_id": call_id, "output": "SYNTHETIC native child registered"}},
+                {"type": "model_msg", "payload": {"type": "tool_call_output", "tool_call_id": call_id,
+                    "output": f"[subagent running in background with subagent_id subagent-{session_id}; completion will arrive]"}},
             ])
             evo.journal({**common, "action": "bind", "operation_id": prepared["operation_id"], "external_id": session_id})
             return {**self.meta, "session_id": session_id, "source": "subagent", "parent_trace": str(self.trace)}
@@ -397,11 +628,17 @@ class ControlTests(unittest.TestCase):
             rows += reads([paths["output"]])
             trace = self.trace.parent / (binding["session_id"] + ".jsonl")
             self.append_trace(trace, rows)
+            self.append_trace(self.trace, [{"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "harness",
+                "text": f"[background_task_done]\nkind: subagent\nid: subagent-{binding['session_id']}\nstatus: completed\n[/background_task_done]"}}])
             output = self.private / "contexts" / (task + ".json")
             capture = {"op": "capture", "split": "train", "task_id": task, "attempt_id": "attempt-1", "train_ids": self.profile["train_ids"],
                        "answer": paths["answer"], "feedback": paths["output"], "judge_request": generated["judge_request"],
                        "inputs": inputs, "traces": [str(trace)], "binding": binding, "output": str(output)}
-            evo.capture(capture)
+            receipt = self.request(op="prepare-capture", task_id=task)
+            self.assertEqual(evo.read(receipt["request_path"]), capture)
+            self.assertFalse(output.exists())
+            self.assertEqual(self.tool("exec_command", {"cmd": receipt["command"]}), {})
+            evo.capture(evo.read(receipt["request_path"]))
             contexts.append(str(output))
             if n <= 2:
                 reflector = self.request(op="role-request", role="reflector", task_id=task)

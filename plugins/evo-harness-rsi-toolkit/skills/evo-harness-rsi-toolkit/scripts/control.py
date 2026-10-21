@@ -141,7 +141,8 @@ def training_bootstrap(meta, scratch, state, trace_path=None):
         f"Control helper: python3 -B {CONTROL} REQUEST.json\nMethod helper: python3 -B {TOOL} REQUEST.json\n"
         "Every control request includes trace_path (your current original native trace). "
         "Use role-request to prepare each requested native call; then invoke run_subagent with its exact returned call. "
-        "Use status to locate original child traces; capture the Solver's canonical judge request/receipt. "
+        "After each Solver's native completed notification, use prepare-capture with only task_id and your trace_path; "
+        "execute its returned exact command to capture the original evidence. Never hand-copy inputs or bindings. "
         "Only helpers run in this root's shell. Root write_file may write private request/evidence JSON, "
         "not submission, State, traces, hooks or role outputs. Empty input_subagent polls are allowed; "
         "new answer attempts and free-form steering are not. On missing evidence stop as method_failed. "
@@ -767,6 +768,160 @@ def training_helper(req, meta, scratch, mode):
                 check(req[field] == t[field], "frozen method budget changed")
 
 
+def prepare_capture(req, meta, scratch, mode):
+    """Prepare canonical metadata from one completed registered native Solver.
+
+    The existing capture validator runs into a disposable private directory
+    before request publication. Only the caller's later exact capture command
+    can publish the canonical context; this helper never judges or dispatches.
+    """
+    import tempfile
+    check(mode["mode"] == "training", "prepare-capture is training-only")
+    check(set(req) == {"op", "trace_path", "task_id"}, "prepare-capture takes only trace_path and task_id")
+    path, t = training_profile(meta["agent_state"])
+    check(str(path) == mode["training_path"] and sha(path) == mode["training_sha256"], "training profile changed")
+    private = Path(t["private_learning"])
+    check(str(private) == mode["private_learning"], "private evidence directory changed")
+    check(evo.regular(private / "frozen-training.json").read_bytes() == evo.regular(path).read_bytes(),
+          "portable frozen training snapshot changed")
+    task = req["task_id"]
+    check(task in t["train_ids"], "task not in frozen batch")
+    for previous in t["train_ids"][:t["train_ids"].index(task)]:
+        completed_context(t, previous, meta)
+    slot = f"solver/{task}/{t['attempt_id']}"
+    tickets = []
+    for candidate in sorted((private / "dispatch").glob("*.json")):
+        if candidate.name.endswith(".claimed.json"):
+            continue
+        ticket = evo.read(evo.regular(candidate))
+        if ticket.get("phase") == "solver" and ticket.get("task_id") == task:
+            check(ticket["session_id"] == meta["session_id"] and ticket["slot"] == slot,
+                  "Solver ticket belongs to another coordinator/attempt")
+            check(candidate == ticket_path(scratch, mode, ticket["call"]), "Solver ticket hash/path changed")
+            runtime_call(ticket["call"], t["runtime"])
+            check(ticket["call"].get("run_in_background") is True, "Solver must use native background completion")
+            claim = evo.read(evo.regular(candidate.parent / (evo.digest(slot.encode()) + ".claimed.json")))
+            check(claim.get("slot") == slot and claim.get("request_sha256") == evo.digest(canonical(ticket["call"]).encode()),
+                  "Solver claim differs from registered native call")
+            tickets.append((ticket, claim))
+    check(len(tickets) == 1, "prepare-capture needs exactly one registered Solver dispatch")
+    ticket, claim = tickets[0]
+    trace_root = Path(meta["agent_state"]).parent / "traces"
+    trace_files = sorted(trace_root.rglob("*.jsonl"))
+    sessions = {}
+    for trace in trace_files:
+        inside(trace, trace_root)
+        try:
+            identity, _, rows = trace_context(trace)
+        except (ValueError, KeyError, OSError):
+            continue
+        sessions.setdefault(identity["session_id"], []).append((trace, identity, rows))
+    fields = ("session_id", "source", "provider", "model_id", "workspace", "agent_state")
+    def require_all_segments(session_id, segments):
+        known = {trace for trace in trace_files if trace.name.startswith(session_id + "_")
+                 or trace.name == session_id + ".jsonl"}
+        check(known <= {trace for trace, _, _ in segments}, "original Session segment missing/invalid metadata")
+    root_segments = sessions.get(meta["session_id"], [])
+    require_all_segments(meta["session_id"], root_segments)
+    check(root_segments and all(all(identity[k] == meta[k] for k in fields) for _, identity, _ in root_segments),
+          "original coordinator trace identity changed")
+    # Unlike a status hook, preparation certifies recorded evidence. Never skip
+    # a damaged complete parent segment while retaining a convenient call/notice.
+    for trace, _, _ in root_segments:
+        for line in evo.regular(trace).read_bytes().splitlines():
+            json.loads(line)
+    root_rows = [(trace, row) for trace, _, rows in root_segments for row in rows if not row.get("origin")]
+    calls = [row["payload"] for _, row in root_rows if row.get("type") == "model_msg"
+             and row.get("payload", {}).get("type") == "tool_call"
+             and row["payload"].get("tool_call_id") == claim["tool_call_id"]]
+    check(len(calls) == 1 and calls[0].get("name") == "run_subagent"
+          and json.loads(calls[0]["arguments"]) == ticket["call"], "registered Solver call absent from original parent trace")
+    outputs = [row["payload"] for _, row in root_rows if row.get("type") == "model_msg"
+               and row.get("payload", {}).get("type") == "tool_call_output"
+               and row["payload"].get("tool_call_id") == claim["tool_call_id"]]
+    check(len(outputs) == 1, "registered Solver launch observation missing/ambiguous")
+    handles = re.findall(r"\bsubagent_id ([A-Za-z0-9_-]+)(?:[;\]\s])", outputs[0]["output"])
+    check(len(handles) == 1, "native Solver handle missing/ambiguous")
+    completed = False
+    for _, row in root_rows:
+        payload = row.get("payload", {})
+        if payload.get("type") != "text" or payload.get("sender") != "harness":
+            continue
+        block = re.match(r"(?:\[background_task_done\]\n(.*?)\n\[/background_task_done\]|<background_task_done>\n(.*?)\n</background_task_done>)",
+                         payload.get("text", ""), re.S)
+        if block:
+            values = dict(re.findall(r"^(kind|id|status):\s*(\S+)\s*$", block[1] or block[2], re.M))
+            if values.get("kind") == "subagent" and values.get("id") == handles[0]:
+                completed = values.get("status") == "completed"
+    check(completed, "await the original Solver's native completed notification before prepare-capture")
+    matching = []
+    for session_id, segments in sessions.items():
+        prompts = [row["payload"]["text"] for _, _, rows in segments for row in rows
+                   if not row.get("origin") and row.get("type") == "model_msg"
+                   and row.get("payload", {}).get("type") == "text"
+                   and row["payload"].get("role") == "user" and row["payload"].get("sender") == "parent_agent"]
+        if not prompts or prompts[0] != ticket["call"]["prompt"]:
+            continue
+        require_all_segments(session_id, segments)
+        identity = segments[0][1]
+        check(identity["source"] == "subagent" and identity["agent_state"] == meta["agent_state"]
+              and identity["workspace"] == t["workspace"]
+              and all(identity[k] == t["runtime"][k] for k in ("provider", "model_id"))
+              and all(all(other[k] == identity[k] for k in fields) for _, other, _ in segments),
+              "original Solver trace runtime/State/workspace identity changed")
+        pointers = [str(trace) for trace, row in root_rows if row.get("type") == "event_msg"
+                    and row.get("payload", {}).get("type") == "subagent"
+                    and row["payload"].get("session_id") == session_id]
+        check(pointers, "Solver has no original parent-child event")
+        matching.append((segments, {**{k: identity[k] for k in fields}, "parent_trace": pointers[0]}, prompts[0]))
+    check(len(matching) == 1, "prepare-capture requires one unambiguous original Solver Session")
+    segments, binding, prompt = matching[0]
+    grants = [value["evo_task"] for value in evo.json_values(prompt)
+              if isinstance(value, dict) and set(value) == {"evo_task"}]
+    check(len(grants) == 1 and isinstance(grants[0], dict), "unique original atomic task grant required")
+    grant = grants[0]
+    check(set(grant) == {"split", "task_id", "attempt_id", "inputs"}
+          and grant["split"] == "train" and grant["task_id"] == task and grant["attempt_id"] == t["attempt_id"],
+          "original Solver task grant differs from frozen attempt")
+    inputs = grant["inputs"]
+    check(isinstance(inputs, list) and inputs and all(isinstance(name, str) for name in inputs)
+          and len(inputs) == len(set(inputs)), "invalid granted input list")
+    access = str(Path(t["workspace"]) / "environment_access.md")
+    check(inputs[-1] == access, "original public access grant missing")
+    for name in inputs[:-1]:
+        inside(name, Path(t["workspace"]) / "train_tasks" / task)
+    paths = evo.judge_paths(t, task, t["attempt_id"])
+    prepared = {"op": "capture", "split": "train", "task_id": task, "attempt_id": t["attempt_id"],
+        "train_ids": t["train_ids"], "answer": paths["answer"], "feedback": paths["output"],
+        "judge_request": paths["judge_request"], "inputs": inputs, "traces": [str(trace) for trace, _, _ in segments],
+        "binding": binding, "output": str(private / "contexts" / (task + ".json"))}
+    training_helper(prepared, meta, scratch, mode)
+    destination = inside(private / "requests" / f"capture-{task}-{t['attempt_id']}.prepared.json", private / "requests")
+    with evo.locked(str(destination) + ".lock"):
+        if destination.exists():
+            check(canonical(evo.read(evo.regular(destination))) == canonical(prepared),
+                  "existing capture request differs; preserve the original request")
+        else:
+            check(not Path(prepared["output"]).exists(), "context already exists; do not prepare a new capture")
+        with tempfile.TemporaryDirectory(prefix="capture-check-", dir=private) as directory:
+            checked = Path(directory) / "context.json"
+            evo.capture({**prepared, "output": str(checked)})
+            context_exists = Path(prepared["output"]).exists()
+            if context_exists:
+                check(evo.regular(prepared["output"]).read_bytes() == checked.read_bytes(), "existing context differs from original evidence")
+            context_sha256 = sha(checked) if context_exists else None
+        if not destination.exists():
+            evo.write_once(destination, evo.encoded(prepared))
+    return {"op": "prepare-capture", "prepared": True, "captured": False,
+            "request_path": str(destination), "request_sha256": sha(destination),
+            "context_exists": context_exists, "context_verified": context_exists,
+            "context_path": prepared["output"], "context_sha256": context_sha256,
+            "command": None if context_exists else "python3 -B " + shlex.quote(str(TOOL)) + " " + shlex.quote(str(destination)),
+            "next_action": "Use the verified existing context; do not capture or judge again." if context_exists
+                           else "Execute command unchanged to publish the canonical context.",
+            "model_calls": 0, "judge_calls": 0, "automatic_dispatch": False}
+
+
 def prepare_seal_training(req, meta, mode):
     """Prepare metadata only; never publish an export or dispatch a learning role."""
     check(mode["mode"] == "training", "prepare-seal-training is training-only")
@@ -907,7 +1062,7 @@ def hook(payload, state):
                     if script == TOOL:
                         training_helper(req, meta, scratch, mode)
                     else:
-                        check(req.get("op") in ("role-request", "status", "prepare-seal-training", "verify-training"), "invalid training coordinator operation")
+                        check(req.get("op") in ("role-request", "status", "prepare-capture", "prepare-seal-training", "verify-training"), "invalid training coordinator operation")
                         check(Path(req["trace_path"]).resolve() == Path(payload["trace_path"]).resolve(), "request belongs to another native trace")
                 elif name == "write_file":
                     inside(args["file_path"], private / "requests")
@@ -955,6 +1110,8 @@ def execute(req):
         return format_request(req, meta, scratch, mode)
     if op == "prepare-seal-training":
         return prepare_seal_training(req, meta, mode)
+    if op == "prepare-capture":
+        return prepare_capture(req, meta, scratch, mode)
     if op == "verify-training":
         return training_final(meta, mode)
     if op == "verify-completion":

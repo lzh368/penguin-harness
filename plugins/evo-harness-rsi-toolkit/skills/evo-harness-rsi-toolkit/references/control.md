@@ -35,7 +35,8 @@ within their assigned scope. Neither wrapper nor Python helper owns a loop.
 | worker-request | phase: training/h0/final, call: complete native run_subagent arguments | Validates runtime, Benchmark, Target, case, run and prerequisites; returns exact call and ticket. Main Penguin invokes that call itself. |
 | role-request | role: solver/reflector/evolver; task_id for solver/reflector; reflectors: all completed audit-role requests for Evolver, in negative-task order | Training root receives complete fixed role prompt and exact native call. It invokes the returned call unchanged. |
 | format-request | subagent_id: the original completed evaluation worker handle | Controller only: returns one fixed formatting-only input_subagent call for the same worker's existing result. No tools, rerun or new scores are permitted. |
-| status | none | Mode, clock/compilation reserve, original native trace paths and call count; no dispatch. Inspect actual child metadata using read-material when building capture/audit requests. |
+| status | none | Mode, clock/compilation reserve, original native trace paths and call count; no dispatch. Use prepare-capture for Solver capture metadata; inspect actual child metadata using read-material for role audits. |
+| prepare-capture | task_id | Training root only, after the original Solver's native completed notification. Derives the exact ordered grant, registered child binding, all trace segments and canonical paths; validates evidence in a disposable private directory, then writes requests/capture-<task>-<attempt>.prepared.json once. Returns prepared=true/captured=false and short path/hash/command. Execute the command unchanged, unless context_exists/context_verified=true and command=null: then reuse the already captured context. |
 | prepare-seal-training | role_requests: absolute paths to completed Reflector/Evolver audit-role JSON files inside private/requests/, in negative-task order followed by Evolver | Training root only: writes private/requests/seal-training.json with the complete frozen runtime and canonical paths; returns only request_path, request_sha256 and command. Identical requests are reused read-only; conflicting requests are never overwritten. It does not seal, dispatch or judge. |
 | verify-training | none | Revalidates the sealed group against its real private/requests/seal-training.json and training-export.json. |
 | verify-completion | none | Host verifies freeze and complete matrices; final host-request cost remains pending. |
@@ -107,11 +108,13 @@ At the returned freeze_request path write:
   "final_version": 2,
   "target_state": "<actual-held-out-Target-agent_state>",
   "test_case_ids": ["<registered-CASE-001>", "<registered-CASE-002>", "<registered-CASE-003>", "<registered-CASE-004>", "<registered-CASE-005>"],
-  "runtime": {"provider": "<fixed>", "model_id": "<fixed>", "thinking_level": "<fixed>"}
+  "runtime": "<copy the complete frozen config.runtime object verbatim here, not this placeholder string>"
 }
 ~~~
 
-Substitute the complete frozen runtime object, including any declared api_host.
+Substitute the complete frozen runtime object. This official profile includes
+provider, model_id, thinking_level, api_host, effective_reasoning_effort and
+client_type. Preserve all frozen fields and values; never shorten or extend it.
 The default active_state is final. For an H0 matrix restore the exact H0 State;
 the guard rechecks this same request with active_state=h0. Before final testing
 restore the frozen final State. Never test different States of one Target
@@ -127,6 +130,16 @@ receipt never substitutes for this recheck.
 
 Store the ordinary complete matrix requests with cells, identity, case_ids,
 runs, time, summary_title, summary and evo_tool. Preserve original worker values.
+The matrix identity is the shared evaluation protocol's five-field object:
+
+~~~json
+{"agent_id":"<test_agent_id>","expected_version":1,"provider":"<fixed>","model_id":"<fixed>","thinking_level":"<fixed>"}
+~~~
+
+Use the measured version. This identity is not the complete runtime object:
+do not add api_host, effective_reasoning_effort or client_type to matrix identity
+or worker cells. The complete frozen runtime remains required in the export,
+freeze and injection requests.
 H0's request belongs at <scratchpad>/evo-guard/h0-matrix-request.json so final
 worker authorization can verify that H0 has finished.
 
@@ -151,6 +164,25 @@ freezes its hash, writes full role material under private_learning/roles/ and
 the empty prebatch-library.json, and injects the complete training contract.
 Do not reconstruct these files. Read group-training.md for the single-batch
 sequence and tools.md for exact capture/compile/export/seal schemas.
+
+After each completed Solver call prepare-capture with only op, trace_path and
+task_id. It binds the saved ticket/claim to the exact original parent call,
+native child pointer, first parent_agent USER grant and completed notification;
+it never guesses a Session from a tool handle. It preserves the literal input
+paths and order, including instruction.md at its original granted location.
+An identical prepared request is reused read-only after evidence revalidation;
+a conflicting request or ambiguous/incomplete child is rejected. Old hand-written
+request files are left intact. Never edit answers, feedback, traces or a failed
+capture request to make it pass; preparation is metadata plumbing, not another
+Solver attempt. It makes no service/model calls and does not publish a context.
+Run the returned command unchanged; the original capture validator checks all
+evidence again and alone writes contexts/<task_id>.json.
+If the canonical context already exists, preparation revalidates all original
+evidence and requires byte-identical context content. It returns context_exists
+and context_verified true with context_path/hash and command=null. Use that
+verified existing context without another capture or scoring call. captured
+remains false because preparation itself did not publish the context. A changed
+existing context is preserved and refused.
 
 Helpers validate cooperative execution; they are not a sandbox against
 arbitrary malicious code. The isolated container, restricted account/network

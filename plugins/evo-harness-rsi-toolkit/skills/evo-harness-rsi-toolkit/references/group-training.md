@@ -100,11 +100,19 @@ native traces or role-authored candidates/decisions.
    text inputs, binary hashes, exact answer/judge paths and frozen runtime.
    Invoke its returned run_subagent call unchanged. Await this leaf before the
    next Solver; the service is shared. Do not send candidates to later Solvers.
-3. After the leaf returns, use status to locate original trace segments. Read
-   actual session metadata with read-material and bind session_id, source,
-   provider, model_id, workspace, agent_state and the parent trace. Use capture
-   with all trace segments, granted text inputs, exact answer, canonical feedback
-   path and judge_request path. The Solver's short judge receipt must bind the
+3. After the Solver's native completed notification, write one control request:
+   `{"op":"prepare-capture","trace_path":"<your current original root trace>","task_id":"<member>"}`.
+   Execute it with the installed control.py, then execute its returned exact
+   command with no edits. If recovery returns context_exists=true and
+   context_verified=true with command=null, use that already captured context;
+   do not run capture or judge again. The helper derives the unique registered Solver,
+   original trace segments, exact ordered input grant and canonical paths.
+   Do not reconstruct, reorder or copy inputs, session bindings or judge paths
+   into a hand-written capture request. In particular instruction.md is a
+   member-root file when the original grant says so; do not infer a path under
+   input/. Preparation checks the original evidence in a disposable private
+   directory but does not publish a captured context. Only the returned
+   evo.py capture command writes that context. The Solver's short judge receipt must bind the
    full ledger, and all ledger chunks must have been read after that one judge
    command. Its captured context output is
    private_learning/contexts/<task_id>.json. The canonical judge command and

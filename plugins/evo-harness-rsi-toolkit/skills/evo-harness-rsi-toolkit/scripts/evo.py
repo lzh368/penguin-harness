@@ -1383,7 +1383,7 @@ def verify_compilation(req):
 READER = '''---
 name: evo-harness-learned
 description: Select relevant frozen Evo-Harness procedures for the current task.
-version: 2026.10.21.7
+version: 2026.10.21.8
 ---
 
 Before business API calls or writing the task answer, use native read_file to read
