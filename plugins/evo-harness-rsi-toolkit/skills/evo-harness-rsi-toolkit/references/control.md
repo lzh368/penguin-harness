@@ -36,6 +36,7 @@ within their assigned scope. Neither wrapper nor Python helper owns a loop.
 | role-request | role: solver/reflector/evolver; task_id for solver/reflector; reflectors: all completed audit-role requests for Evolver, in negative-task order | Training root receives complete fixed role prompt and exact native call. It invokes the returned call unchanged. |
 | format-request | subagent_id: the original completed evaluation worker handle | Controller only: returns one fixed formatting-only input_subagent call for the same worker's existing result. No tools, rerun or new scores are permitted. |
 | status | none | Mode, clock/compilation reserve, original native trace paths and call count; no dispatch. Inspect actual child metadata using read-material when building capture/audit requests. |
+| prepare-seal-training | role_requests: absolute paths to completed Reflector/Evolver audit-role JSON files inside private/requests/, in negative-task order followed by Evolver | Training root only: writes private/requests/seal-training.json with the complete frozen runtime and canonical paths; returns only request_path, request_sha256 and command. Identical requests are reused read-only; conflicting requests are never overwritten. It does not seal, dispatch or judge. |
 | verify-training | none | Revalidates the sealed group against its real private/requests/seal-training.json and training-export.json. |
 | verify-completion | none | Host verifies freeze and complete matrices; final host-request cost remains pending. |
 

@@ -156,11 +156,20 @@ native traces or role-authored candidates/decisions.
    the receipt/backup on conflict. Do not automatically retry that export.
    Even a valid no-op exports the fixed reader, selector and empty index.
    Private artifacts never enter the skill slot.
-7. Write private_learning/requests/seal-training.json with train_ids, contexts,
-   candidates, decisions, pre-batch library, skill, all Reflector/Evolver audit
-   requests, runtime and frozen limits/budgets; output must be
-   private_learning/training-export.json. Execute seal-training, then control's
-   verify-training. The stop hook rechecks this request and complete export.
+7. Write a control request inside private_learning/requests/ with
+   op="prepare-seal-training", your trace_path and role_requests (absolute
+   paths to all completed Reflector/Evolver audit-role requests inside
+   private_learning/requests/, in negative-task order followed by Evolver).
+   Execute it with the installed control
+   helper. It copies the complete frozen runtime and limits, derives the
+   canonical evidence paths, and writes requests/seal-training.json without
+   calling a model or judge. Its short result gives request_path, request_sha256
+   and command; execute that exact command, then control's verify-training.
+   Do not transcribe a subset of runtime fields or copy the prepared JSON from
+   tool output. A conflicting existing request is preserved; only an explicit
+   metadata correction before any training-export.json exists may be retried,
+   without new solving/scoring. An existing export is never overwritten.
+   The stop hook rechecks this request and complete export.
    Missing reflection/compilation/trace/seal evidence is failure, not no-op.
 8. Wait for all native children to finish and return their evidence paths and
    costs/unknown liabilities. Harbor then exports artifacts and terminates.

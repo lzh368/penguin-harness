@@ -757,6 +757,9 @@ def training_helper(req, meta, scratch, mode):
         if op == "seal-training":
             check(Path(req["private_learning"]).resolve() == private and Path(req["skill"]).resolve() == skill,
                   "wrong training export scope")
+            check(canonical(req.get("runtime")) == canonical(t["runtime"]),
+                  "seal runtime must exactly match the complete frozen runtime; use prepare-seal-training")
+            check(Path(req["output"]).resolve() == private / "training-export.json", "wrong training export destination")
         if "train_ids" in req:
             check(req["train_ids"] == t["train_ids"], "coordinator batch changed")
         for field in ("limits", "max_entries", "max_bytes"):
@@ -764,12 +767,47 @@ def training_helper(req, meta, scratch, mode):
                 check(req[field] == t[field], "frozen method budget changed")
 
 
+def prepare_seal_training(req, meta, mode):
+    """Prepare metadata only; never publish an export or dispatch a learning role."""
+    check(mode["mode"] == "training", "prepare-seal-training is training-only")
+    check(set(req) == {"op", "trace_path", "role_requests"}, "prepare-seal-training takes only trace_path and role_requests")
+    path, t = training_profile(meta["agent_state"])
+    check(str(path) == mode["training_path"] and sha(path) == mode["training_sha256"], "training profile changed")
+    private = Path(t["private_learning"])
+    check(evo.regular(private / "frozen-training.json").read_bytes() == evo.regular(path).read_bytes(),
+          "portable frozen training snapshot changed")
+    check(isinstance(req["role_requests"], list) and req["role_requests"]
+          and all(isinstance(path, str) for path in req["role_requests"]),
+          "completed audit-role request paths required")
+    roles = [evo.read(evo.regular(inside(path, private / "requests"))) for path in req["role_requests"]]
+    check(all(isinstance(role, dict) and role.get("op") == "audit-role"
+              and role.get("role") in ("reflector", "evolver") for role in roles),
+          "completed Reflector/Evolver audit requests required")
+    prepared = {"op": "seal-training", "private_learning": str(private), "train_ids": t["train_ids"],
+        "contexts": [str(private / "contexts" / (task + ".json")) for task in t["train_ids"]],
+        "candidates": str(private / "candidates.json"), "decisions": str(private / "decisions.json"),
+        "library": str(private / "prebatch-library.json"), "skill": str(Path(t["answer_dir"]).parent / "skill"),
+        "roles": roles, "runtime": t["runtime"], "limits": t["limits"],
+        "max_entries": t["max_entries"], "max_bytes": t["max_bytes"], "output": str(private / "training-export.json")}
+    destination = inside(private / "requests/seal-training.json", private / "requests")
+    with evo.locked(private / "requests/.prepare-seal-training.lock"):
+        if destination.exists():
+            check(canonical(evo.read(evo.regular(destination))) == canonical(prepared),
+                  "existing seal request differs; preserve it and explicitly correct metadata before sealing")
+        else:
+            check(not Path(prepared["output"]).exists(), "training export already exists; do not prepare a new seal request")
+            evo.write_once(destination, evo.encoded(prepared))
+    return {"op": "prepare-seal-training", "request_path": str(destination), "request_sha256": sha(destination),
+            "command": "python3 -B " + shlex.quote(str(TOOL)) + " " + shlex.quote(str(destination)),
+            "model_calls": 0, "judge_calls": 0, "automatic_dispatch": False}
+
+
 def training_final(meta, mode):
     _, t = training_profile(meta["agent_state"])
     private = Path(t["private_learning"])
     request = evo.read(private / "requests/seal-training.json")
     check(Path(request["private_learning"]).resolve() == private.resolve(), "wrong private export")
-    check(request["train_ids"] == t["train_ids"] and request["runtime"] == t["runtime"], "frozen training changed")
+    check(request["train_ids"] == t["train_ids"] and canonical(request["runtime"]) == canonical(t["runtime"]), "frozen training changed")
     check(sha(mode["training_path"]) == mode["training_sha256"], "training profile changed")
     check(Path(request["skill"]).resolve() == Path(t["answer_dir"]).parent / "skill", "wrong submission skill")
     check(Path(request["output"]).resolve() == private / "training-export.json", "wrong training export destination")
@@ -869,7 +907,7 @@ def hook(payload, state):
                     if script == TOOL:
                         training_helper(req, meta, scratch, mode)
                     else:
-                        check(req.get("op") in ("role-request", "status", "verify-training"), "invalid training coordinator operation")
+                        check(req.get("op") in ("role-request", "status", "prepare-seal-training", "verify-training"), "invalid training coordinator operation")
                         check(Path(req["trace_path"]).resolve() == Path(payload["trace_path"]).resolve(), "request belongs to another native trace")
                 elif name == "write_file":
                     inside(args["file_path"], private / "requests")
@@ -915,6 +953,8 @@ def execute(req):
         return worker_request(req, scratch, mode)
     if op == "format-request":
         return format_request(req, meta, scratch, mode)
+    if op == "prepare-seal-training":
+        return prepare_seal_training(req, meta, mode)
     if op == "verify-training":
         return training_final(meta, mode)
     if op == "verify-completion":

@@ -128,6 +128,15 @@ Additional operations:
   private_learning/training-export.json. Include the frozen-training snapshot
   and canonical judge request/feedback ledger evidence; the sealer records portable mappings
   so host verification works after Harbor exports the original artifacts.
+  Before any write, all guarded context snapshots must match one hashed frozen
+  profile, and runtime must equal that profile's complete object: missing,
+  extra or changed fields are rejected. Use control's prepare-seal-training
+  (trace_path, role_requests: absolute paths to the completed audit-role JSON
+  files inside private_learning/requests/) to write the canonical request; it
+  returns only the path, SHA and exact helper command, not the large request.
+  Preparation preserves identical existing requests and refuses conflicts.
+  Correcting rejected request metadata before publication needs no new role
+  or judge call; it never permits replacing an already sealed export.
 
 Every helper invocation and its output belongs in the native role trace.
 The caller must also verify role materials were actually read completely and

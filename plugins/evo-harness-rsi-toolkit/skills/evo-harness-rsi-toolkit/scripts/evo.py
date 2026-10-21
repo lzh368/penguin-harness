@@ -1078,6 +1078,26 @@ def verify_training_root(contexts, roles, path_map=None):
     return root
 
 
+def guarded_training_runtime(contexts):
+    """Read the hashed authority before any guarded training export is written."""
+    snapshots = []
+    for context in contexts:
+        feedback = context["feedback"]
+        if feedback.get("source") == "evo-judge":
+            raw = regular(feedback["training_snapshot"]).read_bytes()
+            require(digest(raw) == feedback["training_sha256"], "portable frozen training snapshot changed")
+            snapshots.append((raw, json.loads(raw)))
+    if not any(snapshot.get("guard_version") == 2 for _, snapshot in snapshots):
+        return None
+    require(len(snapshots) == len(contexts)
+            and all(snapshot.get("guard_version") == 2 for _, snapshot in snapshots),
+            "guarded training requires one frozen profile for every context")
+    first_raw, first = snapshots[0]
+    require(all(raw == first_raw for raw, _ in snapshots), "guarded training snapshots differ")
+    require(isinstance(first.get("runtime"), dict) and first["runtime"], "missing frozen runtime")
+    return first["runtime"]
+
+
 def seal_training(req):
     root = Path(req["private_learning"]).resolve()
     def rel(path):
@@ -1085,10 +1105,13 @@ def seal_training(req):
         require(p.is_relative_to(root), "private evidence must stay under private_learning")
         return p.relative_to(root).as_posix()
     contexts = [read(p) for p in req["contexts"]]
+    frozen_runtime = guarded_training_runtime(contexts)
+    guarded = frozen_runtime is not None
+    if guarded:
+        require(encoded(req.get("runtime")) == encoded(frozen_runtime),
+                "seal runtime must exactly match the complete frozen runtime; no export was written")
     validated = validate_contexts(contexts, req["train_ids"])
     training_root = verify_training_root(contexts, req["roles"])
-    guarded = any(c["feedback"].get("source") == "evo-judge"
-                  and read(c["feedback"]["training_snapshot"]).get("guard_version") == 2 for c in contexts)
     validate_candidates(read(req["candidates"]), validated)
     roles, trace_paths, reflected = [], set(), []
     sessions = {c["trace"]["binding"]["session_id"] for c in contexts}
@@ -1360,7 +1383,7 @@ def verify_compilation(req):
 READER = '''---
 name: evo-harness-learned
 description: Select relevant frozen Evo-Harness procedures for the current task.
-version: 2026.10.21.6
+version: 2026.10.21.7
 ---
 
 Before business API calls or writing the task answer, use native read_file to read

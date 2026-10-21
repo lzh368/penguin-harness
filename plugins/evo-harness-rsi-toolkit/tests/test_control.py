@@ -33,7 +33,8 @@ class ControlTests(unittest.TestCase):
             self.addCleanup(item.stop)
         self.private = self.root / "private"
         self.workspace = self.root / "workspace"
-        self.runtime = {"provider": "fixture", "model_id": "no-model", "thinking_level": "high"}
+        self.runtime = {"provider": "fixture", "model_id": "no-model", "thinking_level": "xhigh",
+                        "effective_reasoning_effort": "high", "api_host": "fixture.invalid", "client_type": "fixture-official"}
         self.profile = {"guard_version": 2, "train_ids": [f"train_{n:03d}" for n in range(1, 6)],
             "attempt_id": "attempt-1", "config_sha256": "a" * 64, "private_learning": str(self.private),
             "answer_dir": str(self.workspace / "submission/answers"), "feedback_dir": str(self.private / "feedback"),
@@ -152,6 +153,98 @@ class ControlTests(unittest.TestCase):
         self.assertGreater(status["clock"]["solving_time_remaining_sec"], 21000)
         self.assertEqual(status["clock"]["compilation_reserve_sec"], 3600)
         self.assertIn(str(self.trace), status["native_trace_paths"])
+
+    def seal_preparation_fixture(self, large=False):
+        shutil.copyfile(self.skill / "training.json", self.private / "frozen-training.json")
+        audits = []
+        for index, role in enumerate(("reflector", "evolver")):
+            path = self.private / "requests" / f"audit-{index}.json"
+            self.write(path, {"op": "audit-role", "role": role,
+                "materials": [f"{self.private}/material-{n}.json" for n in range(2000 if large else 1)]})
+            audits.append(str(path))
+        return audits
+
+    def test_prepare_seal_copies_frozen_profile_without_large_stdout_or_dispatch(self):
+        audits = self.seal_preparation_fixture(large=True)
+        before = {str(p): p.read_bytes() for p in (self.trace, *(Path(p) for p in audits))}
+        request = {"op": "prepare-seal-training", "trace_path": str(self.trace), "role_requests": audits}
+        caller = self.private / "requests/prepare-seal.json"
+        self.write(caller, request)
+        self.assertEqual(self.tool("exec_command", {"cmd": f"python3 -B {control.CONTROL} {caller}"}), {})
+        receipt = control.execute(request)
+        prepared = Path(receipt["request_path"])
+        self.assertGreater(prepared.stat().st_size, 100000)
+        self.assertLess(len(json.dumps(receipt)), 2048)
+        self.assertEqual(receipt["model_calls"], 0)
+        self.assertEqual(receipt["judge_calls"], 0)
+        self.assertFalse(receipt["automatic_dispatch"])
+        self.assertEqual(receipt["request_sha256"], control.sha(prepared))
+        data = control.evo.read(prepared)
+        self.assertEqual(data["runtime"], self.runtime)
+        self.assertEqual(data["roles"], [control.evo.read(p) for p in audits])
+        self.assertEqual(data["contexts"], [str(self.private / "contexts" / (task + ".json")) for task in self.profile["train_ids"]])
+        self.assertEqual(self.tool("exec_command", {"cmd": receipt["command"]}), {})
+        stat = prepared.stat()
+        self.assertEqual(control.execute(request), receipt)
+        self.assertEqual(prepared.stat().st_mtime_ns, stat.st_mtime_ns)
+        self.assertEqual({path: Path(path).read_bytes() for path in before}, before)
+        self.assertFalse(Path(data["output"]).exists())
+
+    def test_prepare_seal_preserves_conflicts_and_rejects_changed_authority_or_outside_roles(self):
+        audits = self.seal_preparation_fixture()
+        receipt = self.request(op="prepare-seal-training", role_requests=audits)
+        prepared = Path(receipt["request_path"])
+        conflict = control.evo.read(prepared)
+        conflict["runtime"].pop("client_type")
+        self.write(prepared, conflict)
+        before = prepared.read_bytes()
+        with self.assertRaisesRegex(ValueError, "existing seal request differs"):
+            self.request(op="prepare-seal-training", role_requests=audits)
+        self.assertEqual(prepared.read_bytes(), before)
+        for outside in (self.private / "audit-outside-requests.json", self.private / "requests/link.json"):
+            if outside.name == "link.json":
+                outside.symlink_to(audits[0])
+            else:
+                self.write(outside, control.evo.read(audits[0]))
+            with self.assertRaises(ValueError):
+                self.request(op="prepare-seal-training", role_requests=[str(outside)])
+        (self.private / "frozen-training.json").write_bytes(b"{}")
+        with self.assertRaisesRegex(ValueError, "snapshot changed"):
+            self.request(op="prepare-seal-training", role_requests=audits)
+        self.assertEqual(prepared.read_bytes(), before)
+
+    def test_prepare_seal_cannot_reconstruct_a_missing_request_after_publication(self):
+        audits = self.seal_preparation_fixture()
+        exported = self.private / "training-export.json"
+        exported.write_bytes(b"old sealed bytes\n")
+        with self.assertRaisesRegex(ValueError, "export already exists"):
+            self.request(op="prepare-seal-training", role_requests=audits)
+        self.assertFalse((self.private / "requests/seal-training.json").exists())
+        self.assertEqual(exported.read_bytes(), b"old sealed bytes\n")
+
+    def test_guarded_seal_rejects_mixed_or_changed_snapshots_before_any_publication(self):
+        evo = control.evo
+        contexts = []
+        for index in range(2):
+            snapshot = self.private / f"snapshot-{index}.json"
+            snapshot.write_bytes((self.skill / "training.json").read_bytes())
+            contexts.append({"feedback": {"source": "evo-judge", "training_snapshot": str(snapshot),
+                                         "training_sha256": control.sha(snapshot)}})
+        self.assertEqual(evo.guarded_training_runtime(contexts), self.runtime)
+        snapshot = Path(contexts[1]["feedback"]["training_snapshot"])
+        changed = control.evo.read(snapshot)
+        changed["runtime"]["client_type"] = "another-client"
+        self.write(snapshot, changed)
+        with self.assertRaisesRegex(ValueError, "snapshot changed"):
+            evo.guarded_training_runtime(contexts)
+        contexts[1]["feedback"]["training_sha256"] = control.sha(snapshot)
+        with self.assertRaisesRegex(ValueError, "snapshots differ"):
+            evo.guarded_training_runtime(contexts)
+        changed["guard_version"] = 1
+        self.write(snapshot, changed)
+        contexts[1]["feedback"]["training_sha256"] = control.sha(snapshot)
+        with self.assertRaisesRegex(ValueError, "every context"):
+            evo.guarded_training_runtime(contexts)
 
     def append_trace(self, path, rows):
         with path.open("a") as handle:
@@ -356,12 +449,39 @@ class ControlTests(unittest.TestCase):
         evo.export_skill({**compile_request, "library": str(compiled), "output": str(skill), "max_entries": 5, "max_bytes": 16000})
         seal = {**compile_request, "op": "seal-training", "private_learning": str(self.private), "skill": str(skill),
             "roles": roles, "runtime": self.runtime, "max_entries": 5, "max_bytes": 16000, "output": str(self.private / "training-export.json")}
-        self.write(self.private / "requests/seal-training.json", seal)
+        evidence_before = {str(path): path.read_bytes() for directory in (self.trace.parent, self.private / "feedback")
+                           for path in directory.rglob("*") if path.is_file()}
+        bad_runtimes = [{k: v for k, v in self.runtime.items() if k not in ("effective_reasoning_effort", "client_type")},
+                        {**self.runtime, "undeclared": "extra"}, None]
+        bad_runtimes += [{**self.runtime, key: "changed"} for key in self.runtime]
+        for runtime in bad_runtimes:
+            with self.subTest(runtime=runtime):
+                rejected = {**seal, "runtime": runtime}
+                rejection_request = self.private / "requests/rejected-seal.json"
+                self.write(rejection_request, rejected)
+                self.assertEqual(self.tool("exec_command", {"cmd": f"python3 -B {helper} {rejection_request}"})["decision"], "deny")
+                with self.assertRaisesRegex(ValueError, "complete frozen runtime"):
+                    evo.seal_training(rejected)
+                self.assertFalse(Path(seal["output"]).exists())
+        role_requests = []
+        for index, role in enumerate(roles):
+            path = self.private / "requests" / f"completed-audit-{index}.json"
+            self.write(path, {"op": "audit-role", **role})
+            role_requests.append(str(path))
+        receipt = self.request(op="prepare-seal-training", role_requests=role_requests)
+        seal = evo.read(receipt["request_path"])
+        self.assertEqual(self.tool("exec_command", {"cmd": receipt["command"]}), {})
         sealed = evo.seal_training(seal)
+        self.assertEqual(sealed["runtime"], self.runtime)
         self.assertEqual(len(sealed["members"]), 5)
         self.assertEqual(len(sealed["roles"]), 3)
         self.assertTrue(self.request(op="verify-training")["complete"])
         self.assertTrue(self.invoke("stop")["output"]["complete"])
+        self.assertEqual({path: Path(path).read_bytes() for path in evidence_before}, evidence_before)
+        before_export = Path(seal["output"]).read_bytes()
+        with self.assertRaises(FileExistsError):
+            evo.seal_training(seal)
+        self.assertEqual(Path(seal["output"]).read_bytes(), before_export)
 
     def test_host_can_prepare_launch_documentation_but_cannot_execute_experiment_directly(self):
         mode, _ = self.format_fixture()
