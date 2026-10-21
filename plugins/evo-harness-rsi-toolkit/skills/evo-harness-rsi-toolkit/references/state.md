@@ -5,7 +5,7 @@ exported by `evo.py` from `[]` with the frozen limits. Install it at
 `STATE/skills/evo-harness-learned/`. Append exactly once to `STATE/AGENTS.md`:
 
 ```text
-Before acting on a task, read skills/evo-harness-learned/SKILL.md in your Agent State and follow its selection procedure. Do not modify your State.
+Before acting on a task, use native read_file to read the complete skills/evo-harness-learned/SKILL.md and index.json in your Agent State, then follow the reader's selection procedure. Before selection, use only native read_file for task/reader material and simple pwd, ls or find commands for directory inspection, plus the reader's selector budget retries. Run the selector as a foreground native exec_command without redirects, pipes or wrappers, and observe its complete output before business API calls or writing the task answer. Do not modify your State.
 ```
 
 The reader, selector, max_entries/max_bytes, models and tools stay identical in
@@ -13,6 +13,52 @@ H0 and final. On a new held-out Target
 set `memory.enabled: false` and `hooks.enabled: false` in system_config.yaml;
 retain these throughout. Existing Targets need a snapshot before changes and
 authorization for changes beyond the learned slot. Never reset existing work.
+
+Before freezing a new H0, set the output capacity of both `exec_command` and
+`input_command` to at least `6 * max_bytes + 8192` characters: **104192** when the
+frozen guidance budget is 16000 UTF-8 bytes. Their native default is 16000
+characters, which can truncate a valid selector JSON receipt after adding JSON
+escaping and hashes. This is a fixed tool-output capacity, not a larger learned
+Skill or injection budget. H0, Trainer and final retain the same capacity.
+
+The exact native YAML field is `tools.builtin[].maxOutputLength`, selected by
+`name`. Edit those two entries in the complete tools.builtin array created by
+native `penguin agent create`; preserve every other entry and every tool schema,
+description, permission and timeout. **Do not replace the array with two partial
+tool records**: native Penguin does not merge partial records with defaults.
+A model-free preparation command may update the fresh Target as follows (replace
+the literal State path and frozen byte limit). Preserve native YAML formatting:
+generic YAML reserialization can change its indentation and multiline scalar
+style, so use this exact field-only update on the native-created configuration.
+Also freeze the native adapter's `max_turns: -1` before taking the snapshot; the
+time limit still applies, and startup must not rewrite the frozen State.
+
+```python
+from pathlib import Path
+import re
+state_config = Path("<STATE>/system_config.yaml")
+text = state_config.read_text()
+required_output_chars = 6 * 16000 + 8192
+assert len(re.findall(r"(?m)^max_turns: -?[0-9]+$", text)) == 1
+text = re.sub(r"(?m)^max_turns: -?[0-9]+$", "max_turns: -1", text)
+for name in ("exec_command", "input_command"):
+    pattern = r"(?m)^    - name: " + name + r"\n(?:(?!    - name:|  [A-Za-z_]|\S).*(?:\n|$))*"
+    blocks = list(re.finditer(pattern, text))
+    assert len(blocks) == 1, "Require the complete native tool configuration"
+    block = blocks[0]
+    limits = re.findall(r"(?m)^      maxOutputLength: ([0-9]+)$", block[0])
+    assert len(limits) == 1, "Require the native output-limit field"
+    updated = re.sub(r"(?m)^      maxOutputLength: [0-9]+$",
+                     "      maxOutputLength: " + str(max(int(limits[0]), required_output_chars)), block[0])
+    text = text[:block.start()] + updated + text[block.end():]
+state_config.write_text(text)
+```
+
+Read the file back through native State loading and verify both effective tool
+limits before recording the H0 snapshot. prepare-trainer and verify-freeze reject
+an omitted/insufficient limit; do not bypass that check or raise one side during
+the experiment. If a tool later reports truncated output despite this capacity,
+retain that failure and inspect the frozen setup before any further experiment.
 
 A new Target starts at version 1. Otherwise choose one greater than the highest
 current version, snapshot `v<N>.tar.gz`, and scoreboard version. Never reuse

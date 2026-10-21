@@ -1,7 +1,7 @@
 ---
 name: evo-harness-rsi-toolkit
 description: Run Evo-Harness with frozen Solver settings, negative-feedback reflection and batch compilation of general and task-type skills. Use native Penguin workers, State, snapshots and evaluation; the continuous GDPevo profile adds checked native delegation and export acceptance.
-version: 2026.10.21.2
+version: 2026.10.21.3
 ---
 
 # Evo-Harness
@@ -114,9 +114,11 @@ their container roles: do not count those children twice. Host and worker
 overhead are separate. This accounting is not a provider-enforced spending cap.
 
 In ordinary RSI follow the shared protocol's narrowly evidenced formatting or
-pre-start recovery rules. The guarded continuous profile permits empty child
-polls only and forbids a second semantic dispatch or free-form child steering;
-retain an invalid/ambiguous attempt as method_failed. Never turn failed learning
+pre-start recovery rules. The guarded continuous profile permits empty child polls and a registered,
+fixed evaluator formatting repair that resends only its existing result. It
+forbids a second semantic dispatch or free-form learning-role steering; retain
+an invalid/ambiguous attempt as method_failed. Evaluator pre-start recovery
+still requires the unchanged shared protocol’s evidence that no Target ran. Never turn failed learning
 into reused H0, invent missing cells, or silently replace an interrupted package.
 
 You decide the next authorized stage and stop after the frozen batches and

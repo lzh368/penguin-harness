@@ -3,8 +3,10 @@
 Run `python3 -B <Skill>/scripts/evo.py <request.json>`. It performs one requested
 operation, prints JSON, and exits 2 on invalid input. Never import it with
 bytecode enabled in a plugin tree. Paths below are explicitly resolved by the
-caller. Private output files are write-once; do not fix a role's JSON by editing
-its output. Ordinary RSI may use only the shared protocol's existing-result
+caller. Captured evidence and sealed role outputs are immutable; do not fix a role's JSON
+by editing its output. Before its own file-digest seal, a role may validate and
+correct its draft with validate-candidates or validate-decisions, using only its
+already assigned training evidence. Ordinary RSI may use only the shared protocol's existing-result
 formatting repair. The guarded continuous profile forbids free-form child
 steering and replacement dispatch; preserve invalid output as method_failed.
 Read [control.md](control.md) before group operations. The training root writes
@@ -16,6 +18,9 @@ of entry objects (`id,level,topic?,trigger,scope,body`), initially `[]`.
 
 | op | Required request fields (in addition to op) | Output |
 |---|---|---|
+| prepare-judge-request | task_id, url | Data-only canonical request writer; derives all paths/attempt/roster from installed training.json, returns exact judge command and makes no HTTP call |
+| validate-candidates | contexts, train_ids, candidates, candidate_prefix | Read-only draft check for the Reflector before output sealing; no rewritten content |
+| validate-decisions | compile fields except output, plus max_entries/max_bytes | Read-only compile/export validation, including native reader index-line capacity, in a temporary directory before Evolver sealing; no published State |
 | judge | split=train, task_id, attempt_id, train_ids, url, answer (JSON file), output; request file itself must have the canonical judge_request path | Writes full canonical ledger with raw feedback and hashes; CLI returns a short ledger path/hash/byte-count receipt |
 | capture | split=train, task_id, attempt_id, train_ids, answer, feedback (canonical receipt path), judge_request (canonical JSON path), inputs (text file paths), traces (all Solver JSONL segment paths), binding, output | Full context; requires exactly one canonical native judge exec and rejects changed or extra feedback |
 | capture-evaluation | capture fields except feedback and judge_request, plus evaluation and evaluation_identity as described below | Bound native workspace feedback and captured context; no HTTP receipt |
@@ -52,7 +57,11 @@ output = <feedback_dir>/<config_sha256>/<task_id>.<attempt_id>.json
 training_snapshot = <private_learning>/frozen-training.json
 ```
 
-The complete request file contains exactly the required identity and operation:
+Prefer prepare-judge-request to generate this data from the installed profile:
+write a separate request containing op=prepare-judge-request, task_id and the
+public local judge URL, then run the fixed helper on that file. This preparation
+makes zero HTTP/model calls. Execute its returned canonical command exactly once.
+The complete generated request file contains the required identity and operation:
 
 ```json
 {"op":"judge","split":"train","task_id":"<frozen task>","attempt_id":"attempt-1",
@@ -82,7 +91,9 @@ neither a compact receipt alone nor a parent-written feedback copy is sufficient
 Additional operations:
 - `read-material`: path, offset (default 0); returns a 4000-character chunk with
   exact bytes hash, text, offset/end/total. Roles repeat until end=total. Require
-  untruncated tool output. `capture` accepts only inputs named in the native
+  untruncated foreground exec_command output. Do not pipe, redirect or background
+  read-material/file-digest receipts; their canonical output must remain in the
+  native tool observation. `capture` accepts only inputs named in the native
   user/parent task grant and actually read through these receipts.
 - `file-digest`: path; prints file_path/sha256, sealing a role-authored output in
   its native trace. A later parent rewrite invalidates the role audit.

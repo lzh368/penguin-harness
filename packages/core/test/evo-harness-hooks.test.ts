@@ -108,7 +108,7 @@ describe("Evo native hook installation and execution", () => {
     const [hook] = await listInstalledHooks(root, ...ids);
     expect(hook).toMatchObject({
       name: NAME,
-      version: "2026.10.21.2",
+      version: "2026.10.21.3",
       user_prompt: [{ command: "guard.mjs", timeout: 30, trigger: "prompt" }],
       pre_tool_use: [{ command: "guard.mjs", timeout: 30 }],
       stop: [{ command: "guard.mjs", timeout: 30 }],

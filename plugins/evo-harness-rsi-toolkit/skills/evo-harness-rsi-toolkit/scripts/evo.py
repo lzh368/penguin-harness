@@ -8,6 +8,7 @@ import sys
 sys.dont_write_bytecode = True
 
 import contextlib
+import ast
 import fcntl
 import hashlib
 import json
@@ -237,6 +238,28 @@ def judge_stdout(record):
             **{key: record[key] for key in ("task_id", "attempt_id", "config_sha256", "status", "score", "correct")}}
 
 
+def prepare_judge_request(req):
+    """Write the fixed request, without submitting an answer or contacting judge."""
+    helper = regular(__file__).resolve()
+    training = read(helper.parent.parent / "training.json")
+    task = ident(req["task_id"])
+    paths = judge_paths(training, task, training["attempt_id"])
+    request = {"op": "judge", "split": "train", "train_ids": training["train_ids"],
+               "task_id": task, "attempt_id": training["attempt_id"],
+               "answer": paths["answer"], "output": paths["output"], "url": req["url"]}
+    validate_judge_request(request, training, paths["judge_request"])
+    path = Path(paths["judge_request"])
+    with locked(str(path) + ".lock"):
+        if path.exists():
+            require(read(regular(path)) == request, "canonical judge request already differs")
+        else:
+            write_once(path, encoded(request))
+    return {"op": "prepare-judge-request", "task_id": task, "attempt_id": training["attempt_id"],
+            "judge_request": str(path), "request_sha256": digest(path.read_bytes()),
+            "command": shlex.join(["python3", "-B", str(helper), str(path)]),
+            "model_calls": 0, "judge_calls": 0}
+
+
 def trace_view(paths, expected, path_map=None):
     """Preserve complete action/result pairs, with raw sources and no head/tail cut."""
     messages, sources, metas = [], [], []
@@ -259,7 +282,7 @@ def trace_view(paths, expected, path_map=None):
     require(expected["source"] in ("cli", "benchmark", "subagent"), "unsupported trace source")
     if expected["source"] == "subagent":
         parent_path = (path_map or {}).get(expected["parent_trace"], expected["parent_trace"])
-        parent = [json.loads(line) for line in regular(parent_path).read_text().splitlines()]
+        parent = [json.loads(line) for line in regular(parent_path).read_bytes().splitlines()]
         require(any(row.get("type") == "event_msg" and row.get("payload", {}).get("type") == "subagent"
                     and row["payload"].get("session_id") == expected["session_id"] for row in parent),
                 "child not referenced by parent trace")
@@ -279,17 +302,188 @@ def trace_view(paths, expected, path_map=None):
             "messages": messages, "pairs": [{"call": calls[k], "observation": results[k]} for k in calls]}
 
 
-def contains_json(text, value):
-    """Tool output may wrap stdout with an exit-code header; parse, do not substring-score."""
+def json_values(text):
+    """Parse JSON objects in wrapped stdout once, without scanning their string data.
+
+    In particular a read-material receipt can contain JSON examples as escaped
+    text. Those are material, not additional tool results or judge responses.
+    """
     decoder = json.JSONDecoder()
-    for i, char in enumerate(text):
-        if char == "{":
+    i = 0
+    while i < len(text):
+        if text[i] in "{[":
             try:
-                parsed, _ = decoder.raw_decode(text[i:])
-                if parsed == value:
-                    return True
+                parsed, end = decoder.raw_decode(text, i)
+                yield parsed
+                i = end
+                continue
             except ValueError:
                 pass
+        i += 1
+
+
+def contains_json(text, value):
+    """Tool output may wrap stdout with an exit-code header; never substring-score."""
+    return any(parsed == value for parsed in json_values(text))
+
+
+def python_judge_probe(source):
+    """Recognize visible Python HTTP calls using the judge URL, not JSON writers.
+
+    This is a cooperative trace audit, not a Python/network security sandbox.
+    Literal endpoints and simple local assignments are enough to distinguish
+    the actual CRM request writer from urllib/requests calls to judge.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    assigned = {}
+    imports = {"urllib", "requests", "httpx", "aiohttp", "http"}
+    imported_functions = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imports.update(alias.asname or alias.name.split(".")[0] for alias in node.names
+                           if alias.name.split(".")[0] in {"urllib", "requests", "httpx", "aiohttp", "http"})
+        elif isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] in {"urllib", "requests", "httpx", "aiohttp", "http"}:
+            imports.update(alias.asname or alias.name for alias in node.names)
+            imported_functions.update({alias.asname or alias.name: alias.name for alias in node.names})
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if isinstance(target, ast.Name) and node.value is not None:
+                    assigned.setdefault(target.id, []).append(node.value)
+    def endpoint(node, seen=frozenset()):
+        if isinstance(node, ast.Constant):
+            return isinstance(node.value, str) and "/api/judge" in node.value
+        if isinstance(node, ast.Name) and node.id not in seen:
+            return any(endpoint(value, seen | {node.id}) for value in assigned.get(node.id, []))
+        return any(endpoint(child, seen) for child in ast.iter_child_nodes(node)) if not isinstance(node, ast.Name) else False
+    def network_owner(node, seen=frozenset()):
+        if isinstance(node, ast.Name):
+            if node.id in imports:
+                return True
+            return node.id not in seen and any(network_owner(value, seen | {node.id}) for value in assigned.get(node.id, []))
+        return any(network_owner(child, seen) for child in ast.iter_child_nodes(node))
+    network = {"urlopen", "urlretrieve", "request", "get", "post", "put", "patch", "delete", "send", "open"}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = node.func.id if isinstance(node.func, ast.Name) else node.func.attr if isinstance(node.func, ast.Attribute) else ""
+        if isinstance(node.func, ast.Name):
+            name = imported_functions.get(name, name)
+        # opener.open(Request(...)) is HTTP, whereas open(path, 'w') and
+        # Path(...).open() in a JSON writer are ordinary filesystem operations.
+        known = name in ("urlopen", "urlretrieve") or network_owner(node.func)
+        # A business request may serialize a judge URL as data. Only the URL
+        # argument of the actual network operation identifies its destination.
+        url_index = 1 if name == "request" else 0
+        urls = [node.args[url_index]] if len(node.args) > url_index else []
+        urls += [k.value for k in node.keywords if k.arg in ("url", "fullurl")]
+        if name in network and known and any(endpoint(arg) for arg in urls):
+            return True
+    return False
+
+
+def direct_judge_probe(command):
+    """Reject recognizable HTTP execution; a URL in data/docs is not execution."""
+    if "/api/judge" not in command:
+        return False
+    # Remove heredoc data from shell tokens. Python bodies are parsed as code;
+    # cat/tee bodies are data, even if they contain endpoint names or examples.
+    lines, shell_lines, index = command.splitlines(), [], 0
+    while index < len(lines):
+        line = lines[index]
+        match = re.search(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1", line)
+        if not match:
+            shell_lines.append(line)
+            index += 1
+            continue
+        end = index + 1
+        while end < len(lines) and lines[end].strip() != match[2]:
+            end += 1
+        body = "\n".join(lines[index + 1:end])
+        header = line[:match.start()]
+        if re.search(r"(?:^|[\s;&|])(?:\S*/)?python[0-9.]*\s", header) and python_judge_probe(body):
+            return True
+        if re.search(r"(?:^|[\s;&|])(?:\S*/)?(?:ba|z|da)?sh\s", header) and direct_judge_probe(body):
+            return True
+        shell_lines.append(header)
+        index = min(end + 1, len(lines))
+    try:
+        lexer = shlex.shlex("\n".join(shell_lines), posix=True, punctuation_chars=";&|<>()\n")
+        lexer.whitespace = " \t\r"
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return False
+    segments, segment = [], []
+    for token in tokens + [";"]:
+        if token and all(c in ";&|()\n" for c in token):
+            if segment:
+                segments.append(segment)
+                segment = []
+        else:
+            segment.append(token)
+    variables = {}
+    def expand(value):
+        return re.sub(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))",
+                      lambda match: variables.get(match[1] or match[2], match[0]), value)
+    for args in segments:
+        i = 0
+        while i < len(args) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", args[i]):
+            key, value = args[i].split("=", 1)
+            variables[key] = expand(value)
+            i += 1
+        # Recognize only executable positions. `echo curl URL` is data, while
+        # ordinary env/sudo/exec wrappers still execute the following command.
+        while i < len(args) and Path(args[i]).name in ("env", "sudo", "exec"):
+            wrapper = Path(args[i]).name
+            i += 1
+            while i < len(args):
+                if args[i] == "--":
+                    i += 1
+                    break
+                if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", args[i]):
+                    key, value = args[i].split("=", 1)
+                    variables[key] = expand(value)
+                    i += 1
+                elif args[i].startswith("-"):
+                    option = args[i]
+                    i += 1
+                    if option in (("-u", "--unset", "-C", "--chdir") if wrapper == "env" else ("-u", "--user", "-g", "--group")):
+                        i += 1
+                else:
+                    break
+        if i >= len(args):
+            continue
+        binary = Path(args[i]).name
+        if binary == "export":
+            for argument in args[i + 1:]:
+                if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argument):
+                    key, value = argument.split("=", 1)
+                    variables[key] = expand(value)
+        if binary in ("curl", "wget", "http", "https"):
+            skip = False
+            for arg in args[i + 1:]:
+                if skip:
+                    skip = False
+                    continue
+                if arg in ("-d", "--data", "--data-raw", "--data-binary", "--json", "-H", "--header", "-o", "--output", "--post-data"):
+                    skip = True
+                    continue
+                arg = expand(arg)
+                if arg.startswith(("http://", "https://", "--url=http://", "--url=https://")) and "/api/judge" in arg:
+                    return True
+        if re.fullmatch(r"python[0-9.]*", binary) and i + 2 < len(args) and args[i + 1] == "-c":
+            if python_judge_probe(args[i + 2]):
+                return True
+        if binary in ("sh", "bash", "zsh", "dash") and i + 2 < len(args) and args[i + 1] in ("-c", "-lc"):
+            if direct_judge_probe(args[i + 2]):
+                return True
+        if binary in ("node", "nodejs") and i + 2 < len(args) and args[i + 1] in ("-e", "--eval"):
+            if re.search(r"\b(?:fetch|axios\.(?:post|get))\s*\(\s*['\"][^'\"]*/api/judge", args[i + 2]):
+                return True
     return False
 
 
@@ -323,10 +517,11 @@ def verify_judge_evidence(view, fb, request_path, path_map=None):
     expected = ["python3", "-B", helper, request_path]
     matched = []
     chunked = []
-    decoder = json.JSONDecoder()
     for pair in view["pairs"]:
         call, observation = pair["call"]["payload"], pair["observation"]["payload"]["output"]
         authorized = False
+        receipt_read = call["name"] == "read_file"
+        values = list(json_values(observation))
         if call["name"] == "exec_command":
             args = json.loads(call["arguments"])
             command = args.get("cmd", "")
@@ -336,7 +531,20 @@ def verify_judge_evidence(view, fb, request_path, path_map=None):
                 tokens = []
             authorized = (tokens == expected and not any(c in command for c in "`$\n\r;&|<>")
                           and not args.get("run_in_background", False))
-            require("/api/judge" not in command, "direct judge probe in Solver trace")
+            require(not direct_judge_probe(command), "direct judge probe in Solver trace")
+            # The canonical helper's read-material output is data observation,
+            # not a second score. It must exactly bind the frozen ledger bytes.
+            if tokens[:3] == expected[:3] and len(tokens) == 4 and not any(c in command for c in "`$\n\r;&|<>"):
+                for value in values:
+                    if not isinstance(value, dict) or value.get("material_path") != fb["feedback_path"]:
+                        continue
+                    offset = value.get("offset")
+                    if type(offset) is int and 0 <= offset <= len(ledger_raw.decode()):
+                        text = ledger_raw.decode()
+                        receipt_read = value == {"material_path": fb["feedback_path"], "sha256": digest(ledger_raw),
+                            "offset": offset, "end": min(offset + 4000, len(text)), "total": len(text),
+                            "text": text[offset:offset + 4000]}
+            receipt_read = receipt_read or tokens in (["cat", fb["feedback_path"]], ["cat", "--", fb["feedback_path"]])
             if not authorized and helper in tokens:
                 # A second helper request is detectable locally when its file is
                 # available. Native hooks must also reject it before execution.
@@ -350,28 +558,22 @@ def verify_judge_evidence(view, fb, request_path, path_map=None):
                     require(not isinstance(other_req, dict) or other_req.get("op") != "judge",
                             "noncanonical or repeated judge operation")
         if authorized:
-            if not contains_json(observation, fb):
-                require(contains_json(observation, judge_stdout(fb)), "judge command did not return bound receipt")
+            if fb not in values:
+                require(judge_stdout(fb) in values, "judge command did not return bound receipt")
                 chunked.append(pair)
             matched.append(call["tool_call_id"])
-        elif call["name"] == "read_file":
+        elif receipt_read:
             # Reading API documentation or an existing receipt is not another
             # scoring request, and cannot satisfy the canonical command below.
             continue
         else:
-            require(not contains_json(observation, fb), "judge receipt was not produced by canonical exec")
-            # Raw /api/judge replies have score/correct; canonical receipts add
-            # source. Neither is valid feedback from a different tool call.
-            for index, char in enumerate(observation):
-                if char != "{":
-                    continue
-                try:
-                    value, _ = decoder.raw_decode(observation[index:])
-                except ValueError:
-                    continue
-                require(not isinstance(value, dict) or not (
-                    value.get("source") == "evo-judge" or {"score", "correct"} <= value.keys()),
-                    "additional judge feedback in Solver trace")
+            require(fb not in values and judge_stdout(fb) not in values,
+                    "judge receipt was not produced by canonical exec")
+            # Business APIs can legitimately expose score/correct fields. Only
+            # explicit method receipts are scoring evidence; raw judge traffic
+            # is identified by the executing command, not response key names.
+            require(not any(isinstance(value, dict) and value.get("source") in ("evo-judge", "evo-judge-receipt")
+                            for value in values), "additional judge feedback in Solver trace")
     require(len(matched) == 1, "requires exactly one canonical judge operation")
     for pair in chunked:
         # Complete feedback must be observed after the one judge has returned;
@@ -380,7 +582,7 @@ def verify_judge_evidence(view, fb, request_path, path_map=None):
         observation = pair["observation"]
         returned = positions[(observation["source"], observation["line"])]
         later = [p for p in view["pairs"] if positions[(p["call"]["source"], p["call"]["line"])] > returned]
-        verify_reads({"pairs": later}, [fb["feedback_path"]], path_map)
+        verify_reads({**view, "pairs": later}, [fb["feedback_path"]], path_map)
     return {"path": request_path, "sha256": digest(request_raw), "tool_call_id": matched[0]}
 
 
@@ -395,31 +597,117 @@ def material(req):
             "end": end, "total": len(content), "text": content[start:end]}
 
 
-def verify_reads(view, paths, path_map=None):
+def observation_positions(view):
+    positions = {(m["source"], m["line"]): index for index, m in enumerate(view.get("messages", []))}
+    def at(message, fallback):
+        return positions.get((message.get("source"), message.get("line")), fallback)
+    return [(at(pair["call"], 2 * index), at(pair["observation"], 2 * index + 1))
+            for index, pair in enumerate(view["pairs"])]
+
+
+def helper_observation(pair, view):
+    """A read/digest receipt must come from an executed installed method helper.
+
+    Native Solver traces legitimately batch reads in shell loops or write a
+    request in a heredoc before executing the helper. Preserve those forms;
+    reject print-only receipts and helper names merely quoted as data. This is
+    still a cooperative execution audit, not protection against arbitrary
+    mixed shell programs that forge their own stdout.
+    """
+    call = pair["call"].get("payload", {})
+    if call.get("name") != "exec_command":
+        return False
+    args = json.loads(call["arguments"])
+    command = args.get("cmd", args.get("command", ""))
+    allowed = {str(Path(__file__).resolve())}
+    binding = view.get("binding", {})
+    if binding.get("agent_state"):
+        allowed.add(str(Path(binding["agent_state"]) / "skills/evo-harness-rsi-toolkit/scripts/evo.py"))
+    lines, shell, i = command.splitlines(), [], 0
+    while i < len(lines):
+        match = re.search(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1", lines[i])
+        if not match:
+            shell.append(lines[i])
+            i += 1
+            continue
+        shell.append(lines[i][:match.start()])
+        i += 1
+        while i < len(lines) and lines[i].strip() != match[2]:
+            i += 1
+        i += 1
+    try:
+        lexer = shlex.shlex("\n".join(shell), posix=True, punctuation_chars=";&|\n")
+        lexer.whitespace, lexer.whitespace_split = " \t\r", True
+        fragments, fragment = [], []
+        for token in list(lexer) + [";"]:
+            if token and all(char in ";&|\n" for char in token):
+                fragments.append(fragment)
+                fragment = []
+            else:
+                fragment.append(token)
+    except ValueError:
+        return False
+    for argv in fragments:
+        if argv and argv[0] in ("do", "then"):
+            argv = argv[1:]
+        if len(argv) == 4 and argv[:2] == ["python3", "-B"] and argv[2] in allowed:
+            return True
+    return False
+
+
+def verify_material_records(view, records):
+    # Build this once per trace. Searching every output anew for every chunk
+    # made a one-megabyte captured context take seconds to audit, and five
+    # contexts could exceed the native hook timeout during sealing/freezing.
+    indexed = {}
+    positions = observation_positions(view)
+    for pair, (_, observed) in zip(view["pairs"], positions):
+        if not helper_observation(pair, view):
+            continue
+        for value in json_values(pair["observation"]["payload"]["output"]):
+            if not isinstance(value, dict):
+                continue
+            key = (value.get("material_path"), value.get("sha256"), value.get("offset"))
+            if isinstance(key[0], str) and isinstance(key[1], str) and type(key[2]) is int:
+                indexed.setdefault(key, []).append((value, observed))
     receipts = []
-    for path in paths:
-        actual = regular((path_map or {}).get(str(path), path))
-        raw = actual.read_bytes()
-        content = raw.decode()
+    last_read = -1
+    for path, content, fingerprint in records:
         # Complete fixed-size chunks must be present as actual tool outputs.
         for offset in range(0, max(len(content), 1), 4000):
             end = min(offset + 4000, len(content))
-            expected = {"material_path": str(path), "sha256": digest(raw), "offset": offset,
+            expected = {"material_path": str(path), "sha256": fingerprint, "offset": offset,
                         "end": end, "total": len(content), "text": content[offset:end]}
-            require(any(contains_json(p["observation"]["payload"]["output"], expected)
-                        for p in view["pairs"]), f"material not fully read: {path} offset {offset}")
-        receipts.append({"path": str(path), "sha256": digest(raw)})
-    return receipts
+            observed = [position for value, position in indexed.get((str(path), fingerprint, offset), []) if value == expected]
+            require(observed, f"material not fully read: {path} offset {offset}")
+            last_read = max(last_read, min(observed))
+        receipts.append({"path": str(path), "sha256": fingerprint})
+    return receipts, last_read
+
+
+def material_records(paths, path_map=None):
+    records = []
+    for path in paths:
+        raw = regular((path_map or {}).get(str(path), path)).read_bytes()
+        records.append((str(path), raw.decode(), digest(raw)))
+    return records
+
+
+def verify_reads(view, paths, path_map=None):
+    return verify_material_records(view, material_records(paths, path_map))[0]
 
 
 def audit_role(req):
     view = trace_view(req["traces"], req["binding"], req.get("path_map"))
-    reads = verify_reads(view, req["materials"], req.get("path_map"))
+    reads, last_read = verify_material_records(view, material_records(req["materials"], req.get("path_map")))
     outputs = []
+    positions = observation_positions(view)
     for path in req.get("outputs", []):
         receipt = {"file_path": path, "sha256": digest(regular(req.get("path_map", {}).get(path, path)).read_bytes())}
-        require(any(contains_json(p["observation"]["payload"]["output"], receipt) for p in view["pairs"]),
-                "role output not sealed in native trace")
+        require(any(called > last_read and helper_observation(pair, view)
+                    and contains_json(pair["observation"]["payload"]["output"], receipt)
+                    for pair, (called, _) in zip(view["pairs"], positions)),
+                "role output must be sealed in native trace after all assigned materials were read")
         outputs.append(receipt)
     return {"binding": req["binding"], "sources": view["sources"], "materials": reads,
             "outputs": outputs, "complete": True}
@@ -465,7 +753,7 @@ def verify_training_root(contexts, roles, path_map=None):
     for binding in [c["trace"]["binding"] for c in contexts] + [r["binding"] for r in roles]:
         require(binding["source"] == "subagent", "continuous training requires native child roles")
         parent = binding["parent_trace"]
-        rows = [json.loads(line) for line in regular((path_map or {}).get(parent, parent)).read_text().splitlines()]
+        rows = [json.loads(line) for line in regular((path_map or {}).get(parent, parent)).read_bytes().splitlines()]
         metas = [r["payload"] for r in rows if r.get("type") == "session_meta" and not r.get("origin")]
         require(len(metas) == 1 and metas[0].get("source") in ("cli", "benchmark"), "invalid native training root")
         identity = {key: metas[0][key] for key in fields}
@@ -631,13 +919,10 @@ def validate_contexts(contexts, train_ids, path_map=None):
                                   "inputs": [s["source"] for s in c["inputs"]]}}
             require(any(m["payload"].get("role") == "user" and m["payload"].get("type") == "text"
                         and contains_json(m["payload"]["text"], grant) for m in actual["messages"]), "input grant changed")
-            for source in c["inputs"]:
-                content = source["text"]
-                for offset in range(0, max(len(content), 1), 4000):
-                    expected = {"material_path": source["source"], "sha256": source["sha256"], "offset": offset,
-                                "end": min(offset + 4000, len(content)), "total": len(content), "text": content[offset:offset + 4000]}
-                    require(any(contains_json(p["observation"]["payload"]["output"], expected) for p in actual["pairs"]),
-                            "captured input absent from Solver observations")
+            try:
+                verify_material_records(actual, [(s["source"], s["text"], s["sha256"]) for s in c["inputs"]])
+            except ValueError as exc:
+                raise ValueError("captured input absent from Solver observations") from exc
             require(verify_judge_evidence(actual, c["feedback"], c["judge_request"]["path"], path_map)
                     == c["judge_request"], "captured judge operation changed")
             require(c["feedback"]["request"]["answer"] == c["answer"], "judge submitted a different answer")
@@ -723,6 +1008,28 @@ def compile_batch(req):
     return {"entries": len(result), "candidates": len(candidates), "sha256": digest(encoded(result))}
 
 
+def validate_candidate_file(req):
+    """Validate a role's draft without changing it or admitting a new attempt."""
+    contexts = validate_contexts([read(p) for p in req["contexts"]], req["train_ids"], req.get("path_map"))
+    values = read(req["candidates"])
+    candidates = validate_candidates(values, contexts)
+    if "candidate_prefix" in req:
+        prefix = nonempty(req["candidate_prefix"], "candidate namespace")
+        require(all(key.startswith(prefix) and len(key) > len(prefix) for key in candidates),
+                "candidate id must use the assigned task/attempt namespace")
+    return {"complete": True, "candidates": len(candidates), "sha256": digest(regular(req["candidates"]).read_bytes())}
+
+
+def validate_decisions(req):
+    """Dry-run the exact compiler/exporter so the Evolver can fix its own draft."""
+    with tempfile.TemporaryDirectory(prefix="evo-decisions-check-") as temp:
+        library = str(Path(temp) / "compiled.json")
+        compiled = compile_batch({**req, "output": library})
+        package = export_skill({**req, "library": library, "output": str(Path(temp) / "skill")})
+    return {"complete": True, "entries": compiled["entries"], "candidates": compiled["candidates"],
+            "decisions_sha256": digest(regular(req["decisions"]).read_bytes()), "skill_sha256": package["sha256"]}
+
+
 def verify_compilation(req):
     """Rebuild the data-only package from audited role outputs, without any model call."""
     with tempfile.TemporaryDirectory(prefix="evo-rebuild-") as tmp:
@@ -736,15 +1043,29 @@ def verify_compilation(req):
 READER = '''---
 name: evo-harness-learned
 description: Select relevant frozen Evo-Harness procedures for the current task.
-version: 2026.10.21.1
+version: 2026.10.21.3
 ---
 
-Before acting, read index.json beside this file. Choose only entries whose trigger
-and scope match the current task (zero is valid), in order of relevance. Execute
-`python3 -B select.py --ids <comma-separated IDs>` from this Skill directory.
-The selector enforces the frozen entry and UTF-8 byte budgets, returns the complete
-selected guidance and its hashes. Read that output before solving. Never read other
-entry bodies to bypass the budget. Keep the returned receipt in the task workspace.
+Before business API calls or writing the task answer, use native read_file to read
+this entire SKILL.md and index.json beside it, requesting all remaining lines if
+truncated. Before selection, use only native read_file for task/reader material
+and simple pwd, ls or find commands for directory inspection, plus the selector
+budget retries described below. Choose only entries whose trigger and scope match the current task
+(zero is valid), in order of relevance. Execute one foreground native exec_command:
+`python3 -B /absolute/path/to/this/Skill/select.py --ids <comma-separated IDs>`.
+Use --ids '' for an empty selection. Alternatively set exec_command.workdir to this
+Skill directory and use select.py, or use `cd ABS_SKILL_DIR && python3 -B select.py
+--ids IDS`. Keep selector stdout in the tool result; do not redirect it, pipe it,
+wrap it in another program, or print a fabricated receipt. The frozen native
+State supplies enough output capacity for the complete JSON. If successful
+selector stdout is truncated, report a setup failure; do not change State or
+rerun a successful selection. The selector enforces frozen entry and UTF-8 byte budgets
+and returns the complete selected guidance and its hashes. If it reports only a
+selection-budget error, choose fewer entries and retry before solving; otherwise
+report the error. Exactly one successful selection is required. Observe the whole
+successful output before business API calls or writing the answer. Never read
+entry bodies separately to bypass the budget. The native trace retains the receipt;
+you do not need to create another receipt file.
 The library is frozen: do not edit it, learn from test feedback, or fetch training
 answers. Current task instructions and observed facts take precedence over a
 procedure whose preconditions are not met. Empty guidance is normal cold start.
@@ -782,6 +1103,18 @@ if __name__ == "__main__":
 '''
 
 
+def validate_index_readability(raw):
+    """Match native read_file's 2000 UTF-16-code-unit physical line limit.
+
+    Check actual JSON, including indentation/quoting/escaping. Python's
+    splitlines() is unsuitable here: JS read_file splits bytes only on LF, so
+    an embedded U+2028 separator is still part of the same physical line.
+    """
+    for number, line in enumerate(raw.decode("utf-8").split("\n"), 1):
+        require(len(line.encode("utf-16-le")) // 2 <= 2000,
+                f"index.json line {number} exceeds native read_file's 2000 UTF-16 unit limit; shorten trigger/scope metadata")
+
+
 def export_skill(req):
     entries = read(req["library"])
     validate_entries(entries, req["limits"])
@@ -803,7 +1136,9 @@ def export_skill(req):
                                      "scope": e["scope"], "file": path, "sha256": digest(raw)})
         write_once(stage / "SKILL.md", READER.encode())
         write_once(stage / "select.py", SELECTOR.encode())
-        write_once(stage / "index.json", encoded(index))
+        index_raw = encoded(index)
+        validate_index_readability(index_raw)
+        write_once(stage / "index.json", index_raw)
         os.rename(stage, dest)
     return {"files": filemap(dest), "sha256": digest(encoded(filemap(dest))), "empty": not entries}
 
@@ -813,7 +1148,9 @@ def validate_package(root):
     files = filemap(root)
     require((root / "SKILL.md").read_text() == READER, "learned reader changed")
     require((root / "select.py").read_text() == SELECTOR, "learned executable changed")
-    index = read(root / "index.json")
+    index_raw = regular(root / "index.json").read_bytes()
+    validate_index_readability(index_raw)
+    index = json.loads(index_raw)
     require(index["schema"] == VERSION and type(index["max_entries"]) is int
             and 0 < index["max_entries"] <= 5 and type(index["max_bytes"]) is int
             and index["max_bytes"] > 0, "invalid selection budgets")
@@ -884,7 +1221,9 @@ def journal(req):
 
 
 def execute(req, request_path=None):
-    actions = {"judge": lambda r: judge(r, request_path), "capture": capture, "capture-evaluation": capture, "compile": compile_batch,
+    actions = {"judge": lambda r: judge(r, request_path), "prepare-judge-request": prepare_judge_request,
+               "capture": capture, "capture-evaluation": capture, "compile": compile_batch,
+               "validate-candidates": validate_candidate_file, "validate-decisions": validate_decisions,
                "read-material": material, "audit-role": audit_role,
                "seal-training": seal_training,
                "file-digest": lambda r: {"file_path": r["path"], "sha256": digest(regular(r["path"]).read_bytes())},

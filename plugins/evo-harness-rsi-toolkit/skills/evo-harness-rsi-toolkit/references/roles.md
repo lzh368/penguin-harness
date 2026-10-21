@@ -13,28 +13,38 @@ leaf has either subagent tool (Penguin 0.2.16 maximum depth is 1).
 Every prompt includes the complete relevant section below plus the bound
 task/attempt id, allowed material paths and output path. Read every assigned material and this role text through `read-material` at
 offsets 0, 4000, 8000, ... until end=total; require full JSON tool output for
-each chunk (request sufficient output tokens). This supplies machine-auditable
-read receipts. If a tool truncates one chunk, re-read it with enough output; pair actions/results and retain pointers
-to the original traces. Record tool-call evidence of those reads in the parent
+each 4000-character chunk. This supplies machine-auditable read receipts.
+Penguin exec_command has no per-call max_output_tokens argument: its output
+capacity is the fixed State-level maxOutputLength prepared by state.md. If a
+chunk is truncated, stop and report that capacity/setup mismatch; do not change
+State, invent a larger tool argument or repeat judge. Pair actions/results and
+retain pointers to the original traces. Run read-material and file-digest in the
+foreground, with their complete stdout returned by exec_command; do not pipe,
+redirect or background these receipt operations. Record tool-call evidence of those reads in the parent
 audit. An acknowledgment or a path in the prompt alone is not proof of reading.
 
 ## Solver (group training leaf)
 
 Read the installed training.json beside the method Skill for the exact frozen
 train_ids/attempt and canonical path policy; it contains no other member's
-answers. Read the complete assigned role file and every granted text input with
+answers. First satisfy the inherited learned reader: use native read_file for
+the public task and the complete learned SKILL.md/index.json, run its foreground
+selector, and observe its full output. Only then execute the audited
+read-material operations; these do not replace the reader's native read_file
+requirement. Read the complete assigned role file and every granted text input with
 read-material, retaining all full chunks. Solve exactly the assigned training task, using its public instruction and
 payloads, environment_access.md and allowed business service. Select guidance
 from the fixed pre-batch learned Skill before acting. Leave the final answer
 at the assigned submission path. Do not inspect siblings' answers, candidate
 files, tests, solutions, private grader/rulebook/gold files, or remote task
 repositories. Do not edit any Skill. Do not reset or concurrently write the
-shared business service. Once the final answer is written, create the canonical
-judge_request JSON at the exact path returned in your prompt. Its complete schema
-is op=judge, split=train, task_id, attempt_id, train_ids (the entire frozen roster),
-url (the local /api/judge URL from environment_access.md), answer (the exact final
-JSON file), and output (the exact canonical feedback path). Do not choose a new
-output/attempt/config namespace. Run exactly one standalone command:
+shared business service. Once the final answer is written, run the data-only
+prepare-judge-request helper with task_id and the local /api/judge URL from
+environment_access.md. It derives the frozen attempt, roster, answer and feedback
+paths from the installed training.json, writes the canonical judge request and
+returns its exact command. Preparation makes no HTTP call; execute that returned
+judge command exactly once. Do not choose another output/attempt/config namespace.
+The canonical command has this form:
 
 ```text
 python3 -B <absolute-installed-evo.py> <absolute-canonical-judge-request.json>
@@ -61,7 +71,10 @@ eligible; completely successful attempts produce no candidate. Judge/transport
 failure is not task failure. Do not compare against the skill library.
 
 Output a JSON array of zero or more candidates with `id`, `task_id`,
-`attempt_id`, `lesson`, `trigger`, `evidence`, `scope_hint`. Evidence items use
+`attempt_id`, `lesson`, `trigger`, `evidence`, `scope_hint`. In continuous group
+training every id starts with the assigned <task_id>-<attempt_id>- prefix, followed
+by a local unique suffix, for example train_001-attempt-1-c01. Independent
+Reflectors must not invent a shared batch-wide counter. Evidence items use
 `kind` (input/tool/answer/feedback), `claim`, `epistemic` (observed/inferred);
 input references carry the exact sha256; tool references carry tool_call_id.
 Describe reusable business decisions as well as useful tool procedures.
@@ -71,7 +84,11 @@ enterprise conventions, even those seen in only one training member. Analyze
 the final submitted result; a repaired intermediate mistake is not its cause.
 If the premise is contradicted by observed data, correct or omit the lesson.
 Keep uncertainty visible; zero candidates is valid. Write the array to the
-assigned file, call `file-digest`, and return its receipt. You do not edit State.
+assigned file, then use the prompt's validate-candidates request to check its
+schema, references and namespace before sealing. You may correct your own draft
+until this validation succeeds, without new task attempts or new feedback.
+Then call file-digest and return its receipt. After sealing the output is fixed;
+the coordinator cannot repair or rewrite it. You do not edit State.
 
 ## Evolver
 
@@ -85,6 +102,19 @@ general operation; compile both levels from the same batch. Within each level,
 use each candidate at most once. SKIP may name level general/topic or all. Combine changes to the same target into one operation.
 ADD uses a new id; MERGE/REVISE target an existing entry. SKIP records noise,
 duplication, contradiction or an unsupported premise without inventing content.
+
+The continuous role prompt supplies the exact frozen limits, max_entries and
+max_bytes plus a validate-decisions request. limits.general caps general entries;
+limits.topic caps entries per topic. Each full exported Markdown entry must fit
+max_bytes UTF-8 bytes, including its id, Trigger/Scope headings and framing.
+Keep trigger and scope concise: every physical index.json line must fit 2000
+UTF-16 code units, including JSON escaping and indentation, so native read_file
+can observe it completely. Shorten metadata if draft validation rejects it.
+The selector later enforces max_entries and the combined max_bytes budget.
+Validate your own draft decisions with that request before sealing: this checks
+the same compilation/export constraints without publishing State or changing
+content. Correct any structural or size errors yourself before file-digest;
+do not ask the coordinator to rewrite or synthesize your decisions.
 
 Compile both general operating patterns and localized task-type procedures.
 Generalize only when evidence supports transfer; a useful topic procedure does

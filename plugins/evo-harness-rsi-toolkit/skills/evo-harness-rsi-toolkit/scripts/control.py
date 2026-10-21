@@ -8,6 +8,7 @@ The guard is a protocol boundary for cooperative agents, not an OS sandbox.
 import sys
 sys.dont_write_bytecode = True
 import argparse
+import ast
 import hashlib
 import importlib.util
 import json
@@ -23,6 +24,9 @@ SKILL = Path(__file__).resolve().parents[1]
 CONTROL = Path(__file__).resolve()
 TOOL = CONTROL.with_name("evo.py")
 MARKER = "EVO_CONTROL.json"
+FORMAT_PROMPT = ("Resend exactly one plain protocol YAML document from your existing result in this same Session. "
+                 "Do not call tools, relaunch, rescore, change values, or add commentary. "
+                 "This is a formatting-only repair under the installed shared evaluation.md contract.")
 ROOT_OPS = {"read-material", "file-digest", "capture", "compile", "export", "fingerprint",
             "journal", "audit-role", "verify-package", "seal-training"}
 
@@ -48,7 +52,7 @@ def inside(path, root):
 
 def trace_context(trace, state=None):
     rows = []
-    for line in evo.regular(trace).read_text().splitlines():
+    for line in evo.regular(trace).read_bytes().splitlines():
         try:
             rows.append(json.loads(line))
         except json.JSONDecodeError:
@@ -147,6 +151,128 @@ def training_bootstrap(meta, scratch, state, trace_path=None):
     return header + "\n" + json.dumps(t, ensure_ascii=False) + "\n\n" + body
 
 
+def original_session_rows(meta):
+    """Read original segments, including pre-compaction native completion notices."""
+    root = Path(meta["agent_state"]).parent / "traces"
+    collected = []
+    for path in sorted(root.rglob("*.jsonl")):
+        try:
+            identity, _, rows = trace_context(path)
+        except (ValueError, KeyError, OSError):
+            continue
+        if identity["session_id"] == meta["session_id"]:
+            check(identity["agent_state"] == meta["agent_state"], "native Session State changed")
+            collected.extend(row for row in rows if not row.get("origin"))
+    return collected
+
+
+def format_request(req, meta, scratch, mode):
+    check(mode["mode"] == "controller" and "config" in mode, "format repair is controller-only")
+    child_id = evo.ident(req["subagent_id"])
+    rows = original_session_rows(meta)
+    calls = {r["payload"]["tool_call_id"]: r["payload"] for r in rows
+             if r.get("type") == "model_msg" and r.get("payload", {}).get("type") == "tool_call"
+             and r["payload"].get("name") == "run_subagent"}
+    launches = []
+    for row in rows:
+        payload = row.get("payload", {})
+        if row.get("type") != "model_msg" or payload.get("type") != "tool_call_output":
+            continue
+        call_id = payload.get("tool_call_id")
+        if call_id not in calls or not re.search(r"subagent_id " + re.escape(child_id) + r"(?:[;\]\s])", payload.get("output", "")):
+            continue
+        args = json.loads(calls[call_id]["arguments"])
+        ticket = evo.read(ticket_path(scratch, mode, args))
+        claim = ticket_path(scratch, mode, args).parent / (evo.digest(ticket["slot"].encode()) + ".claimed.json")
+        check(evo.read(claim)["tool_call_id"] == call_id, "format repair requires the registered native evaluator")
+        launches.append(ticket)
+    check(len(launches) == 1, "format repair needs exactly one registered evaluator launch")
+    completed = False
+    for row in rows:
+        p = row.get("payload", {})
+        if p.get("type") == "text" and p.get("sender") == "harness":
+            text = p.get("text", "")
+            block = re.match(r"(?:\[background_task_done\]\n(.*?)\n\[/background_task_done\]|<background_task_done>\n(.*?)\n</background_task_done>)", text, re.S)
+            if block:
+                fields = dict(re.findall(r"^(kind|id|status):\s*(\S+)\s*$", block[1] or block[2], re.M))
+                if fields.get("kind") == "subagent" and fields.get("id") == child_id:
+                    completed = fields.get("status") == "completed"
+    check(completed, "await the original evaluator's native completed notification before formatting repair")
+    referenced = {r["payload"]["session_id"] for r in rows if r.get("type") == "event_msg"
+                  and r.get("payload", {}).get("type") == "subagent"}
+    sessions = set()
+    # Registry handles are subagent-<tail>, with a random fallback on collision.
+    # Bind the original child by its native parent pointer and exact initial task,
+    # never by guessing that its Session id ends with the tool handle.
+    for trace in (Path(meta["agent_state"]).parent / "traces").rglob("*.jsonl"):
+        try:
+            identity, _, child_rows = trace_context(trace)
+        except (ValueError, KeyError, OSError):
+            continue
+        if identity["session_id"] not in referenced or identity.get("source") != "subagent":
+            continue
+        if any(not r.get("origin") and r.get("payload", {}).get("type") == "text"
+               and r["payload"].get("role") == "user" and r["payload"].get("sender") == "parent_agent"
+               and r["payload"].get("text") == launches[0]["call"]["prompt"] for r in child_rows):
+            sessions.add(identity["session_id"])
+    check(len(sessions) == 1, "format repair must bind the original native child Session")
+    call = {"description": "Resend the existing evaluation YAML", "subagent_id": child_id, "prompt": FORMAT_PROMPT}
+    repair = {"schema": 1, "subagent_id": child_id, "session_id": next(iter(sessions)), "slot": launches[0]["slot"], "call": call}
+    path = scratch / "evo-guard/format" / (child_id + ".json")
+    check(not path.with_suffix(".claimed.json").exists(), "only one formatting repair per evaluator; preserve an unresolved protocol failure")
+    if path.exists():
+        check(evo.read(path) == repair, "format repair identity changed")
+    else:
+        evo.write_once(path, evo.encoded(repair))
+    return {"call": call, "ticket": str(path), "automatic_dispatch": False}
+
+
+def authorize_input(args, meta, scratch, mode, call_id):
+    if not args.get("prompt", "").strip():
+        return
+    check(mode["mode"] == "controller", "training role steering/retries are forbidden; preserve failure and stop")
+    child_id = evo.ident(args["subagent_id"])
+    path = scratch / "evo-guard/format" / (child_id + ".json")
+    repair = evo.read(path)
+    check(args == repair["call"] and args["prompt"] == FORMAT_PROMPT, "only the registered formatting-only evaluation repair is allowed")
+    claim = path.with_suffix(".claimed.json")
+    if claim.exists():
+        check(evo.read(claim)["tool_call_id"] == call_id, "formatting repair already dispatched")
+    else:
+        evo.write_once(claim, evo.encoded({"tool_call_id": call_id}))
+
+
+def verify_format_repairs(mode):
+    """A formatting repair may issue a model response, but never more tool work."""
+    scratch = Path(mode["completion_request"]).parent.parent
+    root = scratch.parent.parent / "traces"
+    for path in (scratch / "evo-guard/format").glob("*.json"):
+        if path.name.endswith(".claimed.json"):
+            continue
+        repair = evo.read(path)
+        if not path.with_suffix(".claimed.json").exists():
+            continue
+        seen, tools_after, answers_after = 0, 0, 0
+        segments = []
+        for trace in sorted(root.rglob("*.jsonl")):
+            try:
+                identity, _, rows = trace_context(trace)
+            except (ValueError, KeyError, OSError):
+                continue
+            if identity.get("source") == "subagent" and identity["session_id"] == repair["session_id"]:
+                segments.extend(r for r in rows if not r.get("origin"))
+        for row in segments:
+            p = row.get("payload", {})
+            if p.get("type") == "text" and p.get("role") == "user" and p.get("sender") == "parent_agent" and p.get("text") == FORMAT_PROMPT:
+                seen += 1
+            elif seen and p.get("type") == "tool_call":
+                tools_after += 1
+            elif seen and p.get("type") == "text" and p.get("role") == "assistant" and p.get("text", "").strip():
+                answers_after += 1
+        check(seen == 1 and tools_after == 0 and answers_after > 0,
+              "formatting repair issued tools or lacks the original child response trace")
+
+
 def runtime_call(call, runtime):
     check(isinstance(call, dict) and isinstance(call.get("prompt"), str) and call["prompt"].strip(), "complete native call required")
     check(not call.get("agent_id"), "role workers inherit this Agent; do not switch Agent")
@@ -158,6 +284,9 @@ def protocol_module(mode):
     check(sha(mode["config"]) == mode["config_sha256"], "frozen experiment config changed")
     check(sha(mode["protocol"]) == mode["protocol_sha256"], "frozen benchmark protocol changed")
     check(sha(Path(mode["protocol"]).with_name("acceptance.py")) == mode["acceptance_sha256"], "frozen acceptance helper changed")
+    for name, expected in mode.get("support_sha256", {}).items():
+        check(name in ("registration.py", "injection.py") and sha(Path(mode["protocol"]).with_name(name)) == expected,
+              "frozen benchmark support helper changed")
     spec = importlib.util.spec_from_file_location("evo_benchmark_protocol", mode["protocol"])
     module = importlib.util.module_from_spec(spec)
     # Protocol-local acceptance module is loaded by the protocol itself.
@@ -182,6 +311,7 @@ def configure_controller(req, meta, scratch, rows):
             "config": str(Path(req["config"]).resolve()), "config_sha256": sha(req["config"]),
             "protocol": str(protocol), "protocol_sha256": sha(protocol),
             "acceptance_sha256": sha(protocol.with_name("acceptance.py")),
+            "support_sha256": {name: sha(protocol.with_name(name)) for name in ("registration.py", "injection.py")},
             "freeze_request": str(scratch / "evo-guard/freeze-request.json"),
             "completion_request": str(scratch / "evo-guard/completion-request.json")}
     module = protocol_module(mode)
@@ -194,11 +324,21 @@ def configure_controller(req, meta, scratch, rows):
     return mode
 
 
+def registered_benchmarks(mode):
+    module = protocol_module(mode)
+    config = evo.read(mode["config"])
+    deployment = config["deployment"]
+    return module.execute({"op": "verify-benchmarks", "config": mode["config"],
+        "config_sha256": mode["config_sha256"], "repo": deployment["benchmark_checkout"],
+        "output": str(Path(deployment["penguin_home"]) / deployment["project_id"] / "benchmarks")})
+
+
 def freeze(mode, phase="final"):
     module = protocol_module(mode)
     config = evo.read(mode["config"])
     request = evo.read(mode["freeze_request"])
-    check(request["runtime"] == config["runtime"] and request["test_case_ids"] == config["test_ids"], "freeze differs from authorized runtime/test roster")
+    registration = registered_benchmarks(mode)
+    check(request["runtime"] == config["runtime"] and request["test_case_ids"] == registration["test"]["case_ids"], "freeze differs from authorized runtime/test roster")
     check(Path(request["evo_tool"]).resolve() == TOOL, "use the installed trusted method helper")
     target = config["test_agent_id"].removeprefix("create:").strip()
     deployment = config["deployment"]
@@ -309,16 +449,17 @@ def role_request(req, meta, scratch, mode):
         # The Solver fills the existing API URL from its public access document;
         # the helper checks the canonical identity and never permits another attempt.
         text += "\n" + json.dumps(grant, ensure_ascii=False)
+        text += "\nFirst satisfy the learned reader inherited in your Agent State: use native read_file for the public task and full learned SKILL.md/index.json, then run its foreground selector and observe its complete output. Only after selection run the audited read-material commands below; they do not replace the reader's native read_file requirement.\n"
         text += f"\nRead full role file {role_file} and all granted text using read-material."
         text += f"\nFinal answer: {Path(t['answer_dir']) / (task + '.json')}\n"
         text += "Use judge exactly once via one standalone helper command. Never probe judge directly. "
         text += "After feedback, do not revise the answer or call the service again.\n"
         text += "Canonical judge paths: " + json.dumps({k: str(v) for k, v in paths.items()}, ensure_ascii=False)
-        template = {"op": "judge", "split": "train", "train_ids": t["train_ids"], "task_id": task,
-                    "attempt_id": t["attempt_id"], "answer": paths["answer"], "output": paths["output"],
+        template = {"op": "prepare-judge-request", "task_id": task,
                     "url": "REPLACE_WITH_LOCAL_TRAINING_API_BASE/api/judge"}
-        text += "\nWrite this JSON to judge_request above (replace only URL with the public local training API): " + json.dumps(template)
-        text += f"\nExecute exactly: python3 -B {shlex.quote(str(TOOL))} {shlex.quote(paths['judge_request'])}\n"
+        text += "\nWrite this helper request to a separate private JSON file and execute it (it writes canonical request data and makes zero judge calls): " + json.dumps(template)
+        text += "\nAfter preparation, execute the returned canonical command exactly once. "
+        text += f"It must be: python3 -B {shlex.quote(str(TOOL))} {shlex.quote(paths['judge_request'])}\n"
         text += "Judge stdout is a compact receipt. Afterwards read the canonical output feedback file fully with read-material chunks; never rerun judge to recover truncated output.\n"
         text += "\nBinary inputs (read via appropriate tools, do not fabricate text receipts): " + json.dumps(binary)
         slot = f"solver/{task}/{t['attempt_id']}"
@@ -327,14 +468,33 @@ def role_request(req, meta, scratch, mode):
         check(context["negative"], "success produces no Reflector")
         out = private / "roles" / task / "candidates.json"
         out.parent.mkdir(parents=True, exist_ok=True)
-        text += f"\nTask/attempt: {task}/{t['attempt_id']}\nRead {role_file} and {private / 'contexts' / (task + '.json')} in full.\nOutput only to {out}; seal with file-digest.\n"
+        text += f"\nEvery candidate id must start with {task}-{t['attempt_id']}- (for example {task}-{t['attempt_id']}-c01); this prevents collisions between independent Reflectors.\n"
+        text += f"\nTask/attempt: {task}/{t['attempt_id']}\nRead {role_file} and {private / 'contexts' / (task + '.json')} in full.\nOutput only to {out}.\n"
+        text += "Before file-digest, validate your own output and correct any structural error using: " + json.dumps({
+            "op": "validate-candidates", "contexts": [str(private / "contexts" / (task + ".json"))],
+            "train_ids": [task], "candidates": str(out), "candidate_prefix": task + "-" + t["attempt_id"] + "-"})
+        text += "\nAfter validation succeeds, seal with file-digest. Do not change it after sealing.\n"
         slot = f"reflector/{task}/{t['attempt_id']}"
     else:
         contexts = [completed_context(t, task_id, meta) for task_id in t["train_ids"]]
         candidates = []
-        for context in contexts:
-            if context["negative"]:
-                candidates.extend(evo.read(private / "roles" / context["task_id"] / "candidates.json"))
+        audits = req.get("reflectors", [])
+        negative = [context["task_id"] for context in contexts if context["negative"]]
+        check([audit.get("task_id") for audit in audits] == negative,
+              "Evolver requires each negative task's completed Reflector audit in frozen order")
+        evo.verify_training_root(contexts, audits)
+        for audit, task_id in zip(audits, negative):
+            output = str(private / "roles" / task_id / "candidates.json")
+            context_path = str(private / "contexts" / (task_id + ".json"))
+            check(audit.get("role") == "reflector" and audit.get("outputs") == [output]
+                  and context_path in audit.get("materials", [])
+                  and str(private / "roles/reflector.md") in audit["materials"], "wrong Reflector material/output audit")
+            evo.audit_role(audit)
+            values = evo.read(output)
+            check(all(candidate["id"].startswith(task_id + "-" + t["attempt_id"] + "-") for candidate in values),
+                  "Reflector candidate ids need their frozen task/attempt namespace")
+            candidates.extend(values)
+        evo.validate_candidates(candidates, {(context["task_id"], context["attempt_id"]): context for context in contexts})
         target = private / "candidates.json"
         if target.exists():
             check(evo.read(target) == candidates, "candidate concatenation changed")
@@ -343,18 +503,32 @@ def role_request(req, meta, scratch, mode):
         materials = [str(role_file), str(target), str(private / "prebatch-library.json")]
         materials += [str(private / "contexts" / (task_id + ".json")) for task_id in t["train_ids"]]
         text += "\nRead all these files in full: " + json.dumps(materials)
+        text += "\nExact frozen compilation/injection limits: " + json.dumps({key: t[key] for key in ("limits", "max_entries", "max_bytes")})
+        text += ("\nlimits.general is the total number of general entries; limits.topic is the maximum per topic. "
+                 "Every exported entry (including '# id', Trigger, Scope and newline framing) must fit max_bytes UTF-8 bytes. "
+                 "Keep trigger/scope concise: each exported index.json physical line must fit 2000 UTF-16 code units, including JSON escaping and indentation, so native read_file can observe it completely. "
+                 "The reader selects at most max_entries entries and max_bytes combined bytes. "
+                 "Before sealing, validate your own decisions with validate-decisions using the paths and frozen budgets below; "
+                 "correct your own invalid JSON before file-digest, never ask the coordinator to rewrite it.\n")
+        text += "Validation request: " + json.dumps({"op": "validate-decisions", "train_ids": t["train_ids"],
+            "contexts": [str(private / "contexts" / (task_id + ".json")) for task_id in t["train_ids"]],
+            "candidates": str(target), "decisions": str(private / "decisions.json"), "library": str(private / "prebatch-library.json"),
+            **{key: t[key] for key in ("limits", "max_entries", "max_bytes")}})
         text += f"\nOutput operations to {private / 'decisions.json'} and seal with file-digest. Zero candidates requires [] and a real Evolver return.\n"
         slot = "evolver/batch-1"
     call = {"description": f"Evo-Harness {role}" + (f" {task}" if task else ""), "prompt": text,
             **{k: t["runtime"][k] for k in ("provider", "model_id", "thinking_level")}, "run_in_background": True}
-    return write_ticket(scratch, mode, call, slot, role, {"task_id": task})
+    return write_ticket(scratch, mode, call, slot, role, {"task_id": task,
+        **({"reflectors": req.get("reflectors", [])} if role == "evolver" else {})})
 
 
 def worker_request(req, scratch, mode):
     check(mode["mode"] == "controller" and "config" in mode, "configure the controller before dispatch")
     config = evo.read(mode["config"])
     call, phase = req["call"], req["phase"]
+    registration = registered_benchmarks(mode)
     runtime_call(call, config["runtime"])
+    check(call.get("run_in_background") is True, "guarded evaluators must use native background completion notifications")
     check(phase in ("training", "h0", "final"), "unknown worker phase")
     benchmark = config["benchmark_id"] if phase == "training" else config["test_benchmark_id"]
     field = "trainer_agent_id" if phase == "training" else "test_agent_id"
@@ -370,7 +544,7 @@ def worker_request(req, scratch, mode):
     check(run == "1", "one frozen repetition required")
     if phase == "training":
         check(line("training_protocol_version") == "1", "continuous group worker contract required")
-        check(case.endswith("tg" + config["group"] + "-train"), "not the frozen continuous group")
+        check(case in registration["training"]["case_ids"], "not the frozen continuous group Case")
     else:
         acceptance = freeze(mode, phase)
         check(case in acceptance["test_case_ids"], "test case is not frozen")
@@ -391,18 +565,133 @@ def authorize_call(args, meta, scratch, mode, call_id):
     else:
         _, t = training_profile(meta["agent_state"])
         runtime_call(args, t["runtime"])
-        if ticket["phase"] != "evolver":
-            task = ticket["task_id"]
-            for prior in t["train_ids"][:t["train_ids"].index(task)]:
-                completed_context(t, prior, meta)
-        else:
-            for task in t["train_ids"]:
-                completed_context(t, task, meta)
+        prepared = role_request({"role": ticket["phase"], "task_id": ticket["task_id"],
+                                 "reflectors": ticket.get("reflectors", [])}, meta, scratch, mode)
+        check(prepared["call"] == args, "role evidence changed after its registered request")
     claim = ticket_path(scratch, mode, args).parent / (evo.digest(ticket["slot"].encode()) + ".claimed.json")
     if claim.exists():
         check(evo.read(claim)["tool_call_id"] == call_id, "semantic slot already dispatched; reconcile its original child, never retry")
     else:
         evo.write_once(claim, evo.encoded({"slot": ticket["slot"], "tool_call_id": call_id, "request_sha256": evo.digest(canonical(args).encode())}))
+
+
+def host_executes_experiment(command):
+    """Recognize actual cooperative CLI launches, not CLI words in written data.
+
+    This is not an arbitrary-program security boundary. Native worker tickets,
+    immutable artifacts and the isolated runtime remain the experiment contract.
+    """
+    def python_launch(code):
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            return False
+        imports = {}
+        assignments = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for item in node.names:
+                    imports[item.asname or item.name] = item.name
+            elif isinstance(node, ast.ImportFrom) and node.module in ("subprocess", "os"):
+                for item in node.names:
+                    imports[item.asname or item.name] = node.module + "." + item.name
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        assignments[target.id] = node.value
+        def literal(node, seen=frozenset()):
+            if isinstance(node, ast.Name) and node.id not in seen and node.id in assignments:
+                return literal(assignments[node.id], seen | {node.id})
+            try:
+                return ast.literal_eval(node)
+            except (ValueError, TypeError, SyntaxError):
+                return None
+        def function(node):
+            if isinstance(node, ast.Name):
+                return imports.get(node.id, node.id)
+            if isinstance(node, ast.Attribute):
+                return function(node.value) + "." + node.attr
+            return ""
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or function(node.func) not in (
+                    "os.system", "os.popen", "subprocess.run", "subprocess.call", "subprocess.Popen",
+                    "subprocess.check_call", "subprocess.check_output"):
+                continue
+            value = literal(node.args[0]) if node.args else next((literal(k.value) for k in node.keywords if k.arg == "args"), None)
+            if isinstance(value, str) and host_executes_experiment(value):
+                return True
+            if isinstance(value, (list, tuple)) and all(isinstance(v, str) for v in value) and cli(list(value)):
+                return True
+        return False
+    def cli(argv):
+        while argv and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", argv[0], re.S):
+            argv = argv[1:]
+        if not argv:
+            return False
+        binary = Path(argv[0]).name
+        if binary in ("env", "sudo", "nohup", "exec", "command"):
+            rest = argv[1:]
+            valued = ({"-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt", "-C", "--close-from", "-T", "--command-timeout"}
+                      if binary == "sudo" else {"-u", "--unset", "-C", "--chdir"} if binary == "env" else set())
+            while rest and (rest[0].startswith("-") or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", rest[0], re.S)):
+                if binary == "env" and rest[0] in ("-S", "--split-string"):
+                    return len(rest) > 1 and host_executes_experiment(rest[1])
+                rest = rest[2:] if rest[0] in valued else rest[1:]
+            return cli(rest)
+        if binary in ("harbor", "penguin", "penguin-evo"):
+            if any(arg in ("-h", "--help", "--version") for arg in argv[1:]):
+                return False
+            rest = argv[1:]
+            valued = {"--server", "--home", "--project-id", "--agent-id", "--config", "--log-level"}
+            while rest and rest[0].startswith("-"):
+                rest = rest[2:] if rest[0] in valued else rest[1:]
+            if binary == "harbor":
+                return bool(rest) and (rest[0] == "run" or (len(rest) > 1 and rest[0] in ("job", "jobs") and rest[1] == "run"))
+            return bool(rest) and rest[0] in ("run", "chat")
+        if binary in ("uv", "uvx", "pnpm", "npx"):
+            # These wrappers leave the explicit target binary in argv; options
+            # before it belong to the wrapper, not to written documentation.
+            return any(Path(arg).name in ("harbor", "penguin", "penguin-evo") and cli(argv[i:]) for i, arg in enumerate(argv[1:], 1))
+        if re.fullmatch(r"python[0-9.]*", binary):
+            if "-c" in argv and argv.index("-c") + 1 < len(argv):
+                return python_launch(argv[argv.index("-c") + 1])
+            if "-m" in argv and argv.index("-m") + 1 < len(argv):
+                return cli(argv[argv.index("-m") + 1:])
+        if binary in ("sh", "bash", "dash", "zsh") and len(argv) > 2 and argv[1] in ("-c", "-lc"):
+            return host_executes_experiment(argv[2])
+        return False
+    lines, shell, i = command.splitlines(), [], 0
+    while i < len(lines):
+        match = re.search(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1", lines[i])
+        if not match:
+            shell.append(lines[i])
+            i += 1
+            continue
+        end = i + 1
+        while end < len(lines) and lines[end].strip() != match[2]:
+            end += 1
+        header, body = lines[i][:match.start()], "\n".join(lines[i + 1:end])
+        if re.search(r"(?:^|[\s;&|])(?:\S*/)?python[0-9.]*\s", header) and python_launch(body):
+            return True
+        if re.search(r"(?:^|[\s;&|])(?:\S*/)?(?:ba|z|da)?sh\s", header) and host_executes_experiment(body):
+            return True
+        shell.append(header)
+        i = min(end + 1, len(lines))
+    try:
+        lexer = shlex.shlex("\n".join(shell), posix=True, punctuation_chars=";&|\n")
+        lexer.whitespace = " \t\r"
+        lexer.whitespace_split = True
+        part = []
+        for token in lexer:
+            if token in (";", "&&", "||", "|", "&", "\n"):
+                if cli(part):
+                    return True
+                part = []
+            else:
+                part.append(token)
+        return cli(part)
+    except ValueError:
+        return False
 
 
 def safe_helper(args, allowed_paths):
@@ -488,6 +777,7 @@ def training_final(meta, mode):
 def controller_final(mode):
     module = protocol_module(mode)
     request = evo.read(mode["completion_request"])
+    verify_format_repairs(mode)
     accepted = freeze(mode, "final")
     h0_req = evo.read(request["h0_matrix_request"])
     config = evo.read(mode["config"])
@@ -506,8 +796,18 @@ def controller_final(mode):
     for matrix_req in [h0_req] + ([] if accepted["equivalent_h0"] else [final_req]):
         check(matrix_req["runs"] == config["test_repeats"] == 1 and Path(matrix_req["evo_tool"]).resolve() == TOOL,
               "test matrix repetitions/helper differ from frozen protocol")
+    frozen_request = evo.read(mode["freeze_request"])
+    benchmark = Path(config["deployment"]["penguin_home"]) / config["deployment"]["project_id"] / "benchmarks" / config["test_benchmark_id"]
+    injection = []
+    for phase, matrix_path in [("h0", request["h0_matrix_request"])] + ([] if accepted["equivalent_h0"] else [("final", request["final_matrix_request"])]):
+        receipt = module.execute({"op": "verify-injection-matrix", "evo_tool": str(TOOL),
+            "config": mode["config"], "config_sha256": mode["config_sha256"],
+            "matrix_request": matrix_path, "snapshot": frozen_request[phase + "_snapshot"],
+            "runtime": config["runtime"], "expected_version": accepted[phase]["version"], "benchmark": str(benchmark)})
+        check(receipt["complete"] is True, "actual frozen Skill injection is not verified")
+        injection.append(receipt)
     check(request.get("host_cost_status") == "pending_final_request", "own final request cost must remain pending, not falsely settled")
-    return {"complete": True, "equivalent_h0": accepted["equivalent_h0"], "host_cost_status": "pending_final_request"}
+    return {"complete": True, "equivalent_h0": accepted["equivalent_h0"], "host_cost_status": "pending_final_request", "injection": injection}
 
 
 def block_goal(scratch, reason):
@@ -549,7 +849,7 @@ def hook(payload, state):
             if name == "run_subagent":
                 authorize_call(args, meta, scratch, mode, payload["tool_call_id"])
             elif name == "input_subagent":
-                check(not args.get("prompt", "").strip(), "free-form child steering/retries are forbidden; preserve failure and stop")
+                authorize_input(args, meta, scratch, mode, payload["tool_call_id"])
             elif mode["mode"] == "training":
                 private = Path(mode["private_learning"])
                 if name == "exec_command":
@@ -573,7 +873,7 @@ def hook(payload, state):
                 # Host prepares native State/snapshots using existing tools. Harbor
                 # and alternate model Sessions belong exclusively to native workers.
                 command = args.get("cmd", args.get("command", ""))
-                check(not re.search(r"\bharbor\s+(?:run|jobs?\s+run)|\bpenguin(?:-evo)?\s+(?:run|chat)\b", command), "host must delegate execution through registered native workers")
+                check(not host_executes_experiment(command), "host must delegate execution through registered native workers")
             return {}
         if event == "stop":
             accepted = training_final(meta, mode) if mode["mode"] == "training" else controller_final(mode)
@@ -602,6 +902,8 @@ def execute(req):
         return role_request(req, meta, scratch, mode)
     if op == "worker-request":
         return worker_request(req, scratch, mode)
+    if op == "format-request":
+        return format_request(req, meta, scratch, mode)
     if op == "verify-training":
         return training_final(meta, mode)
     if op == "verify-completion":

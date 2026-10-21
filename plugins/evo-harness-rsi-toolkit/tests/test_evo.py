@@ -76,7 +76,7 @@ class BatchTests(unittest.TestCase):
             rows = [{"type": "session_meta", "payload": binding},
                     {"type": "model_msg", "payload": {"type": "text", "role": "user", "text": json.dumps(grant)}},
                     {"type": "model_msg", "payload": {"type": "tool_call", "name": "exec_command",
-                     "arguments": '{}', "tool_call_id": "read-1"}},
+                     "arguments": json.dumps({"cmd": shlex.join(["python3", "-B", str(self.helper), str(self.root / 'read-material.json')])}), "tool_call_id": "read-1"}},
                     {"type": "model_msg", "payload": {"type": "tool_call_output", "tool_call_id": "read-1",
                      "output": json.dumps(evo.material({"path": str(inp)}))}},
                     {"type": "model_msg", "payload": {"type": "tool_call", "name": "exec_command",
@@ -380,7 +380,7 @@ class BatchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "direct judge probe"):
             evo.compile_batch(self.req)
 
-    def test_additional_score_response_from_indirect_command_is_rejected(self):
+    def test_business_response_score_fields_are_not_proof_of_a_judge_call(self):
         def probe(rows):
             rows.extend([
                 {"type": "model_msg", "payload": {"type": "tool_call", "name": "exec_command",
@@ -388,8 +388,108 @@ class BatchTests(unittest.TestCase):
                 {"type": "model_msg", "payload": {"type": "tool_call_output", "tool_call_id": "probe",
                     "output": '{"score": 0.8, "correct": false}'}}])
         self.rewrite_solver_trace(probe)
-        with self.assertRaisesRegex(ValueError, "additional judge feedback"):
+        self.assertEqual(evo.compile_batch(self.req)["entries"], 1)
+
+    def test_crm_request_writer_format_is_data_then_one_canonical_judge(self):
+        # Regression for CRM003 call_00_jMMd3QpH8YABkHnU2A5M7475. Preserve the
+        # real command shape, but never commit the task answer or original trace.
+        context = evo.read(self.contexts[0])
+        request_path = context["judge_request"]["path"]
+        answer_path = str(self.root / "answers/train_001.json")
+        request = evo.read(request_path)
+        command = (f"cd {shlex.quote(str(self.root))}\npython3 - <<'EOF'\n"
+                   "import json,os\n"
+                   f"answer=json.load(open({answer_path!r}))\n"
+                   "print(len(answer))\n"
+                   f"request={request!r}\n"
+                   f"os.makedirs(os.path.dirname({request_path!r}),exist_ok=True)\n"
+                   f"json.dump(request,open({request_path!r},'w'))\n"
+                   "print(json.dumps({'prepared':True}))\nEOF\n"
+                   f"python3 -B {shlex.quote(str(self.helper))} reqs/digest_answer.json")
+        self.assertIn("/api/judge", command)
+        self.assertFalse(evo.direct_judge_probe(command))
+        def writer(rows):
+            rows[4:4] = [
+                {"type": "model_msg", "payload": {"type": "tool_call", "name": "exec_command",
+                    "arguments": json.dumps({"cmd": command}), "tool_call_id": "request-writer"}},
+                {"type": "model_msg", "payload": {"type": "tool_call_output", "tool_call_id": "request-writer",
+                    "output": '{"prepared": true}'}}]
+        self.rewrite_solver_trace(writer)
+        self.assertEqual(evo.compile_batch(self.req)["entries"], 1)
+
+    def test_noncanonical_short_receipt_echo_is_rejected(self):
+        receipt = evo.judge_stdout(evo.read(self.contexts[0])["feedback"])
+        def echo(rows):
+            rows.extend([
+                {"type": "model_msg", "payload": {"type": "tool_call", "name": "exec_command",
+                    "arguments": json.dumps({"cmd": "printf fabricated"}), "tool_call_id": "extra"}},
+                {"type": "model_msg", "payload": {"type": "tool_call_output", "tool_call_id": "extra",
+                    "output": json.dumps(receipt)}}])
+        self.rewrite_solver_trace(echo)
+        with self.assertRaisesRegex(ValueError, "canonical exec"):
             evo.compile_batch(self.req)
+
+    def test_role_prevalidation_preserves_draft_and_checks_export_budget(self):
+        request = {**self.req, "max_entries": 5, "max_bytes": 16000}
+        before = Path(request["decisions"]).read_bytes()
+        result = evo.validate_decisions(request)
+        self.assertTrue(result["complete"])
+        self.assertEqual(Path(request["decisions"]).read_bytes(), before)
+        self.assertFalse(Path(self.req["output"]).exists())
+        with self.assertRaisesRegex(ValueError, "cannot fit"):
+            evo.validate_decisions({**request, "max_bytes": 5})
+        with self.assertRaisesRegex(ValueError, "namespace"):
+            evo.validate_candidate_file({**self.req, "candidate_prefix": "train_001-attempt-1-"})
+        self.assertTrue(evo.validate_candidate_file(self.req)["complete"])
+
+    def test_unreadable_index_metadata_is_rejected_before_decisions_are_sealed(self):
+        self.decisions[0]["entry"]["trigger"] = "x" * 2100
+        self.save("decisions", self.decisions)
+        request = {**self.req, "max_entries": 5, "max_bytes": 16000}
+        before = Path(request["decisions"]).read_bytes()
+        with self.assertRaisesRegex(ValueError, "2000 UTF-16.*shorten trigger/scope"):
+            evo.validate_decisions(request)
+        self.assertEqual(Path(request["decisions"]).read_bytes(), before)
+        self.assertFalse(Path(request["output"]).exists())
+
+    def test_actual_serialized_index_line_limit_matches_native_utf16_boundaries(self):
+        # Measure the emitted framing rather than assuming field length or
+        # forgetting that sorted JSON places trigger last (without a comma).
+        empty_line = next(line for line in evo.encoded({"entries": [{"id": "synthetic", "trigger": ""}]}).decode().split("\n")
+                          if '"trigger":' in line)
+        overhead = len(empty_line.encode("utf-16-le")) // 2
+        capacity = 2000 - overhead
+        values = [("ascii", "x" * capacity, "x" * (capacity + 1)),
+                  ("emoji", "😀" * (capacity // 2) + "x" * (capacity % 2),
+                   "😀" * (capacity // 2 + 1)),
+                  ("escaped_quote", '"' * (capacity // 2) + "x" * (capacity % 2),
+                   '"' * (capacity // 2 + 1)),
+                  ("unicode_line_separator", "x" + "\u2028" * (capacity - 1), "x" + "\u2028" * capacity)]
+        for label, valid, invalid in values:
+            with self.subTest(label=label):
+                self.save("index-library", [{**self.entry, "trigger": valid}])
+                base = {"library": str(self.root / "index-library.json"), "limits": self.req["limits"],
+                        "max_entries": 5, "max_bytes": 16000}
+                package = self.root / ("readable-" + label)
+                evo.export_skill({**base, "output": str(package)})
+                raw = (package / "index.json").read_bytes()
+                self.assertEqual(max(len(line.encode("utf-16-le")) // 2 for line in raw.decode().split("\n")), 2000)
+                self.assertFalse(evo.validate_package(package)["empty"])
+                self.save("index-library", [{**self.entry, "trigger": invalid}])
+                failed = self.root / ("unreadable-" + label)
+                with self.assertRaisesRegex(ValueError, "2000 UTF-16"):
+                    evo.export_skill({**base, "output": str(failed)})
+                self.assertFalse(failed.exists())
+
+    def test_package_revalidation_rejects_unreadable_index_serialization(self):
+        package = self.root / "readability-package"
+        self.save("index-library", [{**self.entry, "trigger": "x" * 1000, "scope": "y" * 1000}])
+        evo.export_skill({"library": str(self.root / "index-library.json"), "limits": self.req["limits"],
+                          "max_entries": 5, "max_bytes": 16000, "output": str(package)})
+        index = evo.read(package / "index.json")
+        (package / "index.json").write_text(json.dumps(index, ensure_ascii=False))
+        with self.assertRaisesRegex(ValueError, "2000 UTF-16"):
+            evo.validate_package(package)
 
     def test_reading_public_api_response_example_is_not_another_judge(self):
         def read_example(rows):
@@ -415,6 +515,90 @@ class BatchTests(unittest.TestCase):
         training.write_bytes(evo.encoded({**self.training, "attempt_id": "attempt-2"}))
         with self.assertRaisesRegex(ValueError, "training evidence changed"):
             evo.compile_batch(self.req)
+
+
+class EvidenceAuditTests(unittest.TestCase):
+    def test_explicit_network_calls_are_distinct_from_url_data(self):
+        url = "http://127.0.0.1:9003/api/judge"
+        direct = [f"curl -X POST {url}", f"env MODE=check curl --url {url}",
+                  f"sudo -n curl {url}", f"bash -c {shlex.quote('curl ' + url)}",
+                  f"URL={shlex.quote(url)}\ncurl \"$URL\"", f"export API=http://127.0.0.1:9003\ncurl \"${{API}}/api/judge\"",
+                  "python3 - <<'PY'\nimport requests\nu=" + repr(url) + "\nrequests.post(u,json={})\nPY",
+                  "python3 - <<'PY'\nimport urllib.request as ur\nu=" + repr(url) + "\nr=ur.Request(u)\nopener=ur.build_opener()\nopener.open(r)\nPY",
+                  shlex.join(["python3", "-c", f"from urllib.request import urlopen as call; call({url!r})"]),
+                  shlex.join(["node", "-e", f"fetch({url!r})"])]
+        data = [f"echo curl {url}", f"printf '%s' curl {url}",
+                f"cat > request.json <<'JSON'\n{{\"url\":\"{url}\"}}\nJSON",
+                "python3 - <<'PY'\nimport json\njson.dump({'url':" + repr(url) + "},open('request.json','w'))\nPY",
+                shlex.join(["python3", "-c", f"import requests; requests.post('http://127.0.0.1:9003/business',json={{'judge_url':{url!r}}})"]),
+                shlex.join(["python3", "-c", f"d={{}}; d.get({url!r})"]),
+                f"curl --data {shlex.quote(json.dumps({'url': url}))} http://127.0.0.1:9003/business",
+                shlex.join(["node", "-e", f"fetch('http://127.0.0.1:9003/business',{{body:{url!r}}})"])]
+        for command in direct:
+            with self.subTest(kind="direct", command=command):
+                self.assertTrue(evo.direct_judge_probe(command))
+        for command in data:
+            with self.subTest(kind="data", command=command):
+                self.assertFalse(evo.direct_judge_probe(command))
+
+    def test_material_json_is_not_recursively_mistaken_for_a_tool_response(self):
+        receipt = {"material_path": "/synthetic/api.txt", "text": '{"source":"evo-judge","score":0,"correct":false}'}
+        self.assertEqual(list(evo.json_values("exit code 0\n" + json.dumps(receipt))), [receipt])
+
+    def test_batched_real_helper_reads_are_allowed_but_print_only_receipts_are_not(self):
+        helper = shlex.quote(str(TOOL))
+        command = ("cd /synthetic/work\npython3 - <<'PY'\nimport json\n"
+                   "json.dump({'op':'read-material'},open('read.json','w'))\nPY\n"
+                   f"for f in reqs/read_*.json; do echo \"== $f\"; python3 -B {helper} \"$f\"; done")
+        def pair(cmd):
+            return {"call": {"payload": {"name": "exec_command", "arguments": json.dumps({"cmd": cmd})}}}
+        self.assertTrue(evo.helper_observation(pair(command), {}))
+        self.assertTrue(evo.helper_observation(pair(f"cd /synthetic/work\npython3 -B {helper} read.json"), {}))
+        self.assertFalse(evo.helper_observation(pair(f"echo python3 -B {helper} read.json"), {}))
+        self.assertFalse(evo.helper_observation(pair("python3 - <<'PY'\nprint('fabricated receipt')\nPY"), {}))
+
+    def test_output_seal_requires_complete_prior_material_observations(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            material, output, trace = root / "context.txt", root / "decisions.json", root / "trace.jsonl"
+            material.write_text("SYNTHETIC context")
+            output.write_text("[]")
+            binding = {"session_id": "synthetic-role", "source": "cli", "workspace": str(root),
+                       "agent_state": str(root), "provider": "fixture", "model_id": "no-model"}
+            def pair(key, value):
+                return [{"type": "model_msg", "payload": {"type": "tool_call", "name": "exec_command",
+                         "arguments": json.dumps({"cmd": shlex.join(["python3", "-B", str(TOOL), str(root / (key + '.json'))])}), "tool_call_id": key}},
+                        {"type": "model_msg", "payload": {"type": "tool_call_output", "tool_call_id": key, "output": json.dumps(value)}}]
+            sealed = pair("seal", {"file_path": str(output), "sha256": evo.digest(output.read_bytes())})
+            observed = pair("read", evo.material({"path": str(material)}))
+            request = {"traces": [str(trace)], "binding": binding, "materials": [str(material)], "outputs": [str(output)]}
+            for rows in (sealed + observed, [sealed[0]] + observed + [sealed[1]]):
+                trace.write_text("\n".join(json.dumps(row) for row in [{"type": "session_meta", "payload": binding}] + rows) + "\n")
+                with self.assertRaisesRegex(ValueError, "after all assigned"):
+                    evo.audit_role(request)
+            trace.write_text("\n".join(json.dumps(row) for row in [{"type": "session_meta", "payload": binding}] + observed + sealed) + "\n")
+            self.assertTrue(evo.audit_role(request)["complete"])
+            fake = copy.deepcopy(observed + sealed)
+            fake[-2]["payload"]["arguments"] = json.dumps({"cmd": "printf fabricated-receipt"})
+            trace.write_text("\n".join(json.dumps(row) for row in [{"type": "session_meta", "payload": binding}] + fake) + "\n")
+            with self.assertRaisesRegex(ValueError, "sealed"):
+                evo.audit_role(request)
+
+    def test_large_material_audit_parses_each_output_once(self):
+        content = "SYNTHETIC " * 100000
+        fingerprint = evo.digest(content.encode())
+        pairs = []
+        for offset in range(0, len(content), 4000):
+            receipt = {"material_path": "/synthetic/large-context", "sha256": fingerprint,
+                       "offset": offset, "end": min(offset + 4000, len(content)), "total": len(content),
+                       "text": content[offset:offset + 4000]}
+            pairs.append({"call": {"payload": {"name": "exec_command", "arguments": json.dumps({
+                "cmd": shlex.join(["python3", "-B", str(TOOL), '/synthetic/read.json'])})}},
+                "observation": {"payload": {"output": json.dumps(receipt)}}})
+        with patch.object(evo, "json_values", wraps=evo.json_values) as parser:
+            result, _ = evo.verify_material_records({"pairs": pairs}, [("/synthetic/large-context", content, fingerprint)])
+        self.assertEqual(parser.call_count, len(pairs))
+        self.assertEqual(len(result), 1)
 
 
 class JournalTests(unittest.TestCase):
@@ -444,6 +628,9 @@ class JudgeHTTPTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.helper, self.training = install_training(self.root, ["train_001"])
+        installed = patch.object(evo, "__file__", str(self.helper))
+        installed.start()
+        self.addCleanup(installed.stop)
         self.calls = []
         self.response = {"score": 0.5, "correct": False}
         self.status = 200
@@ -504,6 +691,26 @@ class JudgeHTTPTests(unittest.TestCase):
         self.assertEqual(json.loads(out_one), json.loads(out_two))
         self.assertEqual(len(self.calls), 1)
         self.assertEqual(self.calls[0], ("/api/judge", {"task_id": "train_001", "answer": {"synthetic": True}}))
+
+    def test_prepare_request_is_idempotent_without_http_and_preserves_one_attempt(self):
+        self.request_path.unlink()
+        prep = self.root / "prepare.json"
+        prep.write_bytes(evo.encoded({"op": "prepare-judge-request", "task_id": "train_001", "url": self.req["url"]}))
+        command = ["python3", "-B", str(self.helper), str(prep)]
+        first = json.loads(subprocess.check_output(command, text=True))
+        second = json.loads(subprocess.check_output(command, text=True))
+        self.assertEqual(first, second)
+        self.assertEqual(first["judge_calls"], 0)
+        self.assertEqual(first["judge_request"], str(self.request_path))
+        self.assertEqual(shlex.split(first["command"]), self.command())
+        self.assertEqual(self.calls, [])
+        self.invoke()
+        self.assertEqual(len(self.calls), 1)
+        prep.write_bytes(evo.encoded({"op": "prepare-judge-request", "task_id": "train_001", "url": "http://127.0.0.1:9999/api/judge"}))
+        changed = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(changed.returncode, 2)
+        self.assertIn("already differs", changed.stderr)
+        self.assertEqual(len(self.calls), 1)
 
     def test_changing_output_attempt_roster_or_answer_cannot_probe_again(self):
         self.invoke()

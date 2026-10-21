@@ -25,7 +25,14 @@ training_budget_usd, host_operation_id, config_sha256, compilation_reserve_sec
 and solving_timeout_sec. The host reserves this training allocation once for
 the container root and all its children; host/worker overhead is separate.
 
-After configure-controller, prepare a worker-request with phase=training and
+After configure-controller, call the pinned protocol's prepare-benchmarks with
+config, config_sha256, repo and the native Project benchmarks directory as output.
+Use its training/test case_ids and case_to_task mapping; do not hand-build Case
+folders. This preserves the native CASE-NNN-... registration and pins the bundle's
+actual Node version in every Harbor statement. Before worker authorization the
+guard revalidates these files through verify-benchmarks.
+
+Then prepare a worker-request with phase=training and
 a call containing the explicit frozen runtime, run_in_background=true and:
 
 ~~~text
@@ -35,7 +42,7 @@ training_protocol_version: 1
 operation_id: <host_operation_id>
 config_sha256: <frozen hash>
 training_budget_usd: <reserved allocation including container roles>
-case_id: <published continuous group case>
+case_id: <registered CASE-NNN-... continuous group case>
 run: 1
 expected_version: <Trainer version>
 test_agent_id: <Trainer id>
@@ -105,12 +112,19 @@ native traces or role-authored candidates/decisions.
    identity or evidence failure ends this batch as method_failed.
 4. For each negative captured execution, request one role=reflector for that
    task and invoke the exact returned call. It reads its full role/context and
-   writes private_learning/roles/<task_id>/candidates.json, sealing it with
+   writes private_learning/roles/<task_id>/candidates.json. Candidate ids use
+   the fixed task/attempt prefix; the role validates its own draft before
    file-digest. Audit its original trace/material/output bindings. Successful
    executions have no Reflector or candidate. Do not rewrite candidates.
 5. Once all five contexts and eligible Reflectors are complete, request
-   role=evolver. The helper concatenates the role-authored candidate arrays
-   without changing them. Invoke the returned call; the Evolver reads all
+   role=evolver with reflectors containing every negative task's original
+   audit-role request, in frozen task order (each includes role, task_id,
+   role_text_path, traces, binding, materials and outputs). Use [] when all
+   five executions succeeded. The helper re-audits these roles and their
+   task/attempt candidate namespaces before concatenating arrays without edits;
+   a failed Reflector blocks Evolver dispatch. The Evolver receives the actual
+   frozen entry/UTF-8 budgets and checks its own draft with validate-decisions
+   before sealing. Invoke the returned call; the Evolver reads all
    contexts, candidates and prebatch-library.json and writes decisions.json.
    Zero candidates still requires a real Evolver call and explicit [] output.
    Audit complete material reads and its output seal.

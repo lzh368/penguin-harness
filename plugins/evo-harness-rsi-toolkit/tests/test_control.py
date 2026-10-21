@@ -37,7 +37,8 @@ class ControlTests(unittest.TestCase):
             "attempt_id": "attempt-1", "config_sha256": "a" * 64, "private_learning": str(self.private),
             "answer_dir": str(self.workspace / "submission/answers"), "feedback_dir": str(self.private / "feedback"),
             "workspace": str(self.workspace), "runtime": self.runtime, "training_budget_usd": 1,
-            "solving_timeout_sec": 21600, "compilation_reserve_sec": 3600}
+            "solving_timeout_sec": 21600, "compilation_reserve_sec": 3600,
+            "limits": {"general": 5, "topic": 5}, "max_entries": 5, "max_bytes": 16000}
         self.write(self.skill / "training.json", self.profile)
         for task in self.profile["train_ids"]:
             file = self.workspace / "train_tasks" / task / "instruction.md"
@@ -69,6 +70,18 @@ class ControlTests(unittest.TestCase):
     def request(self, **fields):
         return control.execute({"trace_path": str(self.trace), **fields})
 
+    def test_native_jsonl_preserves_literal_unicode_line_separators(self):
+        observation = {"type": "model_msg", "payload": {"type": "tool_call_output",
+            "tool_call_id": "native-observation", "output": "first\u0085second\u2028third\u2029last"}}
+        with self.trace.open("a") as handle:
+            handle.write(json.dumps(observation, ensure_ascii=False) + "\n")
+            handle.write('{"unfinished_live_row":')
+        meta, scratch, rows = control.trace_context(self.trace, self.state)
+        self.assertEqual(meta, self.meta)
+        self.assertEqual(scratch, self.scratch)
+        self.assertEqual(rows[-1], observation)
+        self.assertEqual(len(rows), 2)
+
     def test_root_cannot_solve_probe_write_answer_or_modify_method(self):
         for name, args in (
             ("exec_command", {"cmd": "curl http://localhost:80/api/judge"}),
@@ -95,7 +108,8 @@ class ControlTests(unittest.TestCase):
         call = prepared["call"]
         self.assertFalse(prepared["dispatched"])
         self.assertIn('"task_id": "train_001"', call["prompt"])
-        self.assertIn('"op": "judge"', call["prompt"])
+        self.assertIn('"op": "prepare-judge-request"', call["prompt"])
+        self.assertIn("makes zero judge calls", call["prompt"])
         self.assertIn("read-material", call["prompt"])
         self.assertIn(str(self.private / "roles/solver.md"), call["prompt"])
         self.assertEqual(self.tool("run_subagent", call)["decision"], "deny")
@@ -137,6 +151,222 @@ class ControlTests(unittest.TestCase):
         self.assertGreater(status["clock"]["solving_time_remaining_sec"], 21000)
         self.assertEqual(status["clock"]["compilation_reserve_sec"], 3600)
         self.assertIn(str(self.trace), status["native_trace_paths"])
+
+    def append_trace(self, path, rows):
+        with path.open("a") as handle:
+            for row in rows:
+                handle.write(json.dumps(row) + "\n")
+
+    def format_fixture(self, completed=True):
+        mode = {"mode": "controller", "session_id": self.meta["session_id"], "config": "synthetic-unused",
+                "completion_request": str(self.scratch / "evo-guard/completion-request.json")}
+        self.write(self.scratch / control.MARKER, mode)
+        call = {"description": "SYNTHETIC evaluator", "prompt": "Read the unchanged shared evaluation.md", **self.runtime, "run_in_background": True}
+        ticket = control.write_ticket(self.scratch, mode, call, "h0/CASE-001-synthetic/1", "h0")
+        dispatch = Path(ticket["ticket"]).parent
+        self.write(dispatch / (control.evo.digest(ticket["slot"].encode()) + ".claimed.json"), {"tool_call_id": "launch-worker"})
+        rows = [
+            {"type": "model_msg", "payload": {"type": "tool_call", "name": "run_subagent", "tool_call_id": "launch-worker", "arguments": json.dumps(call)}},
+            {"type": "event_msg", "payload": {"type": "subagent", "session_id": "session-fixture-12345678"}},
+            {"type": "model_msg", "payload": {"type": "tool_call_output", "tool_call_id": "launch-worker",
+              "output": "[subagent running in background with subagent_id subagent-12345678; completion will arrive]"}},
+        ]
+        if completed:
+            rows.append({"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "harness",
+                "text": "[background_task_done]\nkind: subagent\nid: subagent-12345678\nstatus: completed\n[/background_task_done]\n\nHere is fenced YAML from the existing result."}})
+        self.append_trace(self.trace, rows)
+        child = self.trace.parent / "session-fixture-12345678_001.jsonl"
+        child.write_text(json.dumps({"type": "session_meta", "payload": {**self.meta, "session_id": "session-fixture-12345678", "source": "subagent"}}) + "\n")
+        self.append_trace(child, [{"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "parent_agent", "text": call["prompt"]}}])
+        return mode, child
+
+    def test_format_repair_uses_same_completed_native_evaluator_and_never_dispatches_itself(self):
+        mode, child = self.format_fixture()
+        request = self.request(op="format-request", subagent_id="subagent-12345678")
+        self.assertFalse(request["automatic_dispatch"])
+        self.assertEqual(self.tool("input_subagent", request["call"]), {})
+        self.assertEqual(self.tool("input_subagent", {**request["call"], "prompt": "Rerun the benchmark"})["decision"], "deny")
+        self.assertEqual(self.tool("input_subagent", request["call"], "repeat-repair")["decision"], "deny")
+        with self.assertRaises(ValueError):
+            control.verify_format_repairs(mode)
+        self.append_trace(child, [
+            {"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "parent_agent", "text": control.FORMAT_PROMPT}},
+            {"type": "model_msg", "payload": {"type": "text", "role": "assistant", "text": "protocol_version: 1\nstatus: ok"}},
+        ])
+        control.verify_format_repairs(mode)
+        self.append_trace(child, [{"type": "model_msg", "payload": {"type": "tool_call", "name": "exec_command", "arguments": "{}", "tool_call_id": "forbidden-new-work"}}])
+        with self.assertRaisesRegex(ValueError, "issued tools"):
+            control.verify_format_repairs(mode)
+
+    def test_format_repair_rejects_running_unknown_worker_and_training_roles(self):
+        self.format_fixture(completed=False)
+        with self.assertRaisesRegex(ValueError, "completed notification"):
+            self.request(op="format-request", subagent_id="subagent-12345678")
+        with self.assertRaises(ValueError):
+            self.request(op="format-request", subagent_id="99999999")
+        self.write(self.scratch / control.MARKER, {"mode": "training", "session_id": self.meta["session_id"], "private_learning": str(self.private)})
+        with self.assertRaisesRegex(ValueError, "controller-only"):
+            self.request(op="format-request", subagent_id="subagent-12345678")
+        self.assertEqual(self.tool("input_subagent", {"subagent_id": "subagent-12345678", "prompt": control.FORMAT_PROMPT})["decision"], "deny")
+
+    def test_candidate_namespaces_and_limits_reach_fresh_role_prompts(self):
+        # The binding validator has its own full trace tests; this checks the material
+        # each freshly spawned role actually receives, including non-default budgets.
+        contexts = [{"task_id": task, "attempt_id": "attempt-1", "negative": False,
+                     "feedback": {"source": "penguin-evaluation"}} for task in self.profile["train_ids"]]
+        with patch.object(control, "completed_context", side_effect=lambda t, task, parent: next(c for c in contexts if c["task_id"] == task)):
+            contexts[0]["negative"] = True
+            reflector = self.request(op="role-request", role="reflector", task_id="train_001")["call"]["prompt"]
+            self.assertIn("train_001-attempt-1-c01", reflector)
+            self.assertIn('"op": "validate-candidates"', reflector)
+            with self.assertRaisesRegex(ValueError, "completed Reflector audit"):
+                self.request(op="role-request", role="evolver")
+            contexts[0]["negative"] = False
+            evolver = self.request(op="role-request", role="evolver")["call"]["prompt"]
+            self.assertIn('"limits": {"general": 5, "topic": 5}', evolver)
+            self.assertIn('"max_bytes": 16000', evolver)
+            self.assertIn('"op": "validate-decisions"', evolver)
+            self.assertIn("UTF-8", evolver)
+
+    def test_full_sequential_batch_two_reflectors_compiles_exports_and_seals(self):
+        # The HTTP responder and native model messages are fixtures; every method,
+        # trace, budget, candidate, compilation and seal check below is real.
+        evo = control.evo
+        helper = self.skill / "scripts/evo.py"
+        journal = str(self.private / "journal.json")
+        common = {"journal": journal, "config_sha256": self.profile["config_sha256"]}
+        evo.journal({**common, "action": "init", "controller_session_id": self.meta["session_id"], "budget_usd": 1})
+        reserve = {**common, "action": "reserve", "controller_trace": str(self.trace), "role": "fixture", "reserve_usd": 0.05}
+        evo.journal({**reserve, "operation_id": "controller", "slot": "controller", "request_sha256": "fixture"})
+        counter = 0
+        def pair(name, output, arguments):
+            nonlocal counter
+            counter += 1
+            call_id = f"fixture-tool-{counter}"
+            return [{"type": "model_msg", "payload": {"type": "tool_call", "name": name,
+                     "tool_call_id": call_id, "arguments": json.dumps(arguments)}},
+                    {"type": "model_msg", "payload": {"type": "tool_call_output", "tool_call_id": call_id,
+                     "output": json.dumps(output)}}]
+        def reads(materials):
+            rows = []
+            for material in materials:
+                for offset in range(0, max(1, len(Path(material).read_text())), 4000):
+                    rows.extend(pair("exec_command", evo.material({"path": str(material), "offset": offset}),
+                        {"cmd": f"python3 -B {helper} {self.private / 'fixture-read-request.json'}"}))
+            return rows
+        def delegate(prepared, session_id):
+            call_id = "dispatch-" + session_id
+            evo.journal({**reserve, **{key: prepared[key] for key in ("operation_id", "slot", "request_sha256")}})
+            self.assertEqual(self.tool("run_subagent", prepared["call"], call_id), {})
+            self.append_trace(self.trace, [
+                {"type": "model_msg", "payload": {"type": "tool_call", "name": "run_subagent", "tool_call_id": call_id,
+                    "arguments": json.dumps(prepared["call"])}},
+                {"type": "event_msg", "payload": {"type": "subagent", "session_id": session_id}},
+                {"type": "model_msg", "payload": {"type": "tool_call_output", "tool_call_id": call_id, "output": "SYNTHETIC native child registered"}},
+            ])
+            evo.journal({**common, "action": "bind", "operation_id": prepared["operation_id"], "external_id": session_id})
+            return {**self.meta, "session_id": session_id, "source": "subagent", "parent_trace": str(self.trace)}
+        contexts, roles = [], []
+        for n, task in enumerate(self.profile["train_ids"], 1):
+            prepared = self.request(op="role-request", role="solver", task_id=task)
+            binding = delegate(prepared, "fixture-solver-" + task)
+            paths = evo.judge_paths(self.profile, task, "attempt-1")
+            self.write(Path(paths["answer"]), {"synthetic": task})
+            with patch.object(evo, "__file__", str(helper)):
+                generated = evo.prepare_judge_request({"task_id": task, "url": "http://127.0.0.1:9003/api/judge"})
+                request = evo.read(generated["judge_request"])
+                with patch.object(evo.urllib.request, "build_opener") as opener:
+                    response = opener.return_value.open.return_value.__enter__.return_value
+                    response.status = 200
+                    response.read.return_value = json.dumps({"score": 0.5 if n <= 2 else 1, "correct": n > 2}).encode()
+                    feedback = evo.judge(request)
+            inputs = [str(self.workspace / "train_tasks" / task / "instruction.md"), str(self.workspace / "environment_access.md")]
+            rows = [{"type": "session_meta", "payload": binding},
+                    {"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "parent_agent", "text": prepared["call"]["prompt"]}}]
+            rows += reads(inputs)
+            rows += pair("exec_command", evo.judge_stdout(feedback), {"cmd": generated["command"]})
+            rows += reads([paths["output"]])
+            trace = self.trace.parent / (binding["session_id"] + ".jsonl")
+            self.append_trace(trace, rows)
+            output = self.private / "contexts" / (task + ".json")
+            capture = {"op": "capture", "split": "train", "task_id": task, "attempt_id": "attempt-1", "train_ids": self.profile["train_ids"],
+                       "answer": paths["answer"], "feedback": paths["output"], "judge_request": generated["judge_request"],
+                       "inputs": inputs, "traces": [str(trace)], "binding": binding, "output": str(output)}
+            evo.capture(capture)
+            contexts.append(str(output))
+            if n <= 2:
+                reflector = self.request(op="role-request", role="reflector", task_id=task)
+                reflect_binding = delegate(reflector, "fixture-reflector-" + task)
+                candidate_path = self.private / "roles" / task / "candidates.json"
+                self.write(candidate_path, [{"id": task + "-attempt-1-c01", "task_id": task, "attempt_id": "attempt-1",
+                    "lesson": "SYNTHETIC inspect all required fields before submission", "trigger": "SYNTHETIC incomplete record",
+                    "scope_hint": "SYNTHETIC documents", "evidence": [{"kind": "feedback", "claim": "Partial aggregate feedback", "epistemic": "observed"}]}])
+                draft_before = candidate_path.read_bytes()
+                checked = evo.execute({"op": "validate-candidates", "contexts": [str(output)], "train_ids": [task],
+                    "candidates": str(candidate_path), "candidate_prefix": task + "-attempt-1-"})
+                self.assertTrue(checked["complete"])
+                self.assertEqual(candidate_path.read_bytes(), draft_before)
+                materials = [str(self.private / "roles/reflector.md"), str(output)]
+                reflect_trace = self.trace.parent / (reflect_binding["session_id"] + ".jsonl")
+                self.append_trace(reflect_trace, [{"type": "session_meta", "payload": reflect_binding}] + reads(materials)
+                    + pair("exec_command", {"file_path": str(candidate_path), "sha256": control.sha(candidate_path)}, {"cmd": f"python3 -B {helper} {self.private / 'fixture-digest-request.json'}"}))
+                audit = {"role": "reflector", "task_id": task, "role_text_path": materials[0], "traces": [str(reflect_trace)],
+                         "binding": reflect_binding, "materials": materials, "outputs": [str(candidate_path)]}
+                evo.audit_role(audit)
+                roles.append(audit)
+        evolver = self.request(op="role-request", role="evolver", reflectors=roles)
+        evolved_binding = delegate(evolver, "fixture-evolver-batch-1")
+        self.assertIn('"max_bytes": 16000', evolver["call"]["prompt"])
+        candidates = self.private / "candidates.json"
+        decisions = self.private / "decisions.json"
+        ids = [candidate["id"] for candidate in evo.read(candidates)]
+        self.assertEqual(len(set(ids)), 2)
+        self.write(decisions, [{"op": "ADD", "candidate_ids": ids, "reason": "SYNTHETIC supported procedure", "entry": {
+            "id": "fixture-field-review", "level": "general", "trigger": "SYNTHETIC required-field task", "scope": "SYNTHETIC forms",
+            "body": "Before submission, compare the public required fields with the current document and fill any omitted public fields."}}])
+        before_decisions = decisions.read_bytes()
+        checked = evo.execute({"op": "validate-decisions", "train_ids": self.profile["train_ids"], "contexts": contexts,
+            "candidates": str(candidates), "decisions": str(decisions), "library": str(self.private / "prebatch-library.json"),
+            "limits": self.profile["limits"], "max_entries": 5, "max_bytes": 16000})
+        self.assertTrue(checked["complete"])
+        self.assertEqual(decisions.read_bytes(), before_decisions)
+        materials = [str(self.private / "roles/evolver.md"), str(candidates), str(self.private / "prebatch-library.json"), *contexts]
+        evolved_trace = self.trace.parent / (evolved_binding["session_id"] + ".jsonl")
+        self.append_trace(evolved_trace, [{"type": "session_meta", "payload": evolved_binding}] + reads(materials)
+            + pair("exec_command", {"file_path": str(decisions), "sha256": control.sha(decisions)}, {"cmd": f"python3 -B {helper} {self.private / 'fixture-digest-request.json'}"}))
+        roles.append({"role": "evolver", "role_text_path": materials[0], "traces": [str(evolved_trace)], "binding": evolved_binding,
+                      "materials": materials, "outputs": [str(decisions)]})
+        compiled = self.private / "compiled.json"
+        compile_request = {"train_ids": self.profile["train_ids"], "contexts": contexts, "candidates": str(candidates), "decisions": str(decisions),
+            "library": str(self.private / "prebatch-library.json"), "limits": self.profile["limits"], "output": str(compiled)}
+        evo.compile_batch(compile_request)
+        skill = self.workspace / "submission/skill"
+        evo.export_skill({**compile_request, "library": str(compiled), "output": str(skill), "max_entries": 5, "max_bytes": 16000})
+        seal = {**compile_request, "op": "seal-training", "private_learning": str(self.private), "skill": str(skill),
+            "roles": roles, "runtime": self.runtime, "max_entries": 5, "max_bytes": 16000, "output": str(self.private / "training-export.json")}
+        self.write(self.private / "requests/seal-training.json", seal)
+        sealed = evo.seal_training(seal)
+        self.assertEqual(len(sealed["members"]), 5)
+        self.assertEqual(len(sealed["roles"]), 3)
+        self.assertTrue(self.request(op="verify-training")["complete"])
+        self.assertTrue(self.invoke("stop")["output"]["complete"])
+
+    def test_host_can_prepare_launch_documentation_but_cannot_execute_experiment_directly(self):
+        mode, _ = self.format_fixture()
+        for command in (
+            "python3 - <<'PY'\nfrom pathlib import Path\nPath('/tmp/fixture-statement.md').write_text('harbor run --task tg003')\nPY",
+            "cat <<'EOF' > /tmp/fixture-statement.md\nharbor run --task tg003\npenguin run --message test\nEOF",
+            "echo 'harbor run --task tg003'", "python3 -c \"print('penguin run')\"",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self.tool("exec_command", {"cmd": command}), {})
+        for command in ("harbor run --task tg003", "uvx --from harbor==0.23.0 harbor run --task tg003",
+                        "/opt/evo/bin/penguin run --message test", "python3 -m harbor run --task tg003",
+                        "python3 - <<'PY'\nimport subprocess\nsubprocess.run(['harbor', 'run', '--task', 'tg003'])\nPY",
+                        "bash -lc 'harbor run --task tg003'", "sudo -u agent harbor run --task tg003",
+                        "env -u PYTHONPATH harbor run --task tg003", "penguin --server http://127.0.0.1:4040 run --message test"):
+            with self.subTest(command=command):
+                self.assertEqual(self.tool("exec_command", {"cmd": command})["decision"], "deny")
 
 
 if __name__ == "__main__":
