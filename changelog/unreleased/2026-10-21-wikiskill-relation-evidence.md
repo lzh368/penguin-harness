@@ -11,6 +11,8 @@ WikiSkill `2026.10.21.1` distinguishes field definitions from evidence for relat
 
 `2026.10.21.2` applies this throughout the role prompts. Maintainers preserve source types and gaps in bounded views rather than treating self-check output as independent correctness evidence. Proposers verify Wiki interpretations against full training records and select a supported operation, with stopping and output boundaries. Auditors walk through the actual injected Skill and check the validity of its assertions; a failed self-written assertion does not always justify changing the answer. No extra candidate evaluations are introduced.
 
+`2026.10.21.3` replaces the ambiguous permission for an operation with unknown benefit: its prerequisites must first be supported. A walkthrough claiming that a branch executes must satisfy the conditions actually written in the Skill; mismatches cannot be dismissed as wording warnings.
+
 Reviewers must resolve missing prerequisites before staging instead of downgrading them to wording warnings. Access reviews separately report denied probes and actual disclosure. Replay documentation distinguishes development diagnostics from independent evaluation.
 
 These are method and audit instructions, not a new enforcement mechanism or a demonstrated score improvement. Scoring, model settings, acceptance thresholds, experiment splits and frozen runs are unchanged.
