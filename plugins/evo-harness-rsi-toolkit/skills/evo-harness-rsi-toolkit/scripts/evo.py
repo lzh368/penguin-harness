@@ -1335,6 +1335,27 @@ def verify_solver_reflection(view, fb, path_map=None, require_seal=True, input_r
                               "role_text_path": contract["materials"][0], "require_role_seal": True}}
 
 
+def native_dispatch_was_denied(rows, call_at, call_id):
+    """A native pre-execution denial is an attempt, not a child dispatch.
+
+    Require the engine's ordered decision and aborted receipt. Missing,
+    contradictory or ambiguous evidence remains in the uniqueness check.
+    """
+    decisions, outputs = [], []
+    for index, (_, _, row) in enumerate(rows):
+        payload = row.get("payload", {})
+        if payload.get("tool_call_id") != call_id:
+            continue
+        if row.get("type") == "event_msg" and payload.get("type") == "approval_decision":
+            decisions.append((index, payload))
+        elif row.get("type") == "model_msg" and payload.get("type") == "tool_call_output":
+            outputs.append((index, payload))
+    return (len(decisions) == len(outputs) == 1
+            and decisions[0][1].get("decision") in ("deny", "forbidden")
+            and outputs[0][1].get("stop_reason") == "aborted"
+            and call_at < decisions[0][0] < outputs[0][0])
+
+
 def solver_completion(view, path_map=None, expected=None):
     """Bind terminal Solver evidence to the original native background dispatch.
 
@@ -1397,7 +1418,11 @@ def solver_completion(view, path_map=None, expected=None):
                 "original Solver must use the frozen native background call")
         return True
     calls = [(i, r["payload"]) for i, (_, _, r) in enumerate(parent_rows)
-             if r.get("type") == "model_msg" and matching_call(r.get("payload", {}))]
+             if r.get("type") == "model_msg"
+             and r.get("payload", {}).get("type") == "tool_call"
+             and r["payload"].get("name") == "run_subagent"
+             and not native_dispatch_was_denied(parent_rows, i, r.get("payload", {}).get("tool_call_id"))
+             and matching_call(r.get("payload", {}))]
     require(len(calls) == 1, "one original Solver dispatch required")
     call_at, call = calls[0]
     outputs = [(i, r["payload"]) for i, (_, _, r) in enumerate(parent_rows)

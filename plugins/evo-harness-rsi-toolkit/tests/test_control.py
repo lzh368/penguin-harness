@@ -346,6 +346,55 @@ class ControlTests(unittest.TestCase):
             control.completed_context(self.profile, "train_001", self.meta)
         self.assertEqual({path: Path(path).read_bytes() for path in before}, before)
 
+    def denied_dispatch_replay(self):
+        """Replay the real014 denial before the synthetic successful dispatch."""
+        import copy
+        fixture = self.capture_preparation_fixture()
+        source = Path(__file__).parent / "fixtures/014-denied-native-dispatch.json"
+        denied = copy.deepcopy(json.loads(source.read_text())["events"][:3])
+        call = json.loads(denied[0]["payload"]["arguments"])
+        denied[0]["payload"]["arguments"] = json.dumps({**fixture["prepared"]["call"],
+                                                      "yield_time_ms": call["yield_time_ms"]})
+        rows = [json.loads(line) for line in self.trace.read_text().splitlines()]
+        at = next(index for index, row in enumerate(rows)
+                  if row.get("payload", {}).get("name") == "run_subagent")
+        return fixture, denied, rows, at
+
+    def test_real014_denied_attempt_does_not_duplicate_actual_solver(self):
+        fixture, denied, rows, at = self.denied_dispatch_replay()
+        self.trace.write_text("\n".join(json.dumps(row) for row in rows[:at] + denied + rows[at:]) + "\n")
+        before = self.trace.read_bytes()
+        with patch.object(control.evo.urllib.request, "build_opener", side_effect=AssertionError("no new judge")):
+            receipt = self.request(op="prepare-capture", task_id="train_001")
+            request = control.evo.read(receipt["request_path"])
+            control.evo.capture(request)
+            control.completed_context(self.profile, "train_001", self.meta)
+        self.assertEqual(self.trace.read_bytes(), before)
+        self.assertEqual(request["binding"]["session_id"], fixture["binding"]["session_id"])
+
+    def test_denial_without_complete_native_proof_stays_ambiguous(self):
+        import copy
+        _, denied, rows, at = self.denied_dispatch_replay()
+        cases = [denied[:1] + denied[2:], copy.deepcopy(denied), copy.deepcopy(denied), copy.deepcopy(denied)]
+        cases[1][1]["payload"]["decision"] = "allow"
+        cases[2][2]["payload"]["stop_reason"] = "completed"
+        cases[3] = [cases[3][0], cases[3][2], cases[3][1]]
+        for rejected in cases:
+            with self.subTest(events=rejected):
+                self.trace.write_text("\n".join(json.dumps(row) for row in rows[:at] + rejected + rows[at:]) + "\n")
+                with self.assertRaisesRegex(ValueError, "one original Solver dispatch"):
+                    self.request(op="prepare-capture", task_id="train_001")
+
+    def test_second_actual_solver_dispatch_still_rejected(self):
+        import copy
+        _, _, rows, at = self.denied_dispatch_replay()
+        duplicate = copy.deepcopy(rows[at:at + 2])
+        for row in duplicate:
+            row["payload"]["tool_call_id"] = "actual-second-dispatch"
+        self.trace.write_text("\n".join(json.dumps(row) for row in rows[:at] + duplicate + rows[at:]) + "\n")
+        with self.assertRaisesRegex(ValueError, "one original Solver dispatch"):
+            self.request(op="prepare-capture", task_id="train_001")
+
     def test_prepare_capture_rejects_overrides_and_preserves_conflicting_request(self):
         self.capture_preparation_fixture()
         with self.assertRaises(ValueError):
