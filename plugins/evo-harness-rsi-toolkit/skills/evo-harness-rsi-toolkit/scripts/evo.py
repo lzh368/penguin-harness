@@ -955,15 +955,8 @@ def solver_skill_observation(view, training, task_id, attempt_id, allow_missing=
         if (call.get("name") != "exec_command" or output.get("stop_reason") != "completed"
                 or output.get("images") or called >= observed):
             continue
-        try:
-            commands, workdir, redirects, _ = inspection._readonly_commands(call, workspace, slot, public, public_input)
-            argv = commands[0]["argv"]
-            full_cat = (len(commands) == 1 and not redirects and argv[0] == "cat"
-                        and [inspection._path(path, workdir) for path in inspection._file_operands(argv)] == [target]
-                        and output.get("output", "").encode() == expected)
-        except (ValueError, TypeError, KeyError, AttributeError):
-            continue
-        if full_cat:
+        if inspection.complete_file_stdout(call, output.get("output"), expected, target,
+                                           workspace, slot, public, public_input):
             complete = observed if complete is None else min(complete, observed)
     if not allow_missing:
         require(complete is not None, "Solver frozen H0 Skill was not fully observed through native read_file or exact foreground cat")
@@ -2072,7 +2065,7 @@ def verify_compilation(req):
 READER = '''---
 name: evo-harness-learned
 description: Load all context Skill bodies and general descriptions for this task group.
-version: 2026.10.22.6
+version: 2026.10.22.7
 ---
 
 Read this entire Reader, including every general description in its frozen
@@ -2083,9 +2076,11 @@ General entries have load_mode description: their complete descriptions are
 provided here. Do not read their SKILL.md bodies, including after other reads
 are complete. Keep general and context levels unchanged. Each state_path is
 relative to your Agent State root; methods are sibling native Skills.
-Use native read_file with all remaining pages, or a separate foreground
-`cat ABSOLUTE_SKILL_PATH` for each required body with complete exact stdout. Do not pipe
-or redirect those reads. Missing or truncated output must be completed before
+Use native read_file with all remaining pages, or foreground `cat ABSOLUTE_SKILL_PATH`
+with complete exact stdout. A cat may be last after literal pwd/ls discovery
+and short echo separators joined only by &&; no other cat, pipe, redirection,
+OR or background execution. The complete file must be the unique exact stdout
+tail; a standalone cat must output only that file. Missing or truncated output must be completed before
 acting; do not assume an omitted rule. Do not change State or output settings.
 
 Before the complete set has been observed, inspect only public task files and
@@ -2143,7 +2138,7 @@ def method_prefix(entry_id, level, description=None):
     description = (general_description(description) if level == "general" else
                    "Frozen current-context Evo-Harness method; read its complete body with the group Reader.")
     return (f"---\nname: {name}\ndescription: {json.dumps(description, ensure_ascii=False)}\n"
-            f"version: 2026.10.22.6\n---\n\n# {entry_id}\n\nLevel: {level}\n")
+            f"version: 2026.10.22.7\n---\n\n# {entry_id}\n\nLevel: {level}\n")
 
 
 def render_package(entries, max_bytes):

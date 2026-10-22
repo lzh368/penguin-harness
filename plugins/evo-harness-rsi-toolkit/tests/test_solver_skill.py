@@ -103,6 +103,38 @@ class SolverSkillTests(unittest.TestCase):
         self.write(self.rows[:2] + exact + self.rows[4:])
         evo.capture(self.request)
 
+    def test_finite_combo_completes_read_before_later_normal_shell_commands(self):
+        command = "ls -la " + str(Path(self.target).parent.parent) + "/ && echo '---' && cat " + self.target
+        observed = self.pair("exec_command", {"cmd": command}, "total 0\n---\n" + self.raw.decode(), "combined-h0")
+        # 2>&1 remains outside the pre-read grammar; after the completed H0
+        # read this ordinary task inspection is not incorrectly reclassified.
+        later = self.pair("exec_command", {"cmd": "ls /app/input 2>&1"}, "SYNTHETIC input files", "later-inspection")
+        self.write(self.rows[:2] + observed + later + self.rows[4:])
+        context = evo.read(evo.capture(self.request)["path"])
+        evo.validate_contexts([context], ["train_001"])
+        self.assertEqual(context["feedback"], self.feedback)
+
+    def test_real_actions_before_combo_observation_remain_violations(self):
+        command = "ls -la /app/input && echo '---' && cat " + self.target
+        observed = self.pair("exec_command", {"cmd": command}, "total 0\n---\n" + self.raw.decode(), "combined-h0")
+        for early in (self.pair("write_file", {"file_path": "/app/answer", "content": "x"}),
+                      self.pair("exec_command", {"cmd": "curl http://local-service/items"}),
+                      self.pair("exec_command", {"cmd": "cat /state/private"})):
+            with self.subTest(name=early[0]["payload"]["name"]):
+                self.write(self.rows[:2] + early + observed + self.rows[4:])
+                with self.assertRaises(ValueError): evo.capture(self.request)
+                self.assertFalse(Path(self.request["output"]).exists())
+        self.assert_rejected(self.rows[:2] + observed[:1] + self.pair("write_file", {
+            "file_path": "/app/answer", "content": "x"}) + observed[1:] + self.rows[4:], "task actions")
+
+    def test_combo_images_and_noncompleted_output_do_not_prove_a_read(self):
+        base = self.pair("exec_command", {"cmd": "pwd && cat " + self.target},
+                         "/app\n" + self.raw.decode(), "combined-h0")
+        for field, value in (("images", ["data:image/png;base64,AA=="]), ("stop_reason", "fatal")):
+            changed = copy.deepcopy(base)
+            changed[1]["payload"][field] = value
+            self.assert_rejected(self.rows[:2] + changed + self.rows[4:], "not fully observed")
+
     def test_validate_contexts_independently_rechecks_h0_against_original_trace(self):
         evo.capture(self.request)
         context = evo.read(self.request["output"])

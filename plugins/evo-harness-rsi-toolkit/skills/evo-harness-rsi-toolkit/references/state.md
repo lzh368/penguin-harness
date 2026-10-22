@@ -5,7 +5,7 @@ exported by `evo.py` from `[]` with the frozen limits. Install it at
 `STATE/skills/evo-harness-learned/`. Append exactly once to `STATE/AGENTS.md`:
 
 ```text
-Before business actions, read the complete skills/evo-harness-learned/SKILL.md including all general descriptions and every current-context Skill whose manifest load_mode is body in your Agent State using native read_file or a separate foreground cat of each exact file. Only the Reader's supported read-only public task inspection may precede these complete reads. Every task reads the same context bodies and general descriptions; never read general Skill bodies. There is no per-task selection step. Apply a rule only after checking its task conditions and necessary premises. Do not modify your State.
+Before business actions, read the complete skills/evo-harness-learned/SKILL.md including all general descriptions and every current-context Skill whose manifest load_mode is body in your Agent State using native read_file or the Reader's finite foreground cat protocol for each exact file. Only the Reader's supported read-only public task inspection may precede these complete reads. Every task reads the same context bodies and general descriptions; never read general Skill bodies. There is no per-task selection step. Apply a rule only after checking its task conditions and necessary premises. Do not modify your State.
 ```
 
 The fixed Reader, max_bytes, models and tools stay identical in

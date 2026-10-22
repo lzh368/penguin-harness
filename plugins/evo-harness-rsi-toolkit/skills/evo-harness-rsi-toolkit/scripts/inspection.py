@@ -210,3 +210,46 @@ def _readonly_commands(call, workspace, slot, public_files=None, public_input=No
             require(program == "head" and not operands, "inspection pipes only feed stdin head")
     return commands, workdir, redirects, reads
 
+
+def complete_file_stdout(call, stdout, expected, target, workspace, slot,
+                         public_files=None, public_input=None, *, skill_files=None):
+    """Exact whole-file stdout from one final cat, optionally after discovery.
+
+    This recognizes a finite foreground read protocol, not arbitrary shell
+    effects. Native completion, image absence and observation order belong to
+    the caller. The existing inspection grammar still checks every operation.
+    """
+    try:
+        if not isinstance(stdout, str) or not isinstance(expected, bytes) or not expected:
+            return False
+        content = expected.decode("utf-8")
+        commands, workdir, redirects, _ = _readonly_commands(
+            call, workspace, slot, public_files, public_input, skill_files=skill_files)
+        args = json.loads(call["arguments"])
+        command = args.get("cmd", args.get("command", ""))
+        if redirects:
+            return False
+        if any(item["connector"] != "&&" for item in commands[1:]):
+            return False
+        final = commands[-1]["argv"]
+        if final[0] != "cat" or [_path(path, workdir) for path in _file_operands(final)] != [target]:
+            return False
+        for item in commands[:-1]:
+            argv = item["argv"]
+            if argv[0] in ("pwd", "ls"):
+                continue
+            if argv[0] != "echo" or not (len(argv) == 1 or len(argv) == 2 and re.fullmatch(r"[-=_.: ]{1,64}", argv[1])):
+                return False
+        if len(commands) == 1:
+            # Preserve the prior exact single-cat form, including one terminal
+            # semicolon already accepted by the shared inspection parser.
+            return stdout == content
+        if command.rstrip().endswith(";"):
+            return False
+        if not stdout.endswith(content) or stdout.find(content) != stdout.rfind(content):
+            return False
+        prefix = stdout[:-len(content)]
+        return (not prefix or prefix.endswith("\n")) and not re.search(
+            r"\[output (?:truncated:|archived[ :(])|\[tool (?:timeout:|error\])", prefix)
+    except (ValueError, TypeError, KeyError, AttributeError, UnicodeError):
+        return False

@@ -44,7 +44,8 @@ An acknowledgment or a path in the prompt alone is not proof of reading.
 
 First satisfy the inherited learned Reader: observe it, including all general descriptions, and every
 listed current-context Skill body in full through its supported read operations before business actions, helper
-calls, or file writes. Then read the installed training.json beside the method
+calls, or file writes. The Reader permits a final exact cat after literal
+pwd/ls and short echo separators joined by &&; full output must finish first. Then read the installed training.json beside the method
 Skill for the exact frozen train_ids/attempt and canonical path policy; it
 contains no other member's answers. Read the complete assigned role file with
 read-material. Every granted public input must be fully observed before solving:

@@ -123,3 +123,10 @@ Revision 2026.10.22.6 changes delivery organization only: retained entries are
 separate native Skills installed beside the fixed Reader. Every task loads the same
 current-context bodies and all general descriptions, never general bodies. Learning, feedback and the five/five protocol are unchanged;
 prior single-file runs keep their original versions and verdicts.
+
+Revision 2026.10.22.7 adds a finite complete-read form: a final exact Skill cat
+may follow literal pwd/ls discovery and short echo separators joined only by
+&&. Complete unique file bytes must be the stdout tail. The .6 frozen protocol
+required a separate cat; historical runs and verdicts are not changed. This
+engineering read-interface revision changes no learning, loading classification,
+feedback, budget or original-Solver reflection boundary.
