@@ -523,10 +523,18 @@ class ControlTests(unittest.TestCase):
                 handle.write(json.dumps(row) + "\n")
 
     def format_fixture(self, completed=True, from_file=False):
-        mode = {"mode": "controller", "session_id": self.meta["session_id"], "config": "synthetic-unused",
+        config = self.root / "format-config.json"
+        self.write(config, {"deployment": {"node": shutil.which("node"), "penguin_checkout": str(SCRIPT.parents[5])}})
+        mode = {"mode": "controller", "session_id": self.meta["session_id"], "config": str(config), "config_sha256": control.sha(config),
                 "completion_request": str(self.scratch / "evo-guard/completion-request.json")}
         self.write(self.scratch / control.MARKER, mode)
-        call = {"description": "SYNTHETIC evaluator", "prompt": "Read the unchanged shared evaluation.md", **self.runtime, "run_in_background": True}
+        self.worker_cell = {"protocol_version": 1, "status": "ok", "case_id": "CASE-001-synthetic", "run": 1,
+            "agent_id": "synthetic-target", "expected_version": 1, **{k: self.runtime[k] for k in ("provider", "model_id", "thinking_level")},
+            "score": 50, "cost": None, "duration_ms": 1, "session_id": "harbor:synthetic-trial"}
+        prompt = "Read the unchanged shared evaluation.md\n" + "\n".join(f"{k}: {v}" for k, v in
+            {"case_id": "CASE-001-synthetic", "run": 1, "test_agent_id": "synthetic-target", "expected_version": 1,
+             **{k: self.runtime[k] for k in ("provider", "model_id", "thinking_level")}}.items())
+        call = {"description": "SYNTHETIC evaluator", "prompt": prompt, **self.runtime, "run_in_background": True}
         if from_file:
             raw = call.pop("prompt").encode("utf-8")
             task = self.scratch / "evo-guard/worker-prompt.txt"
@@ -534,7 +542,8 @@ class ControlTests(unittest.TestCase):
             call.update(prompt_file=str(task), prompt_sha256=control.evo.digest(raw))
         ticket = control.write_ticket(self.scratch, mode, call, "h0/CASE-001-synthetic/1", "h0")
         dispatch = Path(ticket["ticket"]).parent
-        self.write(dispatch / (control.evo.digest(ticket["slot"].encode()) + ".claimed.json"), {"tool_call_id": "launch-worker"})
+        self.write(dispatch / (control.evo.digest(ticket["slot"].encode()) + ".claimed.json"),
+                   {"tool_call_id": "launch-worker", "request_sha256": ticket["request_sha256"]})
         rows = [
             {"type": "model_msg", "payload": {"type": "tool_call", "name": "run_subagent", "tool_call_id": "launch-worker", "arguments": json.dumps(call)}},
             {"type": "event_msg", "payload": {"type": "subagent", "session_id": "session-fixture-12345678"}},
@@ -547,8 +556,25 @@ class ControlTests(unittest.TestCase):
         self.append_trace(self.trace, rows)
         child = self.trace.parent / "session-fixture-12345678_001.jsonl"
         child.write_text(json.dumps({"type": "session_meta", "payload": {**self.meta, "session_id": "session-fixture-12345678", "source": "subagent"}}) + "\n")
-        self.append_trace(child, [{"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "parent_agent", "text": control.evo.native_prompt(call)}}])
+        self.append_trace(child, [
+            {"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "parent_agent", "text": control.evo.native_prompt(call)}},
+            {"type": "event_msg", "payload": {"type": "request_begin"}},
+            {"type": "model_msg", "payload": {"type": "text", "role": "assistant", "text": "```yaml\n" + json.dumps(self.worker_cell) + "\n```"}},
+            {"type": "event_msg", "payload": {"type": "request_end", "status": "completed"}},
+        ])
         return mode, child
+
+    def finish_format(self, child, request, text=None, complete=True):
+        self.append_trace(self.trace, [{"type": "model_msg", "payload": {"type": "tool_call", "name": "input_subagent",
+            "arguments": json.dumps(request["call"]), "tool_call_id": "call-1"}}])
+        rows = [
+            {"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "parent_agent", "text": control.FORMAT_PROMPT}},
+            {"type": "event_msg", "payload": {"type": "request_begin"}},
+            {"type": "model_msg", "payload": {"type": "text", "role": "assistant", "text": json.dumps(self.worker_cell) if text is None else text}},
+        ]
+        if complete:
+            rows.append({"type": "event_msg", "payload": {"type": "request_end", "status": "completed"}})
+        self.append_trace(child, rows)
 
     def test_format_repair_uses_same_completed_native_evaluator_and_never_dispatches_itself(self):
         mode, child = self.format_fixture()
@@ -559,10 +585,7 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(self.tool("input_subagent", request["call"], "repeat-repair")["decision"], "deny")
         with self.assertRaises(ValueError):
             control.verify_format_repairs(mode)
-        self.append_trace(child, [
-            {"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "parent_agent", "text": control.FORMAT_PROMPT}},
-            {"type": "model_msg", "payload": {"type": "text", "role": "assistant", "text": "protocol_version: 1\nstatus: ok"}},
-        ])
+        self.finish_format(child, request)
         control.verify_format_repairs(mode)
         self.append_trace(child, [{"type": "model_msg", "payload": {"type": "tool_call", "name": "exec_command", "arguments": "{}", "tool_call_id": "forbidden-new-work"}}])
         with self.assertRaisesRegex(ValueError, "issued tools"):
@@ -586,12 +609,151 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(self.trace.read_bytes(), before)
         self.assertFalse(request["automatic_dispatch"])
         self.assertEqual(self.tool("input_subagent", request["call"]), {})
-        self.append_trace(child, [
-            {"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "parent_agent", "text": control.FORMAT_PROMPT}},
-            {"type": "model_msg", "payload": {"type": "text", "role": "assistant", "text": "protocol_version: 1\nstatus: ok"}},
-        ])
+        self.finish_format(child, request)
         control.verify_format_repairs(mode)
         self.assertEqual(self.tool("input_subagent", request["call"], "duplicate-format")["decision"], "deny")
+
+    def test_format_repair_cannot_repeat_fences_or_change_existing_values(self):
+        mode, child = self.format_fixture()
+        request = self.request(op="format-request", subagent_id="subagent-12345678")
+        self.assertEqual(self.tool("input_subagent", request["call"]), {})
+        before = child.read_bytes()
+        for text in ("```yaml\n" + json.dumps(self.worker_cell) + "\n```",
+                     json.dumps({**self.worker_cell, "score": 99}),
+                     json.dumps({**self.worker_cell, "session_id": "harbor:another-trial"}),
+                     json.dumps({**self.worker_cell, "cost": 0}),
+                     "protocol_version: 1\nstatus: ok",
+                     json.dumps(self.worker_cell) + "\n---\n" + json.dumps(self.worker_cell)):
+            with self.subTest(text=text):
+                child.write_bytes(before)
+                # The same original repair call is sufficient for every synthetic variant.
+                parent = self.trace.read_bytes()
+                self.finish_format(child, request, text)
+                with self.assertRaises(ValueError):
+                    control.verify_format_repairs(mode)
+                self.trace.write_bytes(parent)
+
+    def test_format_repair_requires_new_request_completion_not_old_or_inflight_text(self):
+        mode, child = self.format_fixture()
+        request = self.request(op="format-request", subagent_id="subagent-12345678")
+        self.assertEqual(self.tool("input_subagent", request["call"]), {})
+        self.finish_format(child, request, complete=False)
+        with self.assertRaisesRegex(ValueError, "completed native request"):
+            control.verify_format_repairs(mode)
+        self.append_trace(child, [{"type": "event_msg", "payload": {"type": "request_end", "status": "completed"}}])
+        control.verify_format_repairs(mode)
+
+    def test_validate_workers_returns_readonly_format_diagnostic_then_canonical_cells(self):
+        mode, child = self.format_fixture(from_file=True)
+        registration = {"test": {"case_ids": [self.worker_cell["case_id"]]}}
+        before = {path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()}
+        with patch.object(control, "registered_benchmarks", return_value=registration):
+            result = self.request(op="validate-workers", phase="h0")
+        self.assertFalse(result["complete"])
+        self.assertTrue(result["workers"][0]["format_required"])
+        self.assertTrue(result["workers"][0]["repair_available"])
+        self.assertEqual(result["cells"], [])
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
+        request = self.request(op="format-request", subagent_id="subagent-12345678")
+        self.assertEqual(self.tool("input_subagent", request["call"]), {})
+        self.finish_format(child, request)
+        with patch.object(control, "registered_benchmarks", return_value=registration):
+            result = self.request(op="validate-workers", phase="h0")
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["cells"], [self.worker_cell])
+        cells = self.root / "cells.json"; self.write(cells, [self.worker_cell])
+        self.assertTrue(control.verify_worker_matrix(mode, "h0", {"cells": str(cells)})["complete"])
+        self.write(cells, [{**self.worker_cell, "score": 99}])
+        with self.assertRaisesRegex(ValueError, "differs from matrix"):
+            control.verify_worker_matrix(mode, "h0", {"cells": str(cells)})
+
+    def test_worker_yaml_accepts_comments_quotes_order_and_rejects_ambiguous_documents(self):
+        mode, _ = self.format_fixture()
+        ticket = control.phase_tickets(self.scratch, mode, "h0")[0]
+        text = "# harmless comment mentioning ```\n---\n" + "\n".join(
+            f"'{key}': {json.dumps(value)} # legal comment" for key, value in reversed(list(self.worker_cell.items()))) + "\n"
+        self.assertEqual(control.validate_worker_record(control.worker_yaml(text, mode), ticket), self.worker_cell)
+        for bad in (text + "\nstatus: ok\n", text + "\n---\nstatus: ok\n",
+                    text + "\nextra: unknown\n", text.replace('50 # legal', '.nan # legal')):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                control.validate_worker_record(control.worker_yaml(bad, mode), ticket)
+
+    def test_validate_workers_never_calls_pending_or_identity_errors_format_repairs(self):
+        mode, child = self.format_fixture(completed=False)
+        registration = {"test": {"case_ids": [self.worker_cell["case_id"]]}}
+        with patch.object(control, "registered_benchmarks", return_value=registration):
+            result = self.request(op="validate-workers", phase="h0")
+        self.assertFalse(result["complete"])
+        self.assertTrue(result["workers"][0]["pending"])
+        self.assertFalse(result["workers"][0]["format_required"])
+        self.append_trace(self.trace, [{"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "harness",
+            "text": "[background_task_done]\nkind: subagent\nid: subagent-12345678\nstatus: completed\n[/background_task_done]"}}])
+        rows = [json.loads(line) for line in child.read_text().splitlines()]
+        rows[-2]["payload"]["text"] = json.dumps({**self.worker_cell, "expected_version": 2})
+        child.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        with patch.object(control, "registered_benchmarks", return_value=registration):
+            result = self.request(op="validate-workers", phase="h0")
+        self.assertFalse(result["workers"][0]["pending"])
+        self.assertFalse(result["workers"][0]["repair_available"])
+        self.assertFalse(result["workers"][0]["format_required"])
+
+    def test_repeated_fenced_repair_is_terminal_and_stale_reply_cannot_satisfy_it(self):
+        mode, child = self.format_fixture()
+        request = self.request(op="format-request", subagent_id="subagent-12345678")
+        self.assertEqual(self.tool("input_subagent", request["call"]), {})
+        self.finish_format(child, request, "```yaml\n" + json.dumps(self.worker_cell) + "\n```")
+        with patch.object(control, "registered_benchmarks", return_value={"test": {"case_ids": [self.worker_cell["case_id"]]}}):
+            result = self.request(op="validate-workers", phase="h0")
+        self.assertFalse(result["complete"])
+        self.assertFalse(result["workers"][0]["repair_available"])
+        with self.assertRaises(ValueError):
+            self.request(op="format-request", subagent_id="subagent-12345678")
+        rows = [json.loads(line) for line in child.read_text().splitlines()]
+        rows[-2]["payload"]["text"] = json.dumps(self.worker_cell)
+        del rows[-3]  # New text with no request_begin cannot borrow the old completed request.
+        child.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        with self.assertRaisesRegex(ValueError, "fresh native request"):
+            control.verify_format_repairs(mode)
+
+    def test_failed_stopped_or_unregistered_worker_is_never_pending_or_format_repair(self):
+        mode, child = self.format_fixture()
+        registration = {"test": {"case_ids": [self.worker_cell["case_id"]]}}
+        original = self.trace.read_bytes()
+        for status in ("failed", "stopped"):
+            self.trace.write_bytes(original.replace(b"status: completed", ("status: " + status).encode()))
+            with patch.object(control, "registered_benchmarks", return_value=registration):
+                result = self.request(op="validate-workers", phase="h0")
+            self.assertFalse(result["workers"][0]["pending"])
+            self.assertFalse(result["workers"][0]["format_required"])
+            self.assertIn("terminated", result["workers"][0]["reason"])
+        self.trace.write_bytes(original)
+        self.append_trace(child, [{"type": "model_msg", "payload": {"type": "text", "role": "user",
+            "sender": "parent_agent", "text": "SYNTHETIC unregistered steering"}}])
+        with patch.object(control, "registered_benchmarks", return_value=registration):
+            result = self.request(op="validate-workers", phase="h0")
+        self.assertFalse(result["workers"][0]["pending"])
+        self.assertFalse(result["workers"][0]["format_required"])
+        with self.assertRaisesRegex(ValueError, "unregistered follow-up"):
+            self.request(op="format-request", subagent_id="subagent-12345678")
+
+    def test_earlier_worker_commentary_and_text_fence_can_be_repaired_without_changing_result(self):
+        mode, child = self.format_fixture()
+        rows = [json.loads(line) for line in child.read_text().splitlines()]
+        rows[-2]["payload"]["text"] = rows[-2]["payload"]["text"].replace("```yaml", "```text")
+        rows[2:2] = [
+            {"type": "event_msg", "payload": {"type": "request_begin"}},
+            {"type": "model_msg", "payload": {"type": "text", "role": "assistant", "text": "SYNTHETIC early work explanation"}},
+            {"type": "model_msg", "payload": {"type": "tool_call", "name": "exec_command", "arguments": "{}", "tool_call_id": "initial-work"}},
+            {"type": "event_msg", "payload": {"type": "request_end", "status": "completed"}},
+        ]
+        child.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        with patch.object(control, "registered_benchmarks", return_value={"test": {"case_ids": [self.worker_cell["case_id"]]}}):
+            result = self.request(op="validate-workers", phase="h0")
+        self.assertTrue(result["workers"][0]["format_required"])
+        request = self.request(op="format-request", subagent_id="subagent-12345678")
+        self.assertEqual(self.tool("input_subagent", request["call"]), {})
+        self.finish_format(child, request)
+        control.verify_format_repairs(mode)
 
     def test_candidate_namespaces_and_limits_reach_fresh_role_prompts(self):
         # The binding validator has its own full trace tests; this checks the material

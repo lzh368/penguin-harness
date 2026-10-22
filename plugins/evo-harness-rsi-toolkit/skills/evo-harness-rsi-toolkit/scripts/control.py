@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import subprocess
 import time
 
 import evo
@@ -25,14 +26,39 @@ CONTROL = Path(__file__).resolve()
 TOOL = CONTROL.with_name("evo.py")
 MARKER = "EVO_CONTROL.json"
 FORMAT_PROMPT = ("Resend exactly one plain protocol YAML document from your existing result in this same Session. "
+                 "Remove the Markdown opening/closing code fences; output no fences, heading or surrounding prose. "
+                 "Keep every original protocol field and value unchanged, including null cost and the bound Session id. "
                  "Do not call tools, relaunch, rescore, change values, or add commentary. "
                  "This is a formatting-only repair under the installed shared evaluation.md contract.")
+WORKER_YAML_PARSER = r"""
+const fs = require('node:fs');
+const YAML = require('node:module').createRequire(process.argv[1])('yaml');
+try {
+  const docs = YAML.parseAllDocuments(fs.readFileSync(0, 'utf8'), { uniqueKeys: true, prettyErrors: false });
+  if (docs.length !== 1 || docs[0].errors.length || docs[0].warnings.length) throw Error();
+  const value = docs[0].toJS({ maxAliasCount: 0 });
+  if (!value || Array.isArray(value) || typeof value !== 'object') throw Error();
+  function finite(v) {
+    if (typeof v === 'number' && !Number.isFinite(v)) throw Error();
+    if (v && typeof v === 'object') Object.values(v).forEach(finite);
+  }
+  finite(value); process.stdout.write(JSON.stringify(value));
+} catch (_) { process.exitCode = 2; }
+"""
 ROOT_OPS = {"read-material", "file-digest", "capture", "compile", "export", "fingerprint",
             "journal", "audit-role", "verify-package", "seal-training"}
 
 
 def check(value, message):
     evo.require(value, message)
+
+
+class WorkerPending(ValueError):
+    """A specific native reply boundary has not completed; never a repair grant."""
+
+
+class WorkerFormatError(ValueError):
+    """Only document syntax can qualify for the one existing-value repair."""
 
 
 def canonical(value):
@@ -169,6 +195,163 @@ def original_session_rows(meta):
     return collected
 
 
+def worker_yaml(text, mode, allow_fence=False):
+    """Parse one worker document using the frozen native server YAML package."""
+    check(isinstance(text, str) and text.strip() and len(text.encode()) <= 1024 * 1024,
+          "worker reply must be one bounded plain YAML document")
+    if allow_fence:
+        # This is only the immutable pre-repair value source. Never strip the
+        # repaired/final reply, choose among multiple documents, or alter values.
+        fenced = re.fullmatch(r"\s*```(?:yaml|yml|text|plaintext)?[ \t]*\r?\n(.*?)\r?\n```\s*", text, re.S | re.I)
+        if fenced:
+            text = fenced[1]
+    if re.search(r"(?m)^[ \t]*(?:```|~~~)", text):
+        raise WorkerFormatError("worker reply must be plain YAML without Markdown fences")
+    check(sha(mode["config"]) == mode["config_sha256"], "frozen experiment config changed")
+    deployment = evo.read(mode["config"])["deployment"]
+    package = Path(deployment["penguin_checkout"]) / "packages/server/package.json"
+    try:
+        parsed = subprocess.run([deployment["node"], "--input-type=commonjs", "-e", WORKER_YAML_PARSER,
+                                 str(package)], input=text.encode(), capture_output=True, timeout=10,
+                                cwd=deployment["penguin_checkout"], env={"PATH": os.defpath}, check=False)
+        if parsed.returncode == 2:
+            raise WorkerFormatError("worker reply must be exactly one valid plain YAML mapping")
+        check(parsed.returncode == 0, "native worker YAML parser failed")
+        return json.loads(parsed.stdout)
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        raise ValueError("native worker YAML parser failed") from None
+
+
+def worker_identity(ticket):
+    text = evo.native_prompt(ticket["call"])
+    def field(name):
+        found = re.findall(r"^" + name + r":\s*(\S+)\s*$", text, re.M)
+        check(len(found) == 1, "registered worker task needs one " + name)
+        return found[0]
+    expected = {key: field(key) for key in ("case_id", "provider", "model_id", "thinking_level")}
+    expected["agent_id"] = field("test_agent_id")
+    for key in ("run", "expected_version"):
+        value = field(key)
+        check(re.fullmatch(r"[1-9][0-9]*", value), "invalid registered worker " + key)
+        expected[key] = int(value)
+    return expected
+
+
+def validate_worker_record(value, ticket):
+    check(isinstance(value, dict), "worker protocol must be a YAML mapping")
+    identity = worker_identity(ticket)
+    base = {"protocol_version", "status", *identity}
+    keys = base | ({"score", "cost", "duration_ms", "session_id"} if value.get("status") == "ok" else {"failure_code"})
+    extension = {"training_protocol_version", "operation_id", "trial_path", "submission_path",
+                 "private_learning_path", "member_ids", "skill_sha256", "complete"}
+    check(set(value) == keys or (ticket["phase"] == "training" and set(value) == keys | extension),
+          "worker protocol fields differ from shared evaluation contract")
+    check(type(value["protocol_version"]) is int and value["protocol_version"] == 1,
+          "unknown worker protocol")
+    for key, expected in identity.items():
+        check(type(value[key]) is type(expected) and value[key] == expected,
+              "worker runtime/State/task mismatch: " + key)
+    if value["status"] == "ok":
+        evo.finite(value["score"], high=100)
+        if value["cost"] is not None:
+            evo.finite(value["cost"])
+        check(type(value["duration_ms"]) is int and value["duration_ms"] >= 0, "invalid worker duration")
+        check(isinstance(value["session_id"], str) and value["session_id"], "missing worker trial binding")
+    else:
+        check(value["status"] == "failed" and value["failure_code"] in
+              ("invalid_request", "benchmark_invalid", "version_changed", "evaluation_failed"),
+              "invalid worker failure result")
+    return value
+
+
+def same_record(left, right):
+    if type(left) in (int, float) and type(right) in (int, float):
+        return left == right
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(same_record(left[k], right[k]) for k in left)
+    if isinstance(left, list):
+        return len(left) == len(right) and all(same_record(a, b) for a, b in zip(left, right))
+    return left == right
+
+
+def worker_text(rows, repaired=False, last_request=False):
+    """Require a fresh completed native request, never reuse an earlier reply."""
+    texts, active, finished = [], False, False
+    for row in rows:
+        p = row.get("payload", {})
+        if p.get("type") == "request_begin":
+            active, finished = True, False
+            if last_request:
+                texts = []
+        elif p.get("type") == "request_end":
+            check(active, "worker request end without its original begin")
+            active, finished = False, p.get("status") == "completed"
+        elif repaired and p.get("type") == "tool_call":
+            check(False, "formatting repair issued tools")
+        elif p.get("type") == "text" and p.get("role") == "assistant" and p.get("text", "").strip():
+            check(active, "worker reply has no fresh native request")
+            texts.append(p["text"])
+    if active:
+        raise WorkerPending("worker reply awaits its completed native request")
+    check(texts and finished, "worker reply lacks a completed native request")
+    return "\n".join(texts)
+
+
+def native_worker(meta, scratch, mode, ticket):
+    """Bind one claimed original worker call, parent pointer, notice and child."""
+    rows = original_session_rows(meta)
+    claim_path = ticket_path(scratch, mode, ticket["call"]).parent / (evo.digest(ticket["slot"].encode()) + ".claimed.json")
+    claim = evo.read(evo.regular(claim_path))
+    check(claim.get("request_sha256") == evo.digest(canonical(ticket["call"]).encode()), "worker claim changed")
+    calls = [r["payload"] for r in rows if r.get("type") == "model_msg"
+             and r.get("payload", {}).get("type") == "tool_call"
+             and r["payload"].get("tool_call_id") == claim["tool_call_id"]]
+    check(len(calls) == 1 and calls[0].get("name") == "run_subagent"
+          and json.loads(calls[0]["arguments"]) == ticket["call"], "original worker call differs from registered task")
+    outputs = [r["payload"]["output"] for r in rows if r.get("type") == "model_msg"
+               and r.get("payload", {}).get("type") == "tool_call_output"
+               and r["payload"].get("tool_call_id") == claim["tool_call_id"]]
+    check(len(outputs) == 1, "original worker launch observation missing")
+    handles = re.findall(r"\bsubagent_id ([A-Za-z_0-9-]+)(?:[;\]\s])", outputs[0])
+    check(len(handles) == 1, "original native worker handle missing")
+    handle = handles[0]
+    status = None
+    for row in rows:
+        p = row.get("payload", {})
+        if p.get("type") == "text" and p.get("sender") == "harness":
+            block = re.match(r"(?:\[background_task_done\]\n(.*?)\n\[/background_task_done\]|<background_task_done>\n(.*?)\n</background_task_done>)", p.get("text", ""), re.S)
+            if block:
+                values = dict(re.findall(r"^(kind|id|status):\s*(\S+)\s*$", block[1] or block[2], re.M))
+                if values.get("kind") == "subagent" and values.get("id") == handle:
+                    status = values.get("status")
+    check(status not in ("failed", "stopped"), "original native evaluator terminated: " + str(status))
+    if status is None:
+        raise WorkerPending("await the original evaluator's native completed notification")
+    check(status == "completed", "invalid original evaluator completion status")
+    referenced = {r["payload"]["session_id"] for r in rows if r.get("type") == "event_msg"
+                  and r.get("payload", {}).get("type") == "subagent"}
+    children = {}
+    for trace in sorted((Path(meta["agent_state"]).parent / "traces").rglob("*.jsonl")):
+        identity, _, child_rows = trace_context(trace)
+        if identity["session_id"] in referenced and identity.get("source") == "subagent":
+            children.setdefault(identity["session_id"], []).extend(r for r in child_rows if not r.get("origin"))
+    prompt = evo.native_prompt(ticket["call"])
+    found = []
+    for session_id, child in children.items():
+        users = [r["payload"] for r in child if r.get("type") == "model_msg" and r.get("payload", {}).get("type") == "text"
+                 and r["payload"].get("role") == "user" and r["payload"].get("sender") == "parent_agent"]
+        if users and users[0]["text"] == prompt:
+            metas = [r["payload"] for r in child if r.get("type") == "session_meta"]
+            check(metas and all(m["agent_state"] == meta["agent_state"] and
+                  all(m[k] == ticket["call"][k] for k in ("provider", "model_id")) for m in metas),
+                  "worker native runtime/State changed")
+            found.append((session_id, child))
+    check(len(found) == 1, "worker needs exactly one original native child Session")
+    return {"session_id": found[0][0], "rows": found[0][1], "handle": handle, "parent_rows": rows}
+
+
 def format_request(req, meta, scratch, mode):
     check(mode["mode"] == "controller" and "config" in mode, "format repair is controller-only")
     child_id = evo.ident(req["subagent_id"])
@@ -219,8 +402,17 @@ def format_request(req, meta, scratch, mode):
                and r["payload"].get("text") == evo.native_prompt(launches[0]["call"]) for r in child_rows):
             sessions.add(identity["session_id"])
     check(len(sessions) == 1, "format repair must bind the original native child Session")
+    source = native_worker(meta, scratch, mode, launches[0])
+    check(source["handle"] == child_id and source["session_id"] in sessions, "format repair worker changed")
+    check(sum(row.get("payload", {}).get("type") == "text" and row["payload"].get("role") == "user"
+              and row["payload"].get("sender") == "parent_agent" for row in source["rows"]) == 1,
+          "worker has unregistered follow-up input")
+    original_text = worker_text(source["rows"])
+    original_result = validate_worker_record(worker_yaml(worker_text(source["rows"], last_request=True), mode, allow_fence=True), launches[0])
     call = {"description": "Resend the existing evaluation YAML", "subagent_id": child_id, "prompt": FORMAT_PROMPT}
-    repair = {"schema": 1, "subagent_id": child_id, "session_id": next(iter(sessions)), "slot": launches[0]["slot"], "call": call}
+    repair = {"schema": 2, "subagent_id": child_id, "session_id": next(iter(sessions)), "slot": launches[0]["slot"], "call": call,
+              "worker_ticket": str(ticket_path(scratch, mode, launches[0]["call"])),
+              "original_text_sha256": evo.digest(original_text.encode()), "original_result": original_result}
     path = scratch / "evo-guard/format" / (child_id + ".json")
     check(not path.with_suffix(".claimed.json").exists(), "only one formatting repair per evaluator; preserve an unresolved protocol failure")
     if path.exists():
@@ -245,35 +437,133 @@ def authorize_input(args, meta, scratch, mode, call_id):
         evo.write_once(claim, evo.encoded({"tool_call_id": call_id}))
 
 
-def verify_format_repairs(mode):
-    """A formatting repair may issue a model response, but never more tool work."""
+def controller_trace(mode):
     scratch = Path(mode["completion_request"]).parent.parent
     root = scratch.parent.parent / "traces"
+    metas = []
+    for path in sorted(root.rglob("*.jsonl")):
+        meta, _, _ = trace_context(path)
+        if meta["session_id"] == mode["session_id"]:
+            metas.append(meta)
+    fields = ("session_id", "source", "agent_state", "workspace", "provider", "model_id")
+    check(metas and all(all(meta[k] == metas[0][k] for k in fields) for meta in metas), "controller original trace missing/changed")
+    return metas[0], scratch
+
+
+def worker_result(meta, scratch, mode, ticket):
+    source = native_worker(meta, scratch, mode, ticket)
+    path = scratch / "evo-guard/format" / (source["handle"] + ".json")
+    child = source["rows"]
+    users = [(i, r["payload"]["text"]) for i, r in enumerate(child) if r.get("type") == "model_msg"
+             and r.get("payload", {}).get("type") == "text" and r["payload"].get("role") == "user"
+             and r["payload"].get("sender") == "parent_agent"]
+    if not path.with_suffix(".claimed.json").exists():
+        check(len(users) == 1, "worker has unregistered follow-up input")
+        return validate_worker_record(worker_yaml(worker_text(child), mode), ticket), source
+    repair, claim = evo.read(evo.regular(path)), evo.read(evo.regular(path.with_suffix(".claimed.json")))
+    check(repair.get("schema") == 2 and repair["session_id"] == source["session_id"]
+          and repair["slot"] == ticket["slot"] and repair["worker_ticket"] == str(ticket_path(scratch, mode, ticket["call"])),
+          "formatting repair binding changed")
+    calls = [r["payload"] for r in source["parent_rows"] if r.get("type") == "model_msg"
+             and r.get("payload", {}).get("type") == "tool_call"
+             and r["payload"].get("tool_call_id") == claim["tool_call_id"]]
+    check(len(calls) == 1 and calls[0].get("name") == "input_subagent"
+          and json.loads(calls[0]["arguments"]) == repair["call"], "original formatting repair call missing/changed")
+    if len(users) == 1:
+        raise WorkerPending("await the formatting prompt and fresh request in the original child")
+    check(len(users) == 2 and users[1][1] == FORMAT_PROMPT, "formatting repair lacks exact original child input")
+    original = worker_text(child[:users[1][0]])
+    check(evo.digest(original.encode()) == repair["original_text_sha256"], "pre-repair worker result changed")
+    before = validate_worker_record(worker_yaml(worker_text(child[:users[1][0]], last_request=True), mode, allow_fence=True), ticket)
+    after = validate_worker_record(worker_yaml(worker_text(child[users[1][0] + 1:], repaired=True), mode), ticket)
+    check(same_record(before, repair["original_result"]) and same_record(after, before),
+          "formatting repair changed original result values")
+    return after, source
+
+
+def verify_format_repairs(mode):
+    """A repair must be a new, completed, plain reply with unchanged values."""
+    scratch = Path(mode["completion_request"]).parent.parent
+    meta = None
     for path in (scratch / "evo-guard/format").glob("*.json"):
         if path.name.endswith(".claimed.json"):
             continue
-        repair = evo.read(path)
         if not path.with_suffix(".claimed.json").exists():
             continue
-        seen, tools_after, answers_after = 0, 0, 0
-        segments = []
-        for trace in sorted(root.rglob("*.jsonl")):
-            try:
-                identity, _, rows = trace_context(trace)
-            except (ValueError, KeyError, OSError):
-                continue
-            if identity.get("source") == "subagent" and identity["session_id"] == repair["session_id"]:
-                segments.extend(r for r in rows if not r.get("origin"))
-        for row in segments:
-            p = row.get("payload", {})
-            if p.get("type") == "text" and p.get("role") == "user" and p.get("sender") == "parent_agent" and p.get("text") == FORMAT_PROMPT:
-                seen += 1
-            elif seen and p.get("type") == "tool_call":
-                tools_after += 1
-            elif seen and p.get("type") == "text" and p.get("role") == "assistant" and p.get("text", "").strip():
-                answers_after += 1
-        check(seen == 1 and tools_after == 0 and answers_after > 0,
-              "formatting repair issued tools or lacks the original child response trace")
+        if meta is None:
+            meta, _ = controller_trace(mode)
+        repair = evo.read(evo.regular(path))
+        check(repair.get("schema") == 2, "format repair lacks original result binding")
+        ticket = evo.read(evo.regular(repair["worker_ticket"]))
+        worker_result(meta, scratch, mode, ticket)
+
+
+def phase_tickets(scratch, mode, phase):
+    tickets = []
+    for path in sorted((scratch / "evo-guard/dispatch").glob("*.json")):
+        if path.name.endswith(".claimed.json"):
+            continue
+        ticket = evo.read(evo.regular(path))
+        if ticket.get("phase") == phase:
+            check(path == ticket_path(scratch, mode, ticket["call"]) and ticket["session_id"] == mode["session_id"],
+                  "registered evaluator ticket identity changed")
+            if path.with_name(evo.digest(ticket["slot"].encode()) + ".claimed.json").exists():
+                tickets.append(ticket)
+    return tickets
+
+
+def verify_worker_matrix(mode, phase, matrix):
+    """Bind matrix cells to strict original worker records; scoring stays in matrix()."""
+    meta, scratch = controller_trace(mode)
+    tickets = phase_tickets(scratch, mode, phase)
+    cells = evo.read(matrix["cells"])
+    check(len(tickets) == len(cells), "matrix needs exactly one claimed native worker per cell")
+    seen = set()
+    for ticket in tickets:
+        value, source = worker_result(meta, scratch, mode, ticket)
+        matches = [cell for cell in cells if cell["case_id"] == value["case_id"] and cell["run"] == value["run"]]
+        check(len(matches) == 1 and same_record(value, matches[0]), "native worker result differs from matrix cell")
+        check(source["session_id"] not in seen, "one worker cannot certify several matrix cells")
+        seen.add(source["session_id"])
+    return {"complete": True, "workers": len(seen)}
+
+
+def validate_workers(mode, phase):
+    """Read-only receipt check before matrix construction; never repair or dispatch."""
+    check(mode["mode"] == "controller" and phase in ("training", "h0", "final"), "invalid worker validation phase")
+    meta, scratch = controller_trace(mode)
+    registration = registered_benchmarks(mode)
+    expected = registration["training" if phase == "training" else "test"]["case_ids"]
+    tickets = phase_tickets(scratch, mode, phase)
+    results, cases = [], []
+    for ticket in tickets:
+        identity = worker_identity(ticket)
+        cases.append(identity["case_id"])
+        item = {"slot": ticket["slot"], "valid": False, "pending": False, "format_required": False, "repair_available": False}
+        try:
+            source = native_worker(meta, scratch, mode, ticket)
+            item.update(subagent_id=source["handle"], session_id=source["session_id"])
+            value, _ = worker_result(meta, scratch, mode, ticket)
+            item.update(valid=True, cell=value)
+        except WorkerPending as exc:
+            item.update(pending=True, reason=str(exc))
+        except WorkerFormatError as exc:
+            item["reason"] = str(exc)
+            if "subagent_id" in item:
+                repair = scratch / "evo-guard/format" / (item["subagent_id"] + ".claimed.json")
+                if not repair.exists():
+                    try:
+                        validate_worker_record(worker_yaml(worker_text(source["rows"], last_request=True), mode, allow_fence=True), ticket)
+                        item.update(format_required=True, repair_available=True)
+                    except (ValueError, KeyError, OSError):
+                        pass
+        except (ValueError, KeyError, OSError) as exc:
+            item["reason"] = str(exc)
+        results.append(item)
+    return {"complete": sorted(cases) == sorted(expected) and all(item["valid"] and item["cell"]["status"] == "ok" for item in results),
+            "phase": phase, "workers": results, "missing": sorted(set(expected) - set(cases)),
+            "cells": [item["cell"] for item in results if item["valid"]],
+            "read_only": True, "automatic_dispatch": False}
 
 
 def runtime_call(call, runtime):
@@ -577,6 +867,7 @@ def worker_request(req, scratch, mode):
             check(not acceptance["equivalent_h0"], "valid H0-equivalent compilation must reuse H0, not rerun")
             h0 = evo.read(Path(mode["completion_request"]).parent / "h0-matrix-request.json")
             check(protocol_module(mode).matrix(h0)["complete"], "finish the complete H0 matrix before final testing")
+            verify_worker_matrix(mode, "h0", h0)
     return write_ticket(scratch, mode, call, f"{phase}/{case}/{run}", phase)
 
 
@@ -1000,12 +1291,14 @@ def controller_final(mode):
     h0 = module.matrix(h0_req)
     check(h0["complete"] and h0_req["case_ids"] == accepted["test_case_ids"], "complete frozen H0 matrix required")
     check(h0_req["identity"]["expected_version"] == accepted["h0"]["version"], "H0 version mismatch")
+    verify_worker_matrix(mode, "h0", h0_req)
     if accepted["equivalent_h0"]:
         check(request.get("final_policy") == "reused_equivalent_h0" and not request.get("final_matrix_request"), "valid no-op must explicitly reuse H0")
     else:
         final_req = evo.read(request["final_matrix_request"])
         check(module.matrix(final_req)["complete"] and final_req["case_ids"] == accepted["test_case_ids"], "complete frozen final matrix required")
         check(final_req["identity"]["expected_version"] == accepted["final"]["version"], "final version mismatch")
+        verify_worker_matrix(mode, "final", final_req)
     for identity in [h0_req["identity"]] + ([] if accepted["equivalent_h0"] else [final_req["identity"]]):
         check(all(identity[k] == accepted["runtime"][k] for k in ("provider", "model_id", "thinking_level")), "test runtime mismatch")
         check(identity["agent_id"] == config["test_agent_id"].removeprefix("create:").strip(), "test matrix names another Target")
@@ -1184,6 +1477,9 @@ def execute(req):
         return role_request(req, meta, scratch, mode)
     if op == "worker-request":
         return worker_request(req, scratch, mode)
+    if op == "validate-workers":
+        check(set(req) == {"op", "trace_path", "phase"}, "validate-workers takes only trace_path and phase")
+        return validate_workers(mode, req["phase"])
     if op == "format-request":
         return format_request(req, meta, scratch, mode)
     if op == "prepare-seal-training":

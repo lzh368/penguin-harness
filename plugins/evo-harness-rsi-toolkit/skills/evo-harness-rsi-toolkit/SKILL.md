@@ -1,7 +1,7 @@
 ---
 name: evo-harness-rsi-toolkit
 description: Run Evo-Harness with frozen Solver settings, negative-feedback reflection and batch compilation of general and task-type skills. Use native Penguin workers, State, snapshots and evaluation; the continuous GDPevo profile adds checked native delegation and export acceptance.
-version: 2026.10.21.10
+version: 2026.10.21.11
 ---
 
 # Evo-Harness
@@ -103,7 +103,10 @@ group-training.md. In both settings:
    protocol, or explicitly record reused_equivalent_h0. A partial matrix has
    no mean or scoreboard entry. Preserve valid verifier-defined zero scores;
    infrastructure failures have no score. Write the existing scoreboard schema
-   with actual versions and runtime. Training scores remain diagnostics.
+   with actual versions and runtime. In the guarded GDPevo profile, use
+   control.md's validate-workers before each matrix and State transition;
+   repair formatting only through the original worker. Training scores remain
+   diagnostics.
 
 ## Recovery, stopping and reporting
 

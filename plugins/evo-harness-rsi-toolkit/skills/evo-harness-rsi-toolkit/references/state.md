@@ -5,7 +5,7 @@ exported by `evo.py` from `[]` with the frozen limits. Install it at
 `STATE/skills/evo-harness-learned/`. Append exactly once to `STATE/AGENTS.md`:
 
 ```text
-Before acting on a task, use native read_file to read the complete skills/evo-harness-learned/SKILL.md and index.json in your Agent State, then follow the reader's selection procedure. Before selection, use only native read_file for task/reader material and simple pwd, ls or find commands for directory inspection, plus the reader's selector budget retries. Run the selector as a foreground native exec_command without redirects, pipes or wrappers, and observe its complete output before business API calls or writing the task answer. Do not modify your State.
+Before acting on a task, read the complete skills/evo-harness-learned/SKILL.md and index.json in your Agent State using native read_file or a separate foreground cat of each exact file, then follow the reader's selection procedure. Only the reader's supported read-only inspection of public task files/directories may precede selection. Do not run arbitrary code, invoke APIs, write files or read entry bodies before selection. Run the selector as a foreground native exec_command without redirects, pipes or wrappers, and observe its complete output before business API calls or writing the task answer. Do not modify your State.
 ```
 
 The reader, selector, max_entries/max_bytes, models and tools stay identical in

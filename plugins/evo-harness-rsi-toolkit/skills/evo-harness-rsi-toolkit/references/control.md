@@ -54,6 +54,7 @@ permission: all native calls still pass the existing pre-tool checks.
 | worker-request | phase: training/h0/final, call: complete native run_subagent arguments | Validates runtime, Benchmark, Target, case, run and prerequisites; returns exact call and ticket. Main Penguin invokes that call itself. |
 | role-request | role: solver/reflector/evolver; task_id for solver/reflector; reflectors: all completed audit-role requests for Evolver, in negative-task order | Writes the complete fixed role prompt once; returns a short native call with prompt_file and prompt_sha256. The root invokes that call unchanged. Native run_subagent reads and hashes the file before creating the child. |
 | format-request | subagent_id: the original completed evaluation worker handle | Controller only: returns one fixed formatting-only input_subagent call for the same worker's existing result. No tools, rerun or new scores are permitted. |
+| validate-workers | phase: training/h0/final | Controller only, read-only: binds the registered workers to their original native replies and validates plain protocol YAML. Returns canonical cells and any worker needing its single formatting repair; never dispatches or writes a matrix. |
 | status | none | Mode, clock/compilation reserve, original native trace paths and call count; no dispatch. Use prepare-capture for Solver capture metadata; inspect actual child metadata using read-material for role audits. |
 | prepare-capture | task_id | Training root only, after the original Solver's native completed notification. Derives the exact ordered grant, registered child binding, all trace segments and canonical paths; validates evidence in a disposable private directory, then writes requests/capture-<task>-<attempt>.prepared.json once. Returns prepared=true/captured=false and short path/hash/command. Execute the command unchanged, unless context_exists/context_verified=true and command=null: then reuse the already captured context. |
 | prepare-seal-training | role_requests: absolute paths to completed Reflector/Evolver audit-role JSON files inside private/requests/, in negative-task order followed by Evolver | Training root only: writes private/requests/seal-training.json with the complete frozen runtime and canonical paths; returns only request_path, request_sha256 and command. Identical requests are reused read-only; conflicting requests are never overwritten. It does not seal, dispatch or judge. |
@@ -82,7 +83,9 @@ task-solving instructions to the same child. A host evaluation worker's existing
 result may receive the shared protocol's formatting repair: after its original
 native completed notification, request format-request and invoke exactly the
 returned input_subagent arguments once. The guard binds the original registered
-worker across trace compaction and later verifies the repair made no tool calls.
+worker across trace compaction and verifies a new completed native reply after
+the exact repair prompt, no tools and unchanged result values. Remove Markdown
+fences when requested; repeating the same fenced text is not a format repair.
 If that repair still lacks valid YAML, stop; it does not authorize rescoring.
 Pre-start Harbor engineering repair remains within the original worker and must
 prove no Target/model request began. Preserve all failed launch records.
@@ -151,8 +154,18 @@ unchanged State outside the slot/top-level integer version, native snapshots
 without links/escape/duplicates, and actual Target hashes. An earlier successful
 receipt never substitutes for this recheck.
 
-Store the ordinary complete matrix requests with cells, identity, case_ids,
-runs, time, summary_title, summary and evo_tool. Preserve original worker values.
+After each phase's native workers finish, call validate-workers for that phase
+before constructing a matrix or advancing to the next State. If a completed
+worker needs formatting repair, use its returned handle with format-request,
+invoke the exact returned call once, await its completed reply and validate
+again. Pending workers must finish; identity, changed-value or execution
+violations are not formatting problems. Do not strip fences yourself or copy
+values out of a rejected reply into a successful matrix.
+
+When validation is complete, use its canonical cells to store the ordinary
+matrix requests with cells, identity, case_ids, runs, time, summary_title,
+summary and evo_tool. Preserve original worker values. Final acceptance binds
+every matrix cell back to the original plain YAML and original Harbor trial.
 The matrix identity is the shared evaluation protocol's five-field object:
 
 ~~~json

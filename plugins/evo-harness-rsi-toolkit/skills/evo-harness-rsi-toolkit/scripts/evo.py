@@ -1412,14 +1412,23 @@ def verify_compilation(req):
 READER = '''---
 name: evo-harness-learned
 description: Select relevant frozen Evo-Harness procedures for the current task.
-version: 2026.10.21.10
+version: 2026.10.21.11
 ---
 
-Before business API calls or writing the task answer, use native read_file to read
-this entire SKILL.md and index.json beside it, requesting all remaining lines if
-truncated. Before selection, use only native read_file for task/reader material
-and simple pwd, ls or find commands for directory inspection, plus the selector
-budget retries described below. Choose only entries whose trigger and scope match the current task
+Before business API calls or writing the task answer, read this entire SKILL.md
+and index.json beside it. Prefer native read_file, requesting all remaining lines
+if truncated; a separate foreground `cat ABSOLUTE_FILE` with the complete exact
+stdout is also valid for either file. Do not pipe or redirect these complete reads.
+Before selection, inspect only public task files and directories with native
+reads or the reader's supported read-only shell commands: pwd, ls, find, cat,
+head and literal echo separators. Keep inspection commands simple; limited
+read-only combinations may use &&, ||, semicolons and pipes into bounded head
+without file operands. For find, use only type, depth, name/iname and print
+predicates; quote name patterns. Only stderr suppression to /dev/null is
+permitted as redirection. Do not run
+arbitrary code, invoke APIs, execute task programs or write files before selection.
+Do not read entry bodies before selection or unselected entries afterward.
+Choose only entries whose trigger and scope match the current task
 (zero is valid), in order of relevance. Execute one foreground native exec_command:
 `python3 -B /absolute/path/to/this/Skill/select.py --ids <comma-separated IDs>`.
 Use --ids '' for an empty selection. Alternatively set exec_command.workdir to this
