@@ -56,6 +56,8 @@ export interface HookCommand {
   command: string;
   timeout?: number;
   trigger?: UserPromptTrigger;
+  /** Explicit pre-tool-use opt-in for native child Sessions; absent keeps root-only behavior. */
+  scope?: "subagent";
 }
 
 /**
@@ -210,7 +212,11 @@ function hookCommands(value: unknown, key: string, warnings: string[]): HookComm
       warnings.push(`${at} must name a script inside hooks/; ignored`);
       continue;
     }
-    const { timeout, trigger } = entry as Record<string, unknown>;
+    const { timeout, trigger, scope } = entry as Record<string, unknown>;
+    if (scope !== undefined && (scope !== "subagent" || !key.endsWith("pre_tool_use"))) {
+      warnings.push(`${at}.scope is supported only as "subagent" on pre_tool_use; entry ignored`);
+      continue;
+    }
     if (timeout !== undefined && !(typeof timeout === "number" && timeout > 0)) {
       warnings.push(`${at}.timeout must be a positive number of seconds; ignored`);
     }
@@ -221,6 +227,7 @@ function hookCommands(value: unknown, key: string, warnings: string[]): HookComm
       command: command as string,
       ...(typeof timeout === "number" && timeout > 0 ? { timeout } : {}),
       ...(trigger === "prompt" || trigger === "host" ? { trigger } : {}),
+      ...(scope === "subagent" ? { scope } : {}),
     });
   }
   return commands;

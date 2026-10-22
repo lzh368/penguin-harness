@@ -2,7 +2,7 @@
  * Behavior tests for long-running command sessions (exec_command yield + input_command).
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { access, chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Environment, ManagedSession } from "../src/environment/index.js";
@@ -116,6 +116,39 @@ describe("exec_command — long-running command sessions", () => {
     expect(res.output).toContain("hello");
     expect(res.output).not.toContain("process running with process_id");
     expect(res.stopReason).toBe("completed");
+  });
+
+  it("reproduces the CRM nohup lifetime and preserves an awaited foreground job", async () => {
+    const script = path.join(tmp, "job.cjs");
+    await writeFile(
+      script,
+      `const fs=require('node:fs'); const p=process.argv[2];
+      fs.writeFileSync(p+'.pid',String(process.pid));
+      process.on('SIGTERM',()=>{fs.writeFileSync(p+'.cancelled','yes');process.exit(0)});
+      setTimeout(()=>fs.writeFileSync(p+'.finished','yes'),1400);`,
+    );
+    const lost = path.join(tmp, "lost");
+    const first = await runTool(env, "exec_command", {
+      cmd: `nohup node '${script}' '${lost}' >/dev/null 2>&1 & sleep 0.2; echo launched`,
+    });
+    expect(first.output).not.toContain("process running with process_id");
+    const pid = Number(await readFile(lost + ".pid", "utf8"));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(() => process.kill(pid, 0)).toThrow();
+    await expect(access(lost + ".finished")).rejects.toBeTruthy();
+    const kept = path.join(tmp, "kept");
+    const started = await runTool(env, "exec_command", {
+      cmd: `node '${script}' '${kept}'`,
+      yield_time_ms: 10,
+    });
+    const processId = extractProcessId(started.output);
+    await expect(access(kept + ".finished")).rejects.toBeTruthy();
+    const done = await runTool(env, "input_command", {
+      process_id: processId,
+      yield_time_ms: 5000,
+    });
+    expect(done.output).not.toContain("process still running");
+    expect(await readFile(kept + ".finished", "utf8")).toBe("yes");
   });
 
   it("streams output incrementally while the command is running", async () => {

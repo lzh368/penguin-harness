@@ -173,7 +173,7 @@ correction of your own unsealed draft; fatal boundary errors remain terminal.
 Use the initial contract's exact output_path and write_call template (also
 returned with candidate_draft_invalid). Replace only arguments.content with
 the complete corrected JSON array as text and call native write_file directly.
-Use the draft already in your history; no Python/shell read-modify-write is needed or permitted. Then use the fixed seal-role-output request (file-digest only for unguarded RSI) and return
+Under native-draft-v1, native edit_file may also correct this same Session's own unsealed candidates.json; no other file may be edited. An audited pre-tool denial with an aborted native result proves the tool did not execute: use the returned legal entry and continue. Use the draft already in your history; no Python/shell read-modify-write is needed or permitted. Then use the fixed seal-role-output request (file-digest only for unguarded RSI) and return
 its receipt. The sealed output is fixed; the coordinator cannot rewrite it. The internal
 seal label `reflector` identifies this phase of the original Solver, not a new
 Agent or a second billable Session. You do not edit State.

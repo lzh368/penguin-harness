@@ -904,12 +904,13 @@ export async function listInstalledMcpServers(
  * package directory `dir`. A `timeout` that is not a positive number and a `trigger` that is
  * not one of the two known values are dropped rather than failing the entry.
  */
-function readHookCommands(dir: string, value: unknown): HookCommand[] {
+function readHookCommands(dir: string, value: unknown, childScope = false): HookCommand[] {
   if (!Array.isArray(value)) return [];
   const commands: HookCommand[] = [];
   for (const entry of value as unknown[]) {
     if (entry === null || typeof entry !== "object") continue;
-    const { command, timeout, trigger } = entry as Record<string, unknown>;
+    const { command, timeout, trigger, scope } = entry as Record<string, unknown>;
+    if (scope !== undefined && (scope !== "subagent" || !childScope)) continue;
     if (typeof command !== "string" || command === "") continue;
     const relative = path.relative(dir, path.resolve(dir, command));
     if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) continue;
@@ -917,6 +918,7 @@ function readHookCommands(dir: string, value: unknown): HookCommand[] {
       command,
       ...(typeof timeout === "number" && timeout > 0 ? { timeout } : {}),
       ...(trigger === "prompt" || trigger === "host" ? { trigger } : {}),
+      ...(scope === "subagent" ? { scope } : {}),
     });
   }
   return commands;
@@ -947,7 +949,7 @@ async function readHookManifest(dir: string): Promise<HookManifest | null> {
       : {}),
     version: typeof manifest.version === "string" ? manifest.version : "",
     stop: readHookCommands(dir, manifest.stop),
-    pre_tool_use: readHookCommands(dir, manifest.pre_tool_use),
+    pre_tool_use: readHookCommands(dir, manifest.pre_tool_use, true),
     user_prompt: readHookCommands(dir, manifest.user_prompt),
   };
 }

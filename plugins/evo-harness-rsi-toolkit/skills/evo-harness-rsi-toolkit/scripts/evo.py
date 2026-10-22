@@ -87,7 +87,7 @@ def candidate_contract(task_id, attempt_id, inputs, output):
         refs.append({"path": path, "sha256": digest(raw), "bytes": len(raw)})
     return {"schema": "evo-candidate-contract-v1", "task_id": task_id, "attempt_id": attempt_id,
             "output_path": output, "write_call": candidate_write_call(output),
-            "write_instruction": "After complete feedback, replace only write_call.arguments.content with your entire candidate JSON array as text, then call native write_file directly. For an unsealed draft repair, rewrite that same complete array from your own history; do not read/edit it through Python, shell, read_file or other tools.",
+            "write_instruction": "After complete feedback, replace only write_call.arguments.content with your entire candidate JSON array as text, then call native write_file directly. For an unsealed draft repair, rewrite that same complete array from your own history. If the frozen profile declares native-draft-v1, native edit_file may also modify this exact unsealed output. No Python/shell read-modify-write or read_file.",
             "output_type": "JSON array; [] is an explicit justified empty candidate decision, still sealed for negative feedback",
             "candidate_fields": {"id": {"type": "string identifier", "prefix": task_id + "-" + attempt_id + "-"},
                 "task_id": {"const": task_id}, "attempt_id": {"const": attempt_id},
@@ -593,7 +593,7 @@ def direct_judge_probe(command):
     return False
 
 
-def verify_judge_evidence(view, fb, request_path, path_map=None):
+def verify_judge_evidence(view, fb, request_path, path_map=None, *, feedback_complete=True):
     """Audit cooperative execution, not an arbitrary-code security sandbox.
 
     A score must be returned by the one exact helper command. Visible raw HTTP
@@ -685,7 +685,9 @@ def verify_judge_evidence(view, fb, request_path, path_map=None):
             require(not any(isinstance(value, dict) and value.get("source") in ("evo-judge", "evo-judge-receipt")
                             for value in values), "additional judge feedback in Solver trace")
     require(len(matched) == 1, "requires exactly one canonical judge operation")
-    for pair in chunked:
+    for pair in chunked if feedback_complete else []:
+        # Live pre-tool checks must allow the reads that establish this
+        # completion; final sealing still requires every raw-feedback byte.
         # Complete feedback must be observed after the one judge has returned;
         # never rerun judge to recover an output-length truncation.
         positions = {(m["source"], m["line"]): i for i, m in enumerate(view["messages"])}
@@ -1227,7 +1229,7 @@ def reflection_evidence(req, request_path):
         raise ReflectionEntryNotReady(str(exc)) from exc
 
 
-def reflection_action(call, training, task_id, requests=None, executed_requests=None):
+def reflection_action(call, training, task_id, requests=None, executed_requests=None, drafts=None):
     """Finite post-judge protocol, reconstructed from native writes, never shell intent.
 
     Requests are plain data written through write_file. Only literal foreground
@@ -1240,6 +1242,7 @@ def reflection_action(call, training, task_id, requests=None, executed_requests=
     require(isinstance(args, dict), "invalid post-judge tool arguments")
     requests = requests if requests is not None else {}
     executed_requests = executed_requests if executed_requests is not None else set(requests)
+    drafts = drafts if drafts is not None else {}
     directory = contract["request_dir"]
     def request_path(value):
         return (isinstance(value, str) and posixpath.dirname(value) == directory
@@ -1257,10 +1260,28 @@ def reflection_action(call, training, task_id, requests=None, executed_requests=
             require(value == {"op": "seal-role-output", "role": "reflector", "task_id": task_id},
                     "post-judge helper is restricted to feedback reading or original Solver sealing")
         return value
-    if call.get("name") == "write_file":
-        path, content = args.get("file_path"), args.get("content")
+    if call.get("name") in ("write_file", "edit_file"):
+        path = args.get("file_path")
+        require(isinstance(path, str) and posixpath.isabs(path), "use the assigned absolute draft/request path")
+        path = posixpath.normpath(path)
+        if call["name"] == "edit_file":
+            require(training.get("candidate_edit") == "native-draft-v1", "draft edits require the declared new protocol")
+            require(path == contract["output"], "edit only this original Solver's own unsealed candidates.json")
+            require(path in drafts, "edit requires this Session's preceding candidate write")
+            require(set(args) <= {"file_path", "old_string", "new_string", "replace_all"}, "unsupported native edit arguments")
+            old, new = args.get("old_string"), args.get("new_string")
+            require(isinstance(old, str) and old and isinstance(new, str) and old != new, "native edit needs distinct literal strings")
+            require("replace_all" not in args or type(args["replace_all"]) is bool, "replace_all must be boolean")
+            previous = drafts[path]
+            count = previous.count(old)
+            require(count > 0 and (count == 1 or args.get("replace_all") is True), "edit must match the actual preceding draft uniquely, or use replace_all")
+            content = previous.replace(old, new, -1 if args.get("replace_all") is True else 1)
+            drafts[path] = content
+            return {"kind": "candidate-write", "path": path, "content": content, "via": "edit_file"}
+        content = args.get("content")
         require(isinstance(content, str), "reflection write needs literal content")
         if path == contract["output"]:
+            drafts[path] = content
             return {"kind": "candidate-write", "path": path, "content": content}
         require(request_path(path), "post-judge writes are restricted to own candidates and request directory")
         # Literal request data has no effect until the helper is invoked.
@@ -1335,7 +1356,7 @@ def reflection_operations(view, training, task, fb, contract, path_map=None):
         raise ReflectionBoundaryError("requires exactly one canonical judge operation", "judge",
                                       bad[0]["call"]["payload"]["tool_call_id"] if bad[0] else None)
     judge_pair, (judge_at, judge_returned) = judges[0]
-    requests, executed, actions, sealed = {}, set(), [], False
+    requests, executed, drafts, actions, sealed = {}, set(), {}, [], False
     for pair, (called, observed) in zip(view["pairs"], positions):
         call = pair["call"]["payload"]
         phase = "pre_judge" if called <= judge_at else "post_judge"
@@ -1360,7 +1381,7 @@ def reflection_operations(view, training, task, fb, contract, path_map=None):
                 continue
             require(called > judge_returned and called < observed, "post-judge actions must follow scoring observation")
             require(not sealed, "no tool operation is allowed after successful reflection sealing")
-            action = reflection_action(call, {**training, "agent_state": view["binding"]["agent_state"]}, task, requests, executed)
+            action = reflection_action(call, {**training, "agent_state": view["binding"]["agent_state"]}, task, requests, executed, drafts)
             require(pair["observation"]["payload"].get("stop_reason") == "completed", "post-judge operation did not complete")
             actions.append((pair, called, observed, action))
             if action["kind"] == "seal-role-output":
@@ -1659,12 +1680,12 @@ def role_seal_receipt(contract, session_id, reads, output_sha256):
             "sha256": output_sha256, "materials": reads}
 
 
-def native_role_view(training, contract, request_path):
+def native_role_view(training, contract, request_path, *, active_tool=None):
     """Bind this helper to the original claimed native role and current exec."""
     helper = regular(__file__).resolve()
     state = helper.parents[3]
     private = Path(training["private_learning"])
-    session_id = ident(os.environ.get("PENGUIN_SESSION_ID", ""))
+    session_id = ident(active_tool["session_id"] if active_tool is not None else os.environ.get("PENGUIN_SESSION_ID", ""))
     trace_root = state.parent / "traces"
     traces = sorted(trace_root.rglob(session_id + "_*.jsonl"))
     require(traces, "current native Session has no original trace")
@@ -1714,8 +1735,14 @@ def native_role_view(training, contract, request_path):
     calls = [row["payload"] for row in rows if not row.get("origin") and row.get("type") == "model_msg" and row.get("payload", {}).get("type") == "tool_call"]
     require(calls, "current seal tool call is absent from native trace")
     active = calls[-1]
-    require(standalone_helper_request({"call": {"payload": active}}, {"binding": binding}) == str(request_path),
-            "seal must be one literal foreground helper command in the current native Session")
+    if active_tool is None:
+        require(standalone_helper_request({"call": {"payload": active}}, {"binding": binding}) == str(request_path),
+                "seal must be one literal foreground helper command in the current native Session")
+    else:
+        require(active["tool_call_id"] == active_tool["tool_call_id"]
+                and active["name"] == active_tool["tool_name"]
+                and json.loads(active["arguments"]) == json.loads(active_tool["arguments"]),
+                "stage check differs from the original pending native tool call")
     return trace_view([str(path) for path in traces], binding, active_call=active["tool_call_id"])
 
 
@@ -1842,7 +1869,7 @@ def seal_role_output(req, request_path):
                     "code": "candidate_draft_invalid", "recoverable": True, "phase": "post_judge",
                     "task_id": req["task_id"], "session_id": session_id, "error": str(exc),
                     "output_path": contract["output"], "write_call": candidate_write_call(contract["output"]),
-                    "next_action": "Correct only your own unsealed candidate JSON: replace write_call.arguments.content with the complete corrected array as JSON text and call native write_file directly at the supplied path, then seal in this same Session. Use your existing history and contract examples; do not read/edit through Python, shell or read_file, query services, rescore, or read source/trace files. Existing extra sha256 fields on answer/feedback evidence are ignored; do not remove them merely for format."}
+                    "next_action": "Correct only your own unsealed candidate JSON: replace write_call.arguments.content with the complete corrected array as JSON text and call native write_file directly at the supplied path, or, under native-draft-v1, use native edit_file on this exact unsealed output; then seal in this same Session. Use your existing history and contract examples; do not read/edit through Python, shell or read_file, query services, rescore, or read source/trace files. Existing extra sha256 fields on answer/feedback evidence are ignored; do not remove them merely for format."}
     elif contract["role"] == "reflector":
         validate_candidate_file(validation)
     else:

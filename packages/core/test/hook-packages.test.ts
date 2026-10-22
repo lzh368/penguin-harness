@@ -143,6 +143,26 @@ describe("a hook package written by hand", () => {
     ]);
   });
 
+  it("retains opt-in child pre-tool scope without applying it to root prompt/stop hooks", async () => {
+    await createAgent();
+    await writePackage("scoped", {
+      pre_tool_use: [
+        { command: "root.mjs" },
+        { command: "child.mjs", scope: "subagent" },
+        { command: "bad.mjs", scope: "everywhere" },
+      ],
+      stop: [{ command: "child.mjs", scope: "subagent" }],
+      user_prompt: [{ command: "child.mjs", scope: "subagent" }],
+    });
+    const hook = (await listInstalledHooks(tmpRoot, ...ids)).find((h) => h.name === "scoped");
+    expect(hook?.pre_tool_use).toEqual([
+      { command: "root.mjs" },
+      { command: "child.mjs", scope: "subagent" },
+    ]);
+    expect(hook?.stop).toEqual([]);
+    expect(hook?.user_prompt).toEqual([]);
+  });
+
   it("gives a Session a hook that runs on every Prompt, not one a host starts by name", async () => {
     const agent = await createAgent();
     await writePackage(

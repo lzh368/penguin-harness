@@ -653,7 +653,7 @@ def protocol_module(mode):
     check(sha(mode["protocol"]) == mode["protocol_sha256"], "frozen benchmark protocol changed")
     check(sha(Path(mode["protocol"]).with_name("acceptance.py")) == mode["acceptance_sha256"], "frozen acceptance helper changed")
     for name, expected in mode.get("support_sha256", {}).items():
-        check(name in ("registration.py", "injection.py") and sha(Path(mode["protocol"]).with_name(name)) == expected,
+        check(name in ("registration.py", "injection.py", "worker_job.py") and sha(Path(mode["protocol"]).with_name(name)) == expected,
               "frozen benchmark support helper changed")
     spec = importlib.util.spec_from_file_location("evo_benchmark_protocol", mode["protocol"])
     module = importlib.util.module_from_spec(spec)
@@ -679,9 +679,11 @@ def configure_controller(req, meta, scratch, rows):
             "config": str(Path(req["config"]).resolve()), "config_sha256": sha(req["config"]),
             "protocol": str(protocol), "protocol_sha256": sha(protocol),
             "acceptance_sha256": sha(protocol.with_name("acceptance.py")),
-            "support_sha256": {name: sha(protocol.with_name(name)) for name in ("registration.py", "injection.py")},
+            "support_sha256": {name: sha(protocol.with_name(name)) for name in ("registration.py", "injection.py", "worker_job.py")},
             "freeze_request": str(scratch / "evo-guard/freeze-request.json"),
             "completion_request": str(scratch / "evo-guard/completion-request.json")}
+    if config["versions"]["skill"] == "2026.10.23.1":
+        mode["support_sha256"]["worker_job.py"] = sha(protocol.with_name("worker_job.py"))
     module = protocol_module(mode)
     module.validate_config(config, config["deployment"]["benchmark_checkout"])
     check(meta["provider"] == config["runtime"]["provider"] and meta["model_id"] == config["runtime"]["model_id"], "controller model mismatch")
@@ -845,9 +847,9 @@ def role_request(req, meta, scratch, mode):
             "2. Judge once, then read every raw feedback chunk. The answer and business investigation are now closed.\n"
             "3. On negative feedback, reason from the history already present, write your candidate array with native write_file, "
             "then execute the fixed seal request. Success returns after the complete feedback read without candidates. "
-            "After full feedback, use your existing history; when observed-v1 is declared, the supplied reflection-evidence entry can transform only already observed current-task JSON. Other post-judge tools are bound feedback read-material, own candidate/request write_file and seal-role-output. "
+            "After full feedback, use your existing history; when observed-v1 is declared, the supplied reflection-evidence entry can transform only already observed current-task JSON. Other post-judge tools are bound feedback read-material, own candidate/request write_file, declared own draft edit_file and seal-role-output. "
             "Use the candidate contract's exact output_path and native write_call template; replace content with the complete JSON array. "
-            "An unsealed correction uses that same native write_file call, not Python/shell read-modify-write.\n"
+            "Under native-draft-v1 an unsealed correction uses native write_file or edit_file on this exact candidate path, not Python/shell read-modify-write; the stage guard refuses illegal operations before execution and returns the legal entries.\n"
             "No post-judge source/trace inspection or hash calculation is needed or permitted: use the supplied input_refs, "
             "already observed tool-call ids, or answer/feedback evidence without extra identifiers. "
             "A draft/receipt repair changes no answer or learning attempt. An unexecuted request may be corrected with write_file using the supplied template; "
@@ -1511,15 +1513,95 @@ def pending_stop(payload, meta, scratch, mode):
                        "running_commands": running_commands, "queued_notices": len(lifecycle["notices"])}}
 
 
+def solver_stage_pretool(payload, state, meta, rows):
+    """Only registered original Solvers opt in; reuse the sealed-trace policy live."""
+    profile = Path(state) / "skills/evo-harness-rsi-toolkit/training.json"
+    if not profile.is_file():
+        return {}
+    training = evo.read(profile)
+    if training.get("solver_stage") != "bound-post-judge-v1":
+        return {}
+    prompts = [r["payload"]["text"] for r in rows if not r.get("origin")
+               and r.get("type") == "model_msg" and r.get("payload", {}).get("type") == "text"
+               and r["payload"].get("role") == "user" and r["payload"].get("sender") == "parent_agent"]
+    values = list(evo.json_values(prompts[0])) if prompts else []
+    tasks = [v["evo_task"] for v in values if isinstance(v, dict) and "evo_task" in v]
+    if not tasks:
+        check(not any(isinstance(v, dict) and isinstance(v.get("evo_role_seal"), dict)
+                      and v["evo_role_seal"].get("role") == "reflector" for v in values), "Solver task grant missing")
+        return {}  # Evolver and other native leaves do not inherit coordinator rules.
+    check(len(tasks) == len(prompts) == 1, "stage check requires one original Solver task")
+    task = tasks[0]["task_id"]
+    check(task in training["train_ids"] and tasks[0]["attempt_id"] == training["attempt_id"], "Solver task/attempt mismatch")
+    paths = evo.judge_paths(training, task, training["attempt_id"])
+    if not Path(paths["output"]).exists():
+        return {}  # Normal pre-score tools and business work keep their existing policy.
+    check(evo.read(Path(training["private_learning"]) / "frozen-training.json") == training, "frozen training changed")
+    contract = evo.role_contract(training, "reflector", task)
+    view = evo.native_role_view(training, contract, None, active_tool=payload)
+    check(view["binding"]["session_id"] == meta["session_id"], "Solver Session mismatch")
+    feedback = evo.read(paths["output"])
+    guidance = ("Use this Session's full feedback via read-material, reflection-evidence over already observed own data, "
+                "write_file/edit_file on " + contract["output"] + ", or the supplied seal-role-output request; "
+                "do not query services, edit answers or judge again.")
+    def deny(reason, recoverable=True):
+        return {"decision": "deny", "reason": reason + " " + guidance,
+                "output": {"refused_before_execution": True, "recoverable": recoverable,
+                           "phase": "post_judge", "task_id": task}}
+    if feedback["status"] != "ok":
+        return deny("Scoring is in flight or failed; preserve its original receipt, never score again.")
+    try:
+        evo.verify_judge_evidence(view, feedback, paths["judge_request"], feedback_complete=False)
+        _, _, actions = evo.reflection_operations(view, training, task, feedback, contract)
+    except (ValueError, KeyError, OSError, TypeError) as error:
+        return deny("Existing executed evidence is invalid: " + str(error), False)
+    requests, executed, drafts = {}, set(), {}
+    for pair, _, _, action in actions:
+        if action["kind"] == "request-write":
+            requests[action["path"]] = action["request_text"]
+        elif action["kind"] == "candidate-write":
+            drafts[action["path"]] = action["content"]
+        else:
+            executed.add(action["path"])
+        if action["kind"] == "seal-role-output" and any(isinstance(v, dict) and v.get("op") == "seal-role-output"
+                and v.get("complete") is True for v in evo.json_values(pair["observation"]["payload"]["output"])):
+            return deny("This reflection is already sealed; return the existing receipt without another tool call.")
+    call = {"name": payload["tool_name"], "arguments": payload["arguments"], "tool_call_id": payload["tool_call_id"]}
+    try:
+        action = evo.reflection_action(call, {**training, "agent_state": str(state)}, task, requests, executed, drafts)
+        if action["kind"] in ("candidate-write", "reflection-evidence"):
+            judge_pair, (_, returned) = next((p, loc) for p, loc in zip(view["pairs"], evo.observation_positions(view))
+                if evo.standalone_helper_request(p, view) == paths["judge_request"]
+                and p["call"]["payload"]["tool_call_id"] not in view.get("denied_calls", [])
+                and not evo.is_unready_judge(p, view, training, task))
+            later = [p for p, (at, _) in zip(view["pairs"], evo.observation_positions(view)) if at > returned]
+            evo.verify_material_records({**view, "pairs": later}, evo.material_records(contract["materials"][1:]), standalone=True)
+        if action["kind"] == "candidate-write":
+            check(evo.feedback(feedback, task, training["attempt_id"], feedback["answer_sha256"]), "successful task does not generate failure candidates")
+            target = Path(contract["output"])
+            if target.exists() or target.is_symlink():
+                current = evo.regular(target).read_text()
+                # edit_file updated the in-memory replay; compare its real pre-edit input.
+                previous = next((a["content"] for _, _, _, a in reversed(actions) if a["kind"] == "candidate-write"), None)
+                check(previous is not None and current == previous, "actual draft differs from this Session's preceding writes")
+        elif action["kind"] == "request-write":
+            target = Path(action["path"])
+            if target.exists() or target.is_symlink():
+                evo.regular(target)
+    except (ValueError, KeyError, OSError, TypeError) as error:
+        return deny(str(error))
+    return {}
+
+
 def hook(payload, state):
     event = payload["hook"]
     if not payload.get("trace_path"):
         return {"context": ""} if event == "user_prompt" else ({"decision": "deny", "reason": "Evo guard requires a native trace"} if event == "pre_tool_use" else {})
     meta, scratch, rows, mode = load_mode(payload["trace_path"], state)
     try:
-        # Penguin currently skips hooks for native leaves. Preserve that behavior
-        # if a future caller passes a child event; the parent validates its trace.
         if meta["source"] == "subagent":
+            if event == "pre_tool_use":
+                return solver_stage_pretool(payload, state, meta, rows)
             return {"context": ""} if event == "user_prompt" else {}
         if ((Path(state) / "skills/evo-harness-rsi-toolkit/replay.json").exists()
                 or mode is not None and mode.get("mode") == "offline-replay"):

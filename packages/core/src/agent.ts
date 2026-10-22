@@ -365,9 +365,8 @@ interface AssembledContext {
   /**
    * The hook packages this context consults: the ones installed in `agent_state/hooks/`
    * when it opened. Empty with `hooks.enabled: false` — the one switch over all of them,
-   * the packages stay installed — and for a child Session, which carries no hooks: a
-   * subagent's work belongs to its parent's Trace, and a child could not spawn a subagent
-   * anyway.
+   * the packages stay installed. Children consult only explicitly opted-in pre-tool-use
+   * commands; they never inherit root prompt/stop hooks or subagent orchestration.
    */
   hookPackages: InstalledHook[];
   /** The session_meta describing this context: the prompt and the model it runs with, and the Session-fixed facts. */
@@ -573,10 +572,19 @@ export class Agent {
     // Hook packages are not part of the request prefix, and are read on the same schedule
     // all the same: a package the model wrote during one context is consulted from the next.
     const child = spec.subagentDepth > 0 || spec.source === "subagent";
-    const hookPackages =
-      child || state.systemConfig.hooks?.enabled === false
+    const installedHooks =
+      state.systemConfig.hooks?.enabled === false
         ? []
         : await listInstalledHooks(root, projectId, agentId);
+    const hookPackages = installedHooks
+      .map((hook) => ({
+        ...hook,
+        ...(child ? { stop: [], user_prompt: [] } : {}),
+        pre_tool_use: hook.pre_tool_use.filter((command) =>
+          child ? command.scope === "subagent" : command.scope !== "subagent",
+        ),
+      }))
+      .filter((hook) => hook.stop.length || hook.user_prompt.length || hook.pre_tool_use.length);
     let systemPrompt = opts.systemPrompt;
     if (systemPrompt === undefined) {
       const installedSkills = await listInstalledSkills(root, projectId, agentId);

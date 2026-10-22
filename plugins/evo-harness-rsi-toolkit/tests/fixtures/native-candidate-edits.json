@@ -1,0 +1,30 @@
+[
+  {
+    "group": "010",
+    "source_trace": "/home/liuzh/rsi算法集成penguin/evo-harness/data/controller-tg010-v24-r1/default_project/benchmarks/evo_tg010_full_v24_r1_train/.jobs/CASE-001-tg010-train-run1-20261022T154434Z/tg010-train__6PbsaQy/agent/penguin/traces/default_agent/2026-10-22/session-2026-10-22-15-52-25-c13d4b69_001.jsonl",
+    "source_trace_sha256": "77f876fb53a40ff5db706bb9cf531bacbcae4de2985d1f314e712c67068ed725",
+    "tool_call_id": "call_00_IbYsnh4UKy6Xqmpiqtro6120",
+    "arguments": {
+      "file_path": "/logs/agent/evo-harness/roles/train_005/candidates.json",
+      "old_string": "    \"task_id\": \"train_005\",\n    \"task_id_note\": null,\n    \"attempt_id\": \"attempt-1\",",
+      "new_string": "    \"task_id\": \"train_005\",\n    \"attempt_id\": \"attempt-1\","
+    },
+    "original_verdict": "reflection_boundary_violation; recoverable=false; retained",
+    "preceding_write_sha256": "f12f5769906faa6791e0f61995c61598ee90d457f4960194309f897a7496e80f",
+    "draft_excerpt": "[\n  {\n    \"task_id\": \"train_005\",\n    \"task_id_note\": null,\n    \"attempt_id\": \"attempt-1\",\n    \"lesson\": \"SYNTHETIC method\"\n  }\n]\n"
+  },
+  {
+    "group": "018",
+    "source_trace": "/home/liuzh/rsi算法集成penguin/evo-harness/data/controller-tg018-v24-r1/default_project/benchmarks/evo_tg018_full_v24_r1_train/.jobs/CASE-001-tg018-train-run1-20261022T154626Z/tg018-train__5TDaUHu/agent/penguin/traces/default_agent/2026-10-22/session-2026-10-22-15-52-03-535dd2b2_001.jsonl",
+    "source_trace_sha256": "164b318546916f342c6ce11b5661cd4ab0f1da4b0c2c1d369abd6562c8643238",
+    "tool_call_id": "call_00_L7RNVa6pb4MlOsXH3KUk7450",
+    "arguments": {
+      "file_path": "/logs/agent/evo-harness/roles/train_003/candidates.json",
+      "old_string": "    \"task_id\": \"train_003\",\n    \"task_id_note\": null,\n    \"attempt_id\": \"attempt-1\",",
+      "new_string": "    \"task_id\": \"train_003\",\n    \"attempt_id\": \"attempt-1\","
+    },
+    "original_verdict": "reflection_boundary_violation; recoverable=false; retained",
+    "preceding_write_sha256": "fad02bffb1009d503aa26e03fe0b58bc5bf5af29fb5b2c603eb1d80d66db22b4",
+    "draft_excerpt": "[\n  {\n    \"task_id\": \"train_003\",\n    \"task_id_note\": null,\n    \"attempt_id\": \"attempt-1\",\n    \"lesson\": \"SYNTHETIC method\"\n  }\n]\n"
+  }
+]

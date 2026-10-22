@@ -29,6 +29,18 @@ helpers. It does not solve a task, call business/judge HTTP, write answers,
 edit State or author role output. Native role leaves perform those actions
 within their assigned scope. Neither wrapper nor Python helper owns a loop.
 
+Protocol `2026.10.23.1` declares `candidate_edit=native-draft-v1` and
+`solver_stage=bound-post-judge-v1`. This expands draft-edit permissions for new
+runs only; it does not reclassify historical executed calls or old verdicts.
+Only registered original Solver leaves opt in to the child pre-tool stage gate;
+other children do not inherit coordinator restrictions. After the one judge,
+the native entry permits complete feedback reads, the bound observed-data local
+helper, own unsealed candidate writes/edits and sealing. A denied request with an
+aborted native result is recorded as unexecuted and may use the returned legal
+entry; an actual executed boundary violation remains terminal. Successful seal
+makes the output immutable. Final validation still checks the complete raw
+feedback, original answer hash, candidate structure, references and trace.
+
 Ending a turn while native background work is pending is an await boundary,
 not final experiment completion. The native stop hook receives a read-only
 snapshot of this Session's running children/commands and queued completion

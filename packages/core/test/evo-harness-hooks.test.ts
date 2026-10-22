@@ -14,6 +14,7 @@ import {
   hooksDir,
   installPlugin,
   libraryPlugin,
+  readLibraryPackage,
   listInstalledHooks,
   systemConfigPath,
   userText,
@@ -72,7 +73,11 @@ beforeEach(async () => {
   sessions = [];
   await seedProject(root);
   agent = await createAgent({ agentId: ids[1] });
-  await installPlugin(root, ...ids, libraryPlugin(NAME)!);
+  await installPlugin(
+    root,
+    ...ids,
+    readLibraryPackage(path.resolve(import.meta.dirname, `../../../plugins/${NAME}`)),
+  );
   state = path.dirname(hooksDir(root, ...ids));
   script = path.join(hooksDir(root, ...ids), NAME, "guard.mjs");
   control = path.join(state, "skills", NAME, "scripts", "control.py");
@@ -116,7 +121,10 @@ describe("Evo native hook installation and execution", () => {
       name: NAME,
       version: manifest.penguin.hooks.version,
       user_prompt: [{ command: "guard.mjs", timeout: 30, trigger: "prompt" }],
-      pre_tool_use: [{ command: "guard.mjs", timeout: 30 }],
+      pre_tool_use: [
+        { command: "guard.mjs", timeout: 30 },
+        { command: "guard.mjs", timeout: 30, scope: "subagent" },
+      ],
       stop: [{ command: "guard.mjs", timeout: 30 }],
     });
     expect(await fs.readFile(script, "utf8")).toBe(
@@ -192,7 +200,7 @@ print(json.dumps({'context': 'SYNTHETIC full Evo root contract: ' + request['pro
     for (const opts of [{ source: "subagent" as const }, { subagentDepth: 1 }]) {
       const leaf = nativeHooks(await session(opts));
       expect(leaf.userPromptHooks).toEqual([]);
-      expect(leaf.preToolUseHooks).toEqual([]);
+      expect(leaf.preToolUseHooks.map((hook) => hook.name)).toEqual([NAME]);
       expect(leaf.stopHooks).toEqual([]);
     }
   });
@@ -403,6 +411,7 @@ describe("the actual installed Evo control.py behind native hooks", () => {
     expect(exported.status, exported.stderr).toBe(0);
     const profile = {
       guard_version: 2,
+      reflection_mode: "solver-session",
       train_ids: ["synthetic-member"],
       attempt_id: "attempt-1",
       private_learning: privateLearning,
