@@ -12,6 +12,7 @@ import ast
 import ctypes
 import fcntl
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -24,6 +25,11 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+
+_inspection_spec = importlib.util.spec_from_file_location(
+    "evo_inspection", Path(__file__).with_name("inspection.py"))
+inspection = importlib.util.module_from_spec(_inspection_spec)
+_inspection_spec.loader.exec_module(inspection)
 
 VERSION = 1
 IDENT = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$")
@@ -848,6 +854,74 @@ def native_file_read(view, path, content, before_call_id=None):
     return max(covered.values()) if len(covered) == len(rows) else None
 
 
+def verify_solver_skill(view, fb, path_map=None):
+    """Guarded continuous Solvers must observe cold H0 before task actions.
+
+    Call only after verify_judge_evidence has bound the profile, judge and raw
+    trace. Recreate the authorized empty package from the frozen profile; do
+    not trust current State, a copied receipt, or an arbitrary displayed file.
+    """
+    mapped = path_map or {}
+    snapshot = fb["training_snapshot"]
+    raw_profile = regular(mapped.get(snapshot, snapshot)).read_bytes()
+    require(digest(raw_profile) == fb["training_sha256"], "frozen training snapshot changed")
+    training = json.loads(raw_profile)
+    if training.get("guard_version") != 2:
+        return None
+    expected = render_skill([], training["max_bytes"])
+    workspace, state = view["binding"]["workspace"], view["binding"]["agent_state"]
+    require(posixpath.isabs(workspace) and posixpath.isabs(state), "Solver native State/workspace must be absolute")
+    slot = state.rstrip("/") + "/skills/evo-harness-learned"
+    target = slot + "/SKILL.md"
+    grants = []
+    for message in view["messages"]:
+        payload = message["payload"]
+        if payload.get("type") != "text" or payload.get("role") != "user":
+            continue
+        for value in json_values(payload["text"]):
+            grant = value.get("evo_task") if isinstance(value, dict) else None
+            if (isinstance(grant, dict) and grant.get("split") == "train"
+                    and grant.get("task_id") == fb["task_id"] and grant.get("attempt_id") == fb["attempt_id"]):
+                grants.append(grant)
+    require(grants and all(grant == grants[0] for grant in grants), "Solver needs its unique public input grant")
+    public = grants[0].get("inputs")
+    require(isinstance(public, list) and public and all(isinstance(path, str) and posixpath.isabs(path) for path in public),
+            "Solver public input grant must contain absolute paths")
+    public = {inspection._path(path, workspace) for path in public}
+    public_input = workspace.rstrip("/") + "/train_tasks/" + fb["task_id"] + "/input"
+    positions = observation_positions(view)
+    complete = native_file_read(view, target, expected.decode())
+    for pair, (called, observed) in zip(view["pairs"], positions):
+        call, output = pair["call"]["payload"], pair["observation"]["payload"]
+        if (call.get("name") != "exec_command" or output.get("stop_reason") != "completed"
+                or output.get("images") or called >= observed):
+            continue
+        try:
+            commands, workdir, redirects, _ = inspection._readonly_commands(call, workspace, slot, public, public_input)
+            argv = commands[0]["argv"]
+            full_cat = (len(commands) == 1 and not redirects and argv[0] == "cat"
+                        and [inspection._path(path, workdir) for path in inspection._file_operands(argv)] == [target]
+                        and output.get("output", "").encode() == expected)
+        except (ValueError, TypeError, KeyError, AttributeError):
+            continue
+        if full_cat:
+            complete = observed if complete is None else min(complete, observed)
+    require(complete is not None, "Solver frozen H0 Skill was not fully observed through native read_file or exact foreground cat")
+    for pair, (called, _) in zip(view["pairs"], positions):
+        if called >= complete:
+            continue
+        call = pair["call"]["payload"]
+        if call.get("name") == "read_file":
+            args = json.loads(call["arguments"])
+            path = inspection._path(args.get("file_path"), workspace)
+            require(path == target or path in public,
+                    "only granted public files or the frozen H0 Skill may be read before its complete observation")
+        else:
+            require(call.get("name") == "exec_command", "task actions may not precede the complete Solver H0 Skill read")
+            inspection._readonly_commands(call, workspace, slot, public, public_input)
+    return {"path": target, "sha256": digest(expected), "bytes": len(expected), "observed_at": complete}
+
+
 def verify_solver_inputs(view, records, before_call_id=None):
     """Keep helper receipts, with full native reads for granted public files."""
     receipts, last_read, missing = material_read_status(view, records)
@@ -909,7 +983,7 @@ def role_contract(training, role, task_id=None):
         materials = [role_file, str(private / "candidates.json"), str(private / "prebatch-library.json"), *contexts]
         validation = {"op": "validate-decisions", "contexts": contexts, "train_ids": training["train_ids"],
                       "candidates": materials[1], "library": materials[2], "decisions": output,
-                      **{key: training[key] for key in ("limits", "max_entries", "max_bytes")}}
+                      **{key: training[key] for key in ("limits", "max_bytes")}}
     return {"schema": 1, "role": role, "task_id": task_id, "config_sha256": training["config_sha256"],
             "materials": materials, "output": output, "validation": validation}
 
@@ -1194,7 +1268,7 @@ def seal_training(req):
               "candidates_file": rel(req["candidates"]), "candidates_sha256": digest(regular(req["candidates"]).read_bytes()),
               "container_candidates_path": req["candidates"], "container_library_path": req["library"],
               "library_file": rel(req["library"]), "library_sha256": digest(regular(req["library"]).read_bytes()),
-              "limits": req["limits"], "max_entries": req["max_entries"], "max_bytes": req["max_bytes"],
+              "limits": req["limits"], "max_bytes": req["max_bytes"],
               "decisions_file": rel(req["decisions"]), "decisions_sha256": digest(regular(req["decisions"]).read_bytes()),
               "skill_sha256": validate_package(req["skill"])["sha256"]}
     if training_root is not None:
@@ -1236,6 +1310,7 @@ def capture(req):
         require(req["answer"] == read(req["judge_request"])["answer"]
                 and req["feedback"] == fb["feedback_path"], "capture paths differ from judged attempt")
         judge_receipt = verify_judge_evidence(view, fb, req["judge_request"])
+        verify_solver_skill(view, fb)
         require(fb["request"]["answer"] == json.loads(answer_bytes), "judge submitted a different answer")
         verify_solver_inputs(view, material_records(req["inputs"]), judge_receipt["tool_call_id"])
     inputs = []
@@ -1294,6 +1369,7 @@ def validate_contexts(contexts, train_ids, path_map=None):
                 raise ValueError("captured input absent from Solver observations") from exc
             require(verify_judge_evidence(actual, c["feedback"], c["judge_request"]["path"], path_map)
                     == c["judge_request"], "captured judge operation changed")
+            verify_solver_skill(actual, c["feedback"], path_map)
             require(c["feedback"]["request"]["answer"] == c["answer"], "judge submitted a different answer")
     return {(c["task_id"], c["attempt_id"]): c for c in contexts}
 
@@ -1411,86 +1487,111 @@ def verify_compilation(req):
 
 READER = '''---
 name: evo-harness-learned
-description: Select relevant frozen Evo-Harness procedures for the current task.
-version: 2026.10.21.11
+description: Read the complete frozen Evo-Harness procedures for this task.
+version: 2026.10.22.2
 ---
 
-Before business API calls or writing the task answer, read this entire SKILL.md
-and index.json beside it. Prefer native read_file, requesting all remaining lines
-if truncated; a separate foreground `cat ABSOLUTE_FILE` with the complete exact
-stdout is also valid for either file. Do not pipe or redirect these complete reads.
-Before selection, inspect only public task files and directories with native
-reads or the reader's supported read-only shell commands: pwd, ls, find, cat,
-head and literal echo separators. Keep inspection commands simple; limited
-read-only combinations may use &&, ||, semicolons and pipes into bounded head
-without file operands. For find, use only type, depth, name/iname and print
-predicates; quote name patterns. Only stderr suppression to /dev/null is
-permitted as redirection. Do not run
-arbitrary code, invoke APIs, execute task programs or write files before selection.
-Do not read entry bodies before selection or unselected entries afterward.
-Choose only entries whose trigger and scope match the current task
-(zero is valid), in order of relevance. Execute one foreground native exec_command:
-`python3 -B /absolute/path/to/this/Skill/select.py --ids <comma-separated IDs>`.
-Use --ids '' for an empty selection. Alternatively set exec_command.workdir to this
-Skill directory and use select.py, or use `cd ABS_SKILL_DIR && python3 -B select.py
---ids IDS`. Keep selector stdout in the tool result; do not redirect it, pipe it,
-wrap it in another program, or print a fabricated receipt. The frozen native
-State supplies enough output capacity for the complete JSON. If successful
-selector stdout is truncated, report a setup failure; do not change State or
-rerun a successful selection. The selector enforces frozen entry and UTF-8 byte budgets
-and returns the complete selected guidance and its hashes. If it reports only a
-selection-budget error, choose fewer entries and retry before solving; otherwise
-report the error. Exactly one successful selection is required. Observe the whole
-successful output before business API calls or writing the answer. Never read
-entry bodies separately to bypass the budget. The native trace retains the receipt;
-you do not need to create another receipt file.
-The library is frozen: do not edit it, learn from test feedback, or fetch training
-answers. Current task instructions and observed facts take precedence over a
-procedure whose preconditions are not met. Empty guidance is normal cold start.
+Read this entire SKILL.md before business API calls, executing task programs or
+writing the answer. Every task receives this same complete frozen file; there
+is no entry selection, index or executable loader. Use native read_file and
+request all remaining lines if paginated, or a separate foreground
+`cat ABSOLUTE_SKILL_PATH` with complete exact stdout. Do not pipe or redirect
+that read. Observe every line, including all procedures below. Missing or
+truncated output must be completed by reading the missing lines before acting;
+never assume an omitted procedure. Do not change State or output settings.
+
+Before the complete read, inspect only public task files/directories or this
+SKILL with native reads or literal read-only pwd, ls, find, cat, head and echo
+separators. Limited combinations may use &&, ||, semicolons or bounded stdin
+head. Use only find type/depth/name/iname/print predicates with quoted name
+patterns. Only literal stderr suppression to /dev/null is allowed. A find with
+one root at/below public input (/app/input here), explicit -type f, optional
+nonrepeated -maxdepth/-mindepth/-name/-iname and terminal -print may pipe directly
+to bare sort with no arguments, then optionally bounded stdin head. For example:
+`find /app/input -type f | sort`. This lists names; it does not prove reading
+file contents. Other programs, APIs, file writes and sort forms must wait until
+this entire Skill has been observed. Material-access rules still apply afterward.
+
+A loaded procedure is not proof that its premises hold. Check its field, entity,
+time basis, record granularity and necessary conditions against the current
+task and authorized business facts, then apply only the relevant supported
+steps. Obtain thresholds, defaults, output labels and source priorities from
+those facts; do not supply an unverified convention. Transfer a condition to
+another field only with an applicable definition or a valid inference from
+authorized facts. If a premise is unresolved, follow a supported checking branch
+or leave that rule unused and continue the task. Preserve correct work and
+produce only the requested answer. This file is frozen: do not edit it, obtain
+training answers or learn from test feedback. Empty procedures are normal H0.
+
+## Frozen procedures
+
 '''
 
-SELECTOR = '''#!/usr/bin/env python3
-import argparse, hashlib, json
-from pathlib import Path
-
-def select(root, ids):
-    index = json.loads((root / "index.json").read_text())
-    assert len(ids) == len(set(ids)), "duplicate selection"
-    assert len(ids) <= index["max_entries"], "entry budget exceeded"
-    available = {e["id"]: e for e in index["entries"]}
-    parts, hashes = [], {}
-    for key in ids:
-        e = available[key]
-        path = root / e["file"]
-        assert not path.is_symlink() and path.resolve().is_relative_to(root.resolve())
-        raw = path.read_bytes()
-        assert hashlib.sha256(raw).hexdigest() == e["sha256"], "frozen entry changed"
-        parts.append(raw.decode())
-        hashes[key] = e["sha256"]
-    text = "\\n\\n".join(parts)
-    assert len(text.encode()) <= index["max_bytes"], "context budget exceeded; select fewer entries"
-    return {"selected": ids, "entry_hashes": hashes, "text": text,
-            "bytes": len(text.encode()), "sha256": hashlib.sha256(text.encode()).hexdigest()}
-
-if __name__ == "__main__":
-    p = argparse.ArgumentParser()
-    p.add_argument("--ids", required=True)
-    args = p.parse_args()
-    print(json.dumps(select(Path(__file__).resolve().parent,
-                           args.ids.split(",") if args.ids else []), ensure_ascii=False))
-'''
+FULL_SKILL_SCHEMA = "evo-full-skill-v1"
+FULL_SKILL_OPEN = "<!-- evo-full-skill-v1\n"
+FULL_SKILL_CLOSE = "-->\n\n"
 
 
-def validate_index_readability(raw):
-    """Match native read_file's 2000 UTF-16-code-unit physical line limit.
-
-    Check actual JSON, including indentation/quoting/escaping. Python's
-    splitlines() is unsuitable here: JS read_file splits bytes only on LF, so
-    an embedded U+2028 separator is still part of the same physical line.
-    """
+def validate_skill_readability(raw):
+    """No native read_file physical line may be silently shortened."""
+    require(b"\0" not in raw and b"\r" not in raw,
+            "SKILL.md must be native-readable UTF-8 text with LF line endings, without NUL or bare CR")
     for number, line in enumerate(raw.decode("utf-8").split("\n"), 1):
         require(len(line.encode("utf-16-le")) // 2 <= 2000,
-                f"index.json line {number} exceeds native read_file's 2000 UTF-16 unit limit; shorten trigger/scope metadata")
+                f"SKILL.md line {number} exceeds native read_file's 2000 UTF-16 unit limit; wrap without omitting content")
+
+
+def render_skill(entries, max_bytes):
+    """Deterministic concatenation, not another learning or selection step."""
+    require(type(max_bytes) is int and max_bytes > 0, "invalid byte budget")
+    manifest = {"schema": FULL_SKILL_SCHEMA, "max_bytes": max_bytes, "entries": []}
+    sections = []
+    for entry in sorted(entries, key=lambda e: e["id"]):
+        topic = f"Topic: {entry['topic']}\n" if entry["level"] == "topic" else ""
+        raw = (f"## {entry['id']}\n\nLevel: {entry['level']}\n" + topic +
+               f"Trigger: {entry['trigger']}\nScope: {entry['scope']}\n\n{entry['body']}\n\n").replace("\r\n", "\n").encode()
+        manifest["entries"].append({"id": entry["id"], "level": entry["level"],
+                                    "bytes": len(raw), "sha256": digest(raw)})
+        sections.append(raw)
+    raw = (READER.encode() + FULL_SKILL_OPEN.encode() + encoded(manifest) +
+           FULL_SKILL_CLOSE.encode() + b"".join(sections))
+    require(len(raw) <= max_bytes, "complete SKILL.md exceeds frozen byte budget; compact the unsealed draft without truncation")
+    validate_skill_readability(raw)
+    return raw
+
+
+def parse_skill(raw):
+    """Verify the single-file envelope and every byte of every full procedure."""
+    prefix = (READER + FULL_SKILL_OPEN).encode()
+    require(raw.startswith(prefix), "learned reader or full-Skill format changed")
+    tail = raw[len(prefix):]
+    marker = FULL_SKILL_CLOSE.encode()
+    require(marker in tail, "missing full-Skill manifest terminator")
+    manifest_raw, sections = tail.split(marker, 1)
+    manifest = json.loads(manifest_raw)
+    require(isinstance(manifest, dict) and set(manifest) == {"schema", "max_bytes", "entries"}
+            and manifest["schema"] == FULL_SKILL_SCHEMA
+            and type(manifest["max_bytes"]) is int and manifest["max_bytes"] > 0
+            and isinstance(manifest["entries"], list), "invalid full-Skill manifest")
+    require(encoded(manifest) == manifest_raw, "noncanonical full-Skill manifest")
+    require(len(raw) <= manifest["max_bytes"], "complete SKILL.md exceeds frozen byte budget")
+    validate_skill_readability(raw)
+    ids, offset = [], 0
+    for entry in manifest["entries"]:
+        require(isinstance(entry, dict) and set(entry) == {"id", "level", "bytes", "sha256"},
+                "invalid full-Skill entry manifest")
+        ident(entry["id"])
+        require(entry["level"] in ("general", "topic") and type(entry["bytes"]) is int
+                and entry["bytes"] > 0, "invalid full-Skill entry")
+        data = sections[offset:offset + entry["bytes"]]
+        require(len(data) == entry["bytes"] and digest(data) == entry["sha256"], "full-Skill entry fingerprint mismatch")
+        require(data.startswith(f"## {entry['id']}\n\nLevel: {entry['level']}\n".encode()),
+                "full-Skill entry identity mismatch")
+        ids.append(entry["id"])
+        offset += entry["bytes"]
+    require(ids == sorted(set(ids)), "duplicate or unordered full-Skill entries")
+    require(offset == len(sections), "unlisted content in full Skill")
+    return manifest
 
 
 def rename_new(source, destination):
@@ -1729,8 +1830,7 @@ def publish_skill(stage, dest, placeholder):
 def export_skill(req):
     entries = read(req["library"])
     validate_entries(entries, req["limits"])
-    require(type(req["max_entries"]) is int and 0 < req["max_entries"] <= 5, "invalid injection count")
-    require(type(req["max_bytes"]) is int and req["max_bytes"] > 0, "invalid byte budget")
+    raw = render_skill(entries, req["max_bytes"])
     dest = Path(req["output"])
     require(not dest.is_symlink(), "export destination is a symlink")
     check_prior_publication(dest)
@@ -1739,46 +1839,20 @@ def export_skill(req):
     with tempfile.TemporaryDirectory(dir=dest.parent, prefix=".skill-") as tmp:
         stage = Path(tmp) / "skill"
         stage.mkdir()
-        index = {"schema": VERSION, "max_entries": req["max_entries"], "max_bytes": req["max_bytes"], "entries": []}
-        for e in sorted(entries, key=lambda item: item["id"]):
-            path = f"{e['level']}/{e['id']}.md"
-            raw = (f"# {e['id']}\n\nTrigger: {e['trigger']}\nScope: {e['scope']}\n\n{e['body']}\n").encode()
-            require(len(raw) <= req["max_bytes"], "entry cannot fit injection budget")
-            write_once(stage / path, raw)
-            index["entries"].append({"id": e["id"], "level": e["level"], "trigger": e["trigger"],
-                                     "scope": e["scope"], "file": path, "sha256": digest(raw)})
-        write_once(stage / "SKILL.md", READER.encode())
-        write_once(stage / "select.py", SELECTOR.encode())
-        index_raw = encoded(index)
-        validate_index_readability(index_raw)
-        write_once(stage / "index.json", index_raw)
+        write_once(stage / "SKILL.md", raw)
         publish_skill(stage, dest, placeholder)
-    return {"files": filemap(dest), "sha256": digest(encoded(filemap(dest))), "empty": not entries}
+    return validate_package(dest)
 
 
 def validate_package(root):
     root = Path(root)
     files = filemap(root)
-    require((root / "SKILL.md").read_text() == READER, "learned reader changed")
-    require((root / "select.py").read_text() == SELECTOR, "learned executable changed")
-    index_raw = regular(root / "index.json").read_bytes()
-    validate_index_readability(index_raw)
-    index = json.loads(index_raw)
-    require(index["schema"] == VERSION and type(index["max_entries"]) is int
-            and 0 < index["max_entries"] <= 5 and type(index["max_bytes"]) is int
-            and index["max_bytes"] > 0, "invalid selection budgets")
-    allowed, ids = {"SKILL.md", "select.py", "index.json"}, set()
-    for e in index["entries"]:
-        ident(e["id"])
-        require(e["id"] not in ids, "duplicate package entry")
-        ids.add(e["id"])
-        require(e["level"] in ("general", "topic"), "invalid level")
-        require(e["file"] == f"{e['level']}/{e['id']}.md", "invalid entry path")
-        require(files.get(e["file"]) == e["sha256"], "entry fingerprint mismatch")
-        require((root / e["file"]).stat().st_size <= index["max_bytes"], "entry exceeds byte budget")
-        allowed.add(e["file"])
-    require(set(files) == allowed, "unlisted support file or raw evidence in learned package")
-    return {"files": files, "sha256": digest(encoded(files)), "empty": not ids}
+    require({p.name for p in root.iterdir()} == {"SKILL.md"},
+            "full learned package cannot contain additional files or directories")
+    require(set(files) == {"SKILL.md"}, "full learned package must contain only SKILL.md")
+    manifest = parse_skill(regular(root / "SKILL.md").read_bytes())
+    return {"files": files, "sha256": digest(encoded(files)), "empty": not manifest["entries"],
+            "format": FULL_SKILL_SCHEMA, "max_bytes": manifest["max_bytes"], "entries": len(manifest["entries"])}
 
 
 def journal(req):

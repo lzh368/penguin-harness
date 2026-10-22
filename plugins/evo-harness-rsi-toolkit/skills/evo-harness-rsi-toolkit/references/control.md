@@ -149,7 +149,7 @@ A verified identical no-op uses the same version and identical State file
 contents, even if tar metadata differs.
 
 verify-freeze reruns all original export/trace evidence every time. It checks
-the exact final slot, valid empty H0 reader, unchanged selection budgets,
+the exact final slot, valid H0 Reader with empty rules, unchanged full-file byte budget,
 unchanged State outside the slot/top-level integer version, native snapshots
 without links/escape/duplicates, and actual Target hashes. An earlier successful
 receipt never substitutes for this recheck.
@@ -187,8 +187,8 @@ model request while still running. Keep after-matrix State hashes, termination
 and cost evidence in the experiment record. Call verify-completion before
 returning; the native stop hook checks again and records evo-acceptance.json.
 Completion also verifies actual Skill use from each original Harbor trial:
-unchanged frozen State, full reader/index reads and the selector's complete,
-hash-bound output. This audit does not alter test scores or expose test answers
+unchanged frozen State and complete observations of the same hash-bound
+SKILL.md from every Target. This audit does not alter test scores or expose test answers
 to learners. Missing injection evidence leaves the raw measurement intact but
 cannot establish a complete method run. Missing, incomplete or changed evidence
 yields method_failed and blocks Goal completion; it does not select H0 as a substitute.

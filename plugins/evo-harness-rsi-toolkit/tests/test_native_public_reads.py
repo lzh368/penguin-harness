@@ -125,7 +125,7 @@ class NativePublicReadTests(unittest.TestCase):
 
 class NativeCaptureTests(unittest.TestCase):
     def setUp(self):
-        self.fixture=test_evo.BatchTests('test_complete_batch_compiles_exports_and_selects_exact_content')
+        self.fixture=test_evo.BatchTests('test_complete_batch_compiles_and_exports_one_complete_skill')
         self.fixture.setUp();self.addCleanup(self.fixture.doCleanups)
         f=self.fixture
         c=evo.read(f.contexts[0]);self.original=c

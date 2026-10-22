@@ -1,13 +1,16 @@
 """Synthetic native-hook requests; no model, Harbor or benchmark service calls."""
 import importlib.util
+from functools import lru_cache
 import json
 import os
 from pathlib import Path
 import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
+from test_evo import h0_read_rows
 from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "skills/evo-harness-rsi-toolkit/scripts/control.py"
@@ -15,6 +18,33 @@ sys.path.insert(0, str(SCRIPT.parent))
 spec = importlib.util.spec_from_file_location("evo_control_test", SCRIPT)
 control = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(control)
+
+
+@lru_cache(maxsize=1)
+def native_dependency_checkout():
+    """Optional read-only local SDK/YAML dependency reuse, never another method.
+
+    Fresh offline worktrees may have no node_modules. An override is accepted
+    only at the same commit with byte-identical tracked core/server sources and
+    dependency manifests; production method code still comes from SCRIPT.
+    """
+    current = SCRIPT.parents[5]
+    target = Path(os.environ.get("EVO_NATIVE_REPO", current)).resolve()
+    if target == current.resolve():
+        return current
+    def git(root, *args):
+        return subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()
+    if git(current, "rev-parse", "HEAD") != git(target, "rev-parse", "HEAD"):
+        raise ValueError("offline native dependency checkout must have the same source commit")
+    groups = ("packages/core/src", "packages/server/src", "packages/core/package.json",
+              "packages/server/package.json", "package.json", "pnpm-lock.yaml")
+    tracked = git(current, "ls-files", *groups).splitlines()
+    if tracked != git(target, "ls-files", *groups).splitlines() or not tracked:
+        raise ValueError("offline native dependency source inventory differs")
+    for relative in tracked:
+        if (current / relative).read_bytes() != (target / relative).read_bytes():
+            raise ValueError("offline native dependency source differs: " + relative)
+    return target
 
 
 class ControlTests(unittest.TestCase):
@@ -40,7 +70,7 @@ class ControlTests(unittest.TestCase):
             "answer_dir": str(self.workspace / "submission/answers"), "feedback_dir": str(self.private / "feedback"),
             "workspace": str(self.workspace), "runtime": self.runtime, "training_budget_usd": 1,
             "solving_timeout_sec": 21600, "compilation_reserve_sec": 3600,
-            "limits": {"general": 5, "topic": 5}, "max_entries": 5, "max_bytes": 16000}
+            "limits": {"general": 5, "topic": 5}, "max_bytes": 16000}
         self.write(self.skill / "training.json", self.profile)
         for task in self.profile["train_ids"]:
             file = self.workspace / "train_tasks" / task / "instruction.md"
@@ -50,7 +80,7 @@ class ControlTests(unittest.TestCase):
         self.library = self.root / "library.json"
         self.library.write_text("[]")
         control.evo.export_skill({"library": str(self.library), "limits": {"general": 5, "topic": 5},
-            "max_entries": 5, "max_bytes": 16000, "output": str(self.state / "skills/evo-harness-learned")})
+            "max_bytes": 16000, "output": str(self.state / "skills/evo-harness-learned")})
         self.meta = {"session_id": "synthetic-root", "agent_state": str(self.state), "workspace": str(self.workspace),
                      "source": "cli", "provider": "fixture", "model_id": "no-model"}
         self.trace = self.state.parent / "traces/synthetic-root_001.jsonl"
@@ -258,7 +288,7 @@ class ControlTests(unittest.TestCase):
         second = self.trace.parent / (session + "_002.jsonl")
         self.append_trace(first, [{"type": "session_meta", "payload": binding},
             {"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "parent_agent", "text": control.evo.native_prompt(prepared["call"])}}]
-            + reads(grants[0]["inputs"]))
+            + h0_read_rows(binding, self.profile["max_bytes"]) + reads(grants[0]["inputs"]))
         self.append_trace(second, [{"type": "session_meta", "payload": binding}]
             + pair(evo.judge_stdout(feedback), generated["command"]) + reads([paths["output"]]))
         self.append_trace(self.trace, [{"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "harness",
@@ -524,7 +554,7 @@ class ControlTests(unittest.TestCase):
 
     def format_fixture(self, completed=True, from_file=False):
         config = self.root / "format-config.json"
-        self.write(config, {"deployment": {"node": shutil.which("node"), "penguin_checkout": str(SCRIPT.parents[5])}})
+        self.write(config, {"deployment": {"node": shutil.which("node"), "penguin_checkout": str(native_dependency_checkout())}})
         mode = {"mode": "controller", "session_id": self.meta["session_id"], "config": str(config), "config_sha256": control.sha(config),
                 "completion_request": str(self.scratch / "evo-guard/completion-request.json")}
         self.write(self.scratch / control.MARKER, mode)
@@ -845,6 +875,7 @@ class ControlTests(unittest.TestCase):
             inputs = [str(self.workspace / "train_tasks" / task / "instruction.md"), str(self.workspace / "environment_access.md")]
             rows = [{"type": "session_meta", "payload": binding},
                     {"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "parent_agent", "text": control.evo.native_prompt(prepared["call"])}}]
+            rows += h0_read_rows(binding, self.profile["max_bytes"])
             rows += reads(inputs)
             rows += pair("exec_command", evo.judge_stdout(feedback), {"cmd": generated["command"]})
             rows += reads([paths["output"]])
@@ -893,7 +924,7 @@ class ControlTests(unittest.TestCase):
         before_decisions = decisions.read_bytes()
         checked = evo.execute({"op": "validate-decisions", "train_ids": self.profile["train_ids"], "contexts": contexts,
             "candidates": str(candidates), "decisions": str(decisions), "library": str(self.private / "prebatch-library.json"),
-            "limits": self.profile["limits"], "max_entries": 5, "max_bytes": 16000})
+            "limits": self.profile["limits"], "max_bytes": 16000})
         self.assertTrue(checked["complete"])
         self.assertEqual(decisions.read_bytes(), before_decisions)
         materials = [str(self.private / "roles/evolver.md"), str(candidates), str(self.private / "prebatch-library.json"), *contexts]
@@ -905,9 +936,9 @@ class ControlTests(unittest.TestCase):
             "library": str(self.private / "prebatch-library.json"), "limits": self.profile["limits"], "output": str(compiled)}
         evo.compile_batch(compile_request)
         skill = self.workspace / "submission/skill"
-        evo.export_skill({**compile_request, "library": str(compiled), "output": str(skill), "max_entries": 5, "max_bytes": 16000})
+        evo.export_skill({**compile_request, "library": str(compiled), "output": str(skill), "max_bytes": 16000})
         seal = {**compile_request, "op": "seal-training", "private_learning": str(self.private), "skill": str(skill),
-            "roles": roles, "runtime": self.runtime, "max_entries": 5, "max_bytes": 16000, "output": str(self.private / "training-export.json")}
+            "roles": roles, "runtime": self.runtime, "max_bytes": 16000, "output": str(self.private / "training-export.json")}
         evidence_before = {str(path): path.read_bytes() for directory in (self.trace.parent, self.private / "feedback")
                            for path in directory.rglob("*") if path.is_file()}
         bad_runtimes = [{k: v for k, v in self.runtime.items() if k not in ("effective_reasoning_effort", "client_type")},

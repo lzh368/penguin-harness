@@ -24,6 +24,7 @@ def install_training(root, train):
     helper = root / "method/scripts/evo.py"
     helper.parent.mkdir(parents=True)
     helper.write_bytes(TOOL.read_bytes())
+    helper.with_name("inspection.py").write_bytes(TOOL.with_name("inspection.py").read_bytes())
     training = {"train_ids": train, "attempt_id": "attempt-1", "config_sha256": "a" * 64,
                 "private_learning": str(root / "private"), "answer_dir": str(root / "answers"),
                 "feedback_dir": str(root / "private/feedback")}
@@ -40,6 +41,16 @@ def judge_request(root, training, task, url="http://127.0.0.1:9005/api/judge"):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(evo.encoded(req))
     return req, path
+
+
+def h0_read_rows(binding, max_bytes=16000, call_id="read-frozen-h0"):
+    raw = evo.render_skill([], max_bytes).decode()
+    lines = raw.split("\n")[:-1]
+    path = binding["agent_state"] + "/skills/evo-harness-learned/SKILL.md"
+    return [{"type": "model_msg", "payload": {"type": "tool_call", "name": "read_file",
+        "tool_call_id": call_id, "arguments": json.dumps({"file_path": path, "limit": 2000})}},
+        {"type": "model_msg", "payload": {"type": "tool_call_output", "tool_call_id": call_id,
+        "stop_reason": "completed", "output": "\n".join(f"{n:6}\t{line}" for n, line in enumerate(lines, 1))}}]
 
 
 class BatchTests(unittest.TestCase):
@@ -84,6 +95,8 @@ class BatchTests(unittest.TestCase):
                      "tool_call_id": "judge-1"}},
                     {"type": "model_msg", "payload": {"type": "tool_call_output", "tool_call_id": "judge-1",
                      "output": "exit code 0\n" + json.dumps(fb)}}]
+            if self.training.get("guard_version") == 2:
+                rows[2:2] = h0_read_rows(binding, self.training["max_bytes"])
             trace.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
             dest = self.root / f"{task}-context.json"
             req = {"split": "train", "task_id": task, "attempt_id": "attempt-1", "train_ids": self.train,
@@ -112,17 +125,20 @@ class BatchTests(unittest.TestCase):
         path.write_bytes(evo.encoded(value))
         return path
 
-    def test_complete_batch_compiles_exports_and_selects_exact_content(self):
+    def test_complete_batch_compiles_and_exports_one_complete_skill(self):
         self.assertEqual(evo.compile_batch(self.req)["candidates"], 5)
         pkg = self.root / "skill"
         receipt = evo.export_skill({"library": self.req["output"], "limits": self.req["limits"],
-                                    "max_entries": 5, "max_bytes": 16000, "output": str(pkg)})
+                                    "max_bytes": 16000, "output": str(pkg)})
         self.assertEqual(receipt, evo.validate_package(pkg))
-        selected = json.loads(subprocess.check_output([sys.executable, "-B", str(pkg / "select.py"),
-                                                       "--ids", "ledger-procedure"], text=True))
-        self.assertIn(self.entry["body"], selected["text"])
-        self.assertEqual(selected["bytes"], len(selected["text"].encode()))
-        self.assertFalse(any("candidate" in p or "context" in p for p in receipt["files"]))
+        raw = (pkg / "SKILL.md").read_bytes()
+        self.assertEqual(set(receipt["files"]), {"SKILL.md"})
+        self.assertEqual({p.name for p in pkg.iterdir()}, {"SKILL.md"})
+        self.assertEqual(receipt["format"], "evo-full-skill-v1")
+        self.assertEqual(receipt["entries"], 1)
+        self.assertEqual(receipt["max_bytes"], 16000)
+        self.assertEqual(raw.decode().count(self.entry["body"]), 1)
+        self.assertEqual(evo.parse_skill(raw)["entries"][0]["id"], self.entry["id"])
         self.assertFalse(list(pkg.rglob("__pycache__")))
 
     def test_partial_batch_cannot_compile(self):
@@ -307,17 +323,21 @@ class BatchTests(unittest.TestCase):
         receipts = []
         for name in ("H0", "final"):
             receipts.append(evo.export_skill({"library": str(self.library), "limits": self.req["limits"],
-                          "max_entries": 5, "max_bytes": 16000, "output": str(self.root / name)}))
+                          "max_bytes": 16000, "output": str(self.root / name)}))
         self.assertEqual(receipts[0], receipts[1])
-        output = subprocess.check_output([sys.executable, "-B", str(self.root / "H0/select.py"), "--ids", ""], text=True)
-        self.assertEqual(json.loads(output)["text"], "")
+        raw = (self.root / "H0/SKILL.md").read_bytes()
+        self.assertEqual(raw, (self.root / "final/SKILL.md").read_bytes())
+        self.assertTrue(raw.startswith(evo.READER.encode()))
+        self.assertEqual(evo.parse_skill(raw)["entries"], [])
+        self.assertTrue(receipts[0]["empty"])
+        self.assertGreater(len(raw), 0)
 
     def test_export_refuses_symlink_unlisted_trace_or_modified_code(self):
         pkg = self.root / "skill"
         evo.export_skill({"library": str(self.library), "limits": self.req["limits"],
-                          "max_entries": 5, "max_bytes": 16000, "output": str(pkg)})
+                          "max_bytes": 16000, "output": str(pkg)})
         (pkg / "raw.json").write_text("{}")
-        with self.assertRaisesRegex(ValueError, "unlisted"):
+        with self.assertRaises(ValueError):
             evo.validate_package(pkg)
         (pkg / "raw.json").unlink()
         (pkg / "raw.json").symlink_to(self.library)
@@ -430,65 +450,79 @@ class BatchTests(unittest.TestCase):
             evo.compile_batch(self.req)
 
     def test_role_prevalidation_preserves_draft_and_checks_export_budget(self):
-        request = {**self.req, "max_entries": 5, "max_bytes": 16000}
+        request = {**self.req, "max_bytes": 16000}
         before = Path(request["decisions"]).read_bytes()
         result = evo.validate_decisions(request)
         self.assertTrue(result["complete"])
         self.assertEqual(Path(request["decisions"]).read_bytes(), before)
         self.assertFalse(Path(self.req["output"]).exists())
-        with self.assertRaisesRegex(ValueError, "cannot fit"):
+        with self.assertRaisesRegex(ValueError, "complete SKILL.md exceeds frozen byte budget"):
             evo.validate_decisions({**request, "max_bytes": 5})
         with self.assertRaisesRegex(ValueError, "namespace"):
             evo.validate_candidate_file({**self.req, "candidate_prefix": "train_001-attempt-1-"})
         self.assertTrue(evo.validate_candidate_file(self.req)["complete"])
 
-    def test_unreadable_index_metadata_is_rejected_before_decisions_are_sealed(self):
+    def test_unreadable_skill_metadata_is_rejected_before_decisions_are_sealed(self):
         self.decisions[0]["entry"]["trigger"] = "x" * 2100
         self.save("decisions", self.decisions)
-        request = {**self.req, "max_entries": 5, "max_bytes": 16000}
+        request = {**self.req, "max_bytes": 16000}
         before = Path(request["decisions"]).read_bytes()
-        with self.assertRaisesRegex(ValueError, "2000 UTF-16.*shorten trigger/scope"):
+        with self.assertRaisesRegex(ValueError, "2000 UTF-16"):
             evo.validate_decisions(request)
         self.assertEqual(Path(request["decisions"]).read_bytes(), before)
         self.assertFalse(Path(request["output"]).exists())
 
-    def test_actual_serialized_index_line_limit_matches_native_utf16_boundaries(self):
-        # Measure the emitted framing rather than assuming field length or
-        # forgetting that sorted JSON places trigger last (without a comma).
-        empty_line = next(line for line in evo.encoded({"entries": [{"id": "synthetic", "trigger": ""}]}).decode().split("\n")
-                          if '"trigger":' in line)
-        overhead = len(empty_line.encode("utf-16-le")) // 2
+    def test_binary_or_bare_cr_body_is_rejected_before_decision_seal(self):
+        for character in ("\0", "\r"):
+            self.decisions[0]["entry"]["body"] = "Retain step one." + character + "Check step two."
+            self.save("decisions", self.decisions)
+            request = {**self.req, "max_bytes": 16000}
+            before = Path(request["decisions"]).read_bytes()
+            with self.assertRaisesRegex(ValueError, "native-readable UTF-8 text with LF"):
+                evo.validate_decisions(request)
+            self.assertEqual(Path(request["decisions"]).read_bytes(), before)
+            self.assertFalse(Path(request["output"]).exists())
+
+    def test_actual_full_skill_line_limit_matches_native_utf16_boundaries(self):
+        # Metadata is in the readable entry body, not a separate index. Test
+        # actual emitted framing, including Unicode and literal quotation marks.
+        example_line = next(line for line in evo.render_skill([self.entry], 16000).decode().split("\n")
+                          if line.startswith("Trigger:"))
+        overhead = (len(example_line.encode("utf-16-le")) - len(self.entry["trigger"].encode("utf-16-le"))) // 2
         capacity = 2000 - overhead
         values = [("ascii", "x" * capacity, "x" * (capacity + 1)),
                   ("emoji", "😀" * (capacity // 2) + "x" * (capacity % 2),
                    "😀" * (capacity // 2 + 1)),
-                  ("escaped_quote", '"' * (capacity // 2) + "x" * (capacity % 2),
-                   '"' * (capacity // 2 + 1)),
+                  ("literal_quote", '"' * capacity, '"' * (capacity + 1)),
                   ("unicode_line_separator", "x" + "\u2028" * (capacity - 1), "x" + "\u2028" * capacity)]
         for label, valid, invalid in values:
             with self.subTest(label=label):
-                self.save("index-library", [{**self.entry, "trigger": valid}])
-                base = {"library": str(self.root / "index-library.json"), "limits": self.req["limits"],
-                        "max_entries": 5, "max_bytes": 16000}
+                self.save("readability-library", [{**self.entry, "trigger": valid}])
+                base = {"library": str(self.root / "readability-library.json"), "limits": self.req["limits"],
+                        "max_bytes": 16000}
                 package = self.root / ("readable-" + label)
                 evo.export_skill({**base, "output": str(package)})
-                raw = (package / "index.json").read_bytes()
+                raw = (package / "SKILL.md").read_bytes()
                 self.assertEqual(max(len(line.encode("utf-16-le")) // 2 for line in raw.decode().split("\n")), 2000)
                 self.assertFalse(evo.validate_package(package)["empty"])
-                self.save("index-library", [{**self.entry, "trigger": invalid}])
+                self.save("readability-library", [{**self.entry, "trigger": invalid}])
                 failed = self.root / ("unreadable-" + label)
                 with self.assertRaisesRegex(ValueError, "2000 UTF-16"):
                     evo.export_skill({**base, "output": str(failed)})
                 self.assertFalse(failed.exists())
 
-    def test_package_revalidation_rejects_unreadable_index_serialization(self):
+    def test_package_revalidation_rejects_changed_full_skill_content(self):
         package = self.root / "readability-package"
-        self.save("index-library", [{**self.entry, "trigger": "x" * 1000, "scope": "y" * 1000}])
-        evo.export_skill({"library": str(self.root / "index-library.json"), "limits": self.req["limits"],
-                          "max_entries": 5, "max_bytes": 16000, "output": str(package)})
-        index = evo.read(package / "index.json")
-        (package / "index.json").write_text(json.dumps(index, ensure_ascii=False))
-        with self.assertRaisesRegex(ValueError, "2000 UTF-16"):
+        self.save("readability-library", [self.entry])
+        evo.export_skill({"library": str(self.root / "readability-library.json"), "limits": self.req["limits"],
+                          "max_bytes": 16000, "output": str(package)})
+        file = package / "SKILL.md"
+        original = file.read_bytes()
+        file.write_bytes(original.replace(self.entry["body"].encode(), b"Unsupported changed rule."))
+        with self.assertRaises(ValueError):
+            evo.validate_package(package)
+        file.write_bytes(original + b"Unlisted extra content\n")
+        with self.assertRaises(ValueError):
             evo.validate_package(package)
 
     def test_reading_public_api_response_example_is_not_another_judge(self):

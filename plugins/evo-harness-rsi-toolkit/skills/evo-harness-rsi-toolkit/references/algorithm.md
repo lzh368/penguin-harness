@@ -1,17 +1,22 @@
 # Algorithm provenance and adaptations
 
-Verified 2026-10-21 against arXiv **2608.15071v2** (§3, Algorithm 1, §4.5,
+Paper checked 2026-10-21 against arXiv **2608.15071v2** (§3, Algorithm 1, §4.5,
 §4.6, Appendix F) and official release commit
 `3c7c7b8c62a3f07da1d4407aa03f0ca079954bcf` in
 [A-EVO-Lab/a-evolve](https://github.com/A-EVO-Lab/a-evolve/tree/3c7c7b8c62a3f07da1d4407aa03f0ca079954bcf).
-Read implementation paths `evo_harness/cl_bench.py` (proposal, curator,
-general curator, selector), `swe_bench.py`, `terminal_bench.py`, and launchers.
+Read implementation paths `evo_harness/cl_bench.py`, `swe_bench.py`,
+`terminal_bench.py`, and launchers. The CL loading path below was rechecked
+against that same local commit on 2026-10-22.
 
 The paper formalizes frozen solver weights, relevant selection under a budget,
 failure/negative-feedback reflection into lesson/trigger/evidence/scope_hint,
 then batch compilation with ADD/MERGE/REVISE/SKIP into general and topic skills.
 Reflection is not final curation. Do not give the Reflector the library to
 compare against. The Evolver receives both candidates and existing entries.
+The learning product is a coherent method for future tasks: observable need,
+required information, operations, result and use. Preserve effective operations
+while addressing supported gaps; neither a reminder list nor an invented rule
+deduced from a low score serves that purpose.
 
 The release has benchmark-specific vocabulary: CL proposals NEW/ENHANCE/NONE,
 curation ACCEPT/MERGE/SKIP, and general NEW/UPDATE/DELETE. Its CL reflector can
@@ -23,10 +28,25 @@ context threshold is not imposed on localized topic rules. Useful enterprise
 rules may be supported by a single authorized training task.
 
 Paper Appendix F uses batch size 16, up to 5 general and 5 skills per topic,
-and Sonnet 4.5 selection; release launchers use Bedrock. Penguin uses native
-configured models and a Solver semantic selection step over compact metadata,
-with a deterministic count/UTF-8-byte guard. Sampling follows provider defaults.
-Record every model and the byte budget; do not call it an exact token budget.
+and Sonnet 4.5 selection; release launchers use Bedrock. This does not make
+per-task selection mandatory in every official execution path. In the pinned
+CL implementation, `_process_one_task` calls `solve_raw`, which calls
+`_build_system_prompt` directly. That function loads all matching current-context
+Skill bodies and all general Skill descriptions; it does not call the separately
+defined `_select_skills`. The general-body claim in its docstring differs from
+the executed description-only loop. See `evo_harness/cl_bench.py` lines
+1209, 856 and 908–940, especially 917–929.
+
+This version's full-group loading follows that official context-level approach.
+Combining the fixed Reader and every retained general/topic rule in one complete
+SKILL.md is this GDPevo/Penguin delivery arrangement, not a claim that the release
+uses that file layout. The private two-level library and four operations remain.
+Every final task reads the same complete bytes; H0 uses the same format with
+empty rules. There is no runtime index, selector or selected-entry count limit.
+The whole file, including Reader, metadata and framing, fits the fixed 16,000
+UTF-8 byte budget; it is never clipped at injection. Penguin uses native configured
+models and provider-default sampling. Record every model and this adaptation;
+the byte budget is not an exact token budget.
 
 GDPevo adaptation: all five training members in one continuing Harbor task,
 one batch compilation before container teardown, frozen transfer to five new
@@ -42,13 +62,25 @@ reliable error attribution. This resembles sparse external feedback, not the
 paper's richer diagnostic condition. The feedback ablation finds model self-
 judgment unreliable; do not replace a failed judge with self-scoring.
 
-Scope-bearing entries must state the trigger, data to inspect, query/join/
-calculation/decision procedure, expected result and where to use it. Preserve
-stable company conventions while abstracting temporary IDs, amounts and final
-answers. Keep observed facts separate from inference. Neither low total score
-nor partial success locates a particular mistaken premise. Analyze the final
-delivery, not an already repaired intermediate error. Resolve known false
-premises before export; uncertain but plausible lessons retain explicit scope.
+The role guidance distinguishes explicit task definitions, observed records and
+actions, model interpretations, and scoring feedback. A candidate describes the
+original operation, its final gap or useful substep, and the proposed change
+with support. Neither low score nor success validates a local explanation;
+a proposed repair is not a demonstrated gain. The Evolver reconciles candidates
+with all authorized contexts, including counterevidence, without creating
+positive-source candidates or retesting training answers.
+
+Compilation preserves certainty and field/entity/time/granularity scope in the
+actual trigger, scope and body. Triggers describe applicability, not a retrieval
+decision. Reading all rules does not establish their preconditions: check the
+relevant task facts and authorized records before applying a procedure.
+Methods may use supported logical
+inference and local conventions from one training task. Unknown benefit is
+allowed, but missing premises require bounded evidence checks, narrower scope
+or SKIP, not unsupported thresholds, labels or defaults. Temporary IDs, dates,
+amounts and answers remain in private records. Both levels are considered.
+Either level may remain empty; limits are ceilings. The existing reason records a
+training-record walkthrough, not another role, execution or scoring round.
 
 No Wiki database, one-candidate edit loop, strictly-improving acceptance gate,
 TRACE contrastive trajectories, SkillAdam edit budget, or test-driven selection.

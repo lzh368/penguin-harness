@@ -34,6 +34,7 @@ class PublicationTests(unittest.TestCase):
         helper = self.root / "state/skills/evo-harness-rsi-toolkit/scripts/evo.py"
         helper.parent.mkdir(parents=True)
         helper.write_bytes(TOOL.read_bytes())
+        helper.with_name("inspection.py").write_bytes(TOOL.with_name("inspection.py").read_bytes())
         self.evo = module(helper, "publication_evo")
         self.training_path = helper.parent.parent / "training.json"
         self.training = {"guard_version": 2, "train_ids": [f"train_{i:03d}" for i in range(1, 6)],
@@ -43,7 +44,7 @@ class PublicationTests(unittest.TestCase):
         self.library = self.private / "compiled.json"
         self.library.write_text("[]")
         self.req = {"output": str(self.dest), "library": str(self.library), "limits": {"general": 5, "topic": 5},
-                    "max_entries": 5, "max_bytes": 16000}
+                    "max_bytes": 16000}
         self.receipt = self.private / "skill-export-publication.json"
 
     def test_exact_placeholder_retained_with_source_receipt_and_no_package_changes(self):
@@ -113,7 +114,7 @@ class PublicationTests(unittest.TestCase):
         self.library.write_bytes(self.evo.encoded([{"id": "too-large", "level": "general", "trigger": "x",
             "scope": "x", "body": "X" * 16000}]))
         before = self.marker.stat().st_ino
-        with self.assertRaisesRegex(ValueError, "entry cannot fit"):
+        with self.assertRaisesRegex(ValueError, "complete SKILL.md exceeds frozen byte budget"):
             self.evo.export_skill(self.req)
         self.assertEqual(self.marker.stat().st_ino, before)
         self.assertFalse(self.receipt.exists())

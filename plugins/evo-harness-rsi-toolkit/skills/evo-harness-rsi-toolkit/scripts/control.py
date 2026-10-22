@@ -151,7 +151,7 @@ def training_bootstrap(meta, scratch, state, trace_path=None):
     library = private / "prebatch-library.json"
     slot = Path(state) / "skills/evo-harness-learned"
     package = evo.validate_package(slot)
-    check(not evo.read(slot / "index.json")["entries"], "this continuous v2 profile requires a cold-start library")
+    check(package["empty"], "this continuous v2 profile requires a cold-start library")
     if library.exists():
         check(evo.read(library) == [], "pre-batch library changed")
     else:
@@ -742,7 +742,7 @@ def role_request(req, meta, scratch, mode):
         # The Solver fills the existing API URL from its public access document;
         # the helper checks the canonical identity and never permits another attempt.
         text += "\n" + json.dumps(grant, ensure_ascii=False)
-        text += "\nFirst satisfy the learned reader inherited in your Agent State: use native read_file for the public task and full learned SKILL.md/index.json, then run its foreground selector and observe its complete output. After selection, complete all public inputs before solving. A complete native read_file of a granted public input also satisfies its read audit; do not duplicate that read through the helper. Use read-material for any incomplete or truncated native input; this does not replace the learned reader's own native read_file requirement.\n"
+        text += "\nFirst satisfy the learned reader inherited in your Agent State: use native read_file for the public task and the entire learned SKILL.md, completing every page before business actions. Every task observes the same complete frozen Skill; there is no selector. Complete all public inputs before solving. A complete native read_file of a granted public input also satisfies its read audit; do not duplicate that read through the helper. Use read-material for any incomplete or truncated native input; this does not replace the learned reader's own native read_file requirement.\n"
         text += f"\nRead full role file {role_file} using read-material. Read every granted public input completely, either with exact successful native read_file windows (all lines, before judge) or read-material chunks. Native output with any truncation, a line over 2000 UTF-16 units, or a file at least 8 MiB needs read-material instead. This public-input option never applies to the feedback ledger or learning-role materials."
         text += f"\nFinal answer: {Path(t['answer_dir']) / (task + '.json')}\n"
         text += "Use judge exactly once via one standalone helper command. Never probe judge directly. "
@@ -796,17 +796,16 @@ def role_request(req, meta, scratch, mode):
         materials = [str(role_file), str(target), str(private / "prebatch-library.json")]
         materials += [str(private / "contexts" / (task_id + ".json")) for task_id in t["train_ids"]]
         text += "\nRead all these files in full: " + json.dumps(materials)
-        text += "\nExact frozen compilation/injection limits: " + json.dumps({key: t[key] for key in ("limits", "max_entries", "max_bytes")})
+        text += "\nExact frozen compilation/injection limits: " + json.dumps({key: t[key] for key in ("limits", "max_bytes")})
         text += ("\nlimits.general is the total number of general entries; limits.topic is the maximum per topic. "
-                 "Every exported entry (including '# id', Trigger, Scope and newline framing) must fit max_bytes UTF-8 bytes. "
-                 "Keep trigger/scope concise: each exported index.json physical line must fit 2000 UTF-16 code units, including JSON escaping and indentation, so native read_file can observe it completely. "
-                 "The reader selects at most max_entries entries and max_bytes combined bytes. "
+                 "All compiled entries are exported together in one SKILL.md, with no entry selection. The entire file, including the fixed Reader, manifest and every procedure, must fit max_bytes UTF-8 bytes. "
+                 "Each physical SKILL.md line must fit 2000 UTF-16 code units: wrap without dropping conditions or content. All tasks read the same entire file. "
                  "Before sealing, validate your own decisions with validate-decisions using the paths and frozen budgets below; "
                  "correct your own invalid JSON before seal-role-output, never ask the coordinator to rewrite it.\n")
         text += "Validation request: " + json.dumps({"op": "validate-decisions", "train_ids": t["train_ids"],
             "contexts": [str(private / "contexts" / (task_id + ".json")) for task_id in t["train_ids"]],
             "candidates": str(target), "decisions": str(private / "decisions.json"), "library": str(private / "prebatch-library.json"),
-            **{key: t[key] for key in ("limits", "max_entries", "max_bytes")}})
+            **{key: t[key] for key in ("limits", "max_bytes")}})
         text += f"\nOutput operations to {private / 'decisions.json'} and seal with seal-role-output. Zero candidates requires [] and a real Evolver return.\n"
         slot = "evolver/batch-1"
     if role in ("reflector", "evolver"):
@@ -1066,7 +1065,7 @@ def training_helper(req, meta, scratch, mode):
             check(Path(req["output"]).resolve() == private / "training-export.json", "wrong training export destination")
         if "train_ids" in req:
             check(req["train_ids"] == t["train_ids"], "coordinator batch changed")
-        for field in ("limits", "max_entries", "max_bytes"):
+        for field in ("limits", "max_bytes"):
             if field in req:
                 check(req[field] == t[field], "frozen method budget changed")
 
@@ -1246,7 +1245,7 @@ def prepare_seal_training(req, meta, mode):
         "candidates": str(private / "candidates.json"), "decisions": str(private / "decisions.json"),
         "library": str(private / "prebatch-library.json"), "skill": str(Path(t["answer_dir"]).parent / "skill"),
         "roles": roles, "runtime": t["runtime"], "limits": t["limits"],
-        "max_entries": t["max_entries"], "max_bytes": t["max_bytes"], "output": str(private / "training-export.json")}
+        "max_bytes": t["max_bytes"], "output": str(private / "training-export.json")}
     destination = inside(private / "requests/seal-training.json", private / "requests")
     with evo.locked(private / "requests/.prepare-seal-training.lock"):
         if destination.exists():

@@ -1,0 +1,119 @@
+"""Guarded training H0 observations, not merely instructions; no model/network."""
+import copy
+import json
+from pathlib import Path
+import unittest
+from unittest.mock import patch
+
+import test_control
+
+control = test_control.control
+evo = control.evo
+
+
+class SolverSkillTests(unittest.TestCase):
+    def setUp(self):
+        self.fixture = test_control.ControlTests(methodName="runTest")
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        self.f = self.fixture.capture_preparation_fixture()
+        self.trace = self.f["traces"][0]
+        self.rows = [json.loads(row) for row in self.trace.read_text().split("\n") if row]
+        self.h0 = copy.deepcopy(self.rows[2:4])
+        self.assertEqual(self.h0[0]["payload"]["name"], "read_file")
+        self.target = json.loads(self.h0[0]["payload"]["arguments"])["file_path"]
+        self.raw = evo.render_skill([], 16000)
+        self.feedback = evo.read(self.f["paths"]["output"])
+        self.feedback_bytes = Path(self.f["paths"]["output"]).read_bytes()
+        self.request = {"op": "capture", "split": "train", "task_id": "train_001", "attempt_id": "attempt-1",
+            "train_ids": self.fixture.profile["train_ids"], "answer": self.f["paths"]["answer"],
+            "feedback": self.f["paths"]["output"], "judge_request": self.f["paths"]["judge_request"],
+            "inputs": self.f["inputs"], "traces": [str(p) for p in self.f["traces"]],
+            "binding": self.f["binding"], "output": str(self.fixture.root / "captured.json")}
+
+    def write(self, rows):
+        self.trace.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows))
+
+    def pair(self, name, args, output="", ident="preparation"):
+        return [{"type": "model_msg", "payload": {"type": "tool_call", "name": name,
+                "tool_call_id": ident, "arguments": json.dumps(args)}},
+            {"type": "model_msg", "payload": {"type": "tool_call_output", "tool_call_id": ident,
+                "stop_reason": "completed", "output": output}}]
+
+    def assert_rejected(self, rows, pattern):
+        self.write(rows)
+        with patch.object(evo.urllib.request, "build_opener") as opener:
+            with self.assertRaisesRegex(ValueError, pattern):
+                evo.capture(self.request)
+            opener.assert_not_called()
+        self.assertFalse(Path(self.request["output"]).exists())
+        self.assertEqual(Path(self.f["paths"]["output"]).read_bytes(), self.feedback_bytes)
+
+    def test_missing_truncated_foreign_or_failed_h0_read_rejects_before_capture(self):
+        variants = [self.rows[:2] + self.rows[4:]]
+        for kind in ("truncated", "foreign", "failed", "different_bytes"):
+            rows = copy.deepcopy(self.rows)
+            if kind == "truncated": rows[3]["payload"]["output"] = rows[3]["payload"]["output"][:150]
+            if kind == "foreign": rows[2]["payload"]["arguments"] = json.dumps({"file_path": self.target + ".other"})
+            if kind == "failed": rows[3]["payload"]["stop_reason"] = "aborted"
+            if kind == "different_bytes": rows[3]["payload"]["output"] += "\nExtra rule"
+            variants.append(rows)
+        for rows in variants:
+            with self.subTest(variant=len(rows), sha=evo.digest(evo.encoded(rows))):
+                self.assert_rejected(rows, "frozen H0 Skill was not fully observed")
+
+    def test_business_write_or_wrong_material_before_complete_observation_rejects(self):
+        operations = [
+            ("exec_command", {"cmd": "curl http://business.invalid/api/records"}, "read-only inspection"),
+            ("write_file", {"file_path": self.f["paths"]["answer"], "content": "{}"}, "task actions"),
+            ("read_file", {"file_path": str(self.fixture.skill / "training.json")}, "only granted public"),
+            ("read_file", {"file_path": str(self.fixture.workspace / "train_tasks/train_002/instruction.md")}, "only granted public"),
+            ("exec_command", {"cmd": "cat " + str(self.fixture.workspace / "train_tasks/train_002/input/other.json")}, "nonpublic files"),
+        ]
+        for name, args, pattern in operations:
+            with self.subTest(name=name, args=args):
+                self.assert_rejected(self.rows[:2] + self.pair(name, args) + self.rows[2:], pattern)
+        # A parallel write between read request and observed output is still early.
+        self.assert_rejected(self.rows[:3] + self.pair("write_file", {"file_path": "/tmp/answer", "content": "x"}) + self.rows[3:], "task actions")
+
+    def test_granted_public_inspection_and_complete_pages_succeed(self):
+        root = self.fixture.workspace / "train_tasks/train_001/input"
+        inspection = self.pair("exec_command", {"cmd": f"find {root} -type f | sort | head -n 20"})
+        inspection += self.pair("read_file", {"file_path": self.f["inputs"][0]}, "Synthetic public read", "public")
+        lines = self.raw.decode().split("\n")[:-1]
+        pages = []
+        for start in range(0, len(lines), 7):
+            end = min(len(lines), start + 7)
+            out = [f"{n:6}\t{line}" for n, line in enumerate(lines[start:end], start + 1)]
+            if end < len(lines):
+                out += [f"[file has {len(lines)} lines total; showing {start + 1}-{end} — call again with offset to continue]"]
+            pages += self.pair("read_file", {"file_path": self.target, "offset": start + 1, "limit": 7}, "\n".join(out), f"page-{start}")
+        self.write(self.rows[:2] + inspection + pages + self.rows[4:])
+        result = evo.capture(self.request)
+        self.assertTrue(Path(result["path"]).is_file())
+        context = evo.read(result["path"])
+        evo.validate_contexts([context], ["train_001"])
+        self.assertEqual(context["feedback"], self.feedback)
+
+    def test_exact_foreground_cat_succeeds_but_pipeline_or_wrapped_output_does_not(self):
+        exact = self.pair("exec_command", {"cmd": "cat " + self.target}, self.raw.decode(), "cat-h0")
+        for command, output in (("cat " + self.target + " | head -n 2000", self.raw.decode()),
+                                ("cat " + self.target, "exit code 0\n" + self.raw.decode())):
+            self.assert_rejected(self.rows[:2] + self.pair("exec_command", {"cmd": command}, output, "cat-h0") + self.rows[4:], "not fully observed")
+        self.write(self.rows[:2] + exact + self.rows[4:])
+        evo.capture(self.request)
+
+    def test_validate_contexts_independently_rechecks_h0_against_original_trace(self):
+        evo.capture(self.request)
+        context = evo.read(self.request["output"])
+        self.write(self.rows[:2] + self.rows[4:])
+        # Model a legacy/tampered context consistent with its raw trace: every
+        # other evidence and judge check still succeeds; the new gate must not.
+        context["trace"] = evo.trace_view(self.request["traces"], self.f["binding"])
+        with self.assertRaisesRegex(ValueError, "frozen H0 Skill was not fully observed"):
+            evo.validate_contexts([context], ["train_001"])
+        self.assertEqual(Path(self.f["paths"]["output"]).read_bytes(), self.feedback_bytes)
+
+
+if __name__ == "__main__":
+    unittest.main()

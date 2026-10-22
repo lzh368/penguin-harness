@@ -18,7 +18,7 @@ Preparation installs the exact method Skill and native hook package, enables
 Trainer hooks and writes guard_version=2 training.json; the test Target's hooks
 stay disabled. Never copy host credentials or test materials into Trainer State.
 
-training.json freezes train_ids, attempt_id=attempt-1, limits, max_entries,
+training.json freezes train_ids, attempt_id=attempt-1, limits,
 max_bytes, runtime, workspace=/app, private_learning=/logs/agent/evo-harness,
 answer_dir=/app/submission/answers, feedback_dir under private_learning,
 training_budget_usd, host_operation_id, config_sha256, compilation_reserve_sec
@@ -66,7 +66,7 @@ config hash and training allocation against training.json. Never spawn another
 worker, edit State, solve training tasks or write scoreboard.
 
 Wait for Harbor termination, verifier/artifact export and cleanup. Preserve all
-five final answers, full private evidence and the learned package. Empty indexed
+five final answers, full private evidence and the learned package. Empty-rule
 guidance can be valid; a missing package or failed/incomplete seal cannot.
 The host independently reruns verify-export before publication. Final verifier
 details are host diagnostics, never learning input.
@@ -138,7 +138,8 @@ native traces or role-authored candidates/decisions.
    five executions succeeded. The helper re-audits these roles and their
    task/attempt candidate namespaces before concatenating arrays without edits;
    a failed Reflector blocks Evolver dispatch. The Evolver receives the actual
-   frozen entry/UTF-8 budgets and checks its own draft with validate-decisions
+   frozen private entry ceilings and full-file UTF-8 budget, and checks its own
+   draft with validate-decisions
    before sealing. Invoke the returned call; the Evolver reads all
    contexts, candidates and prebatch-library.json and writes decisions.json.
    Zero candidates still requires a real Evolver call and explicit [] output.
@@ -146,8 +147,10 @@ native traces or role-authored candidates/decisions.
    missing-read repair occurs in that same child before success. Audit its seal.
 6. Write a compile request using the five contexts, candidates.json,
    decisions.json, prebatch-library.json and frozen limits; execute evo.py.
-   Export the resulting library with unchanged max_entries/max_bytes to the
-   /app/submission/skill directory. GDPevo precreates this directory with only
+   Export the resulting library with unchanged limits/max_bytes as one complete
+   SKILL.md in the /app/submission/skill directory. The whole file includes the
+   fixed Reader, metadata and all retained rules; no selected subset is exported.
+   GDPevo precreates this directory with only
    an empty `.keep`; do not delete it or run a shell cleanup. The fixed export
    helper accepts exactly this placeholder at the installed training.json's
    bound destination. It builds and validates the complete package first,
@@ -162,7 +165,7 @@ native traces or role-authored candidates/decisions.
    exported skill is an error; preserve it and report rather than clearing it.
    If publication fails, the helper attempts a no-overwrite rollback and keeps
    the receipt/backup on conflict. Do not automatically retry that export.
-   Even a valid no-op exports the fixed reader, selector and empty index.
+   Even a valid no-op exports the same single-file Reader format with empty rules.
    Private artifacts never enter the skill slot.
 7. Write a control request inside private_learning/requests/ with
    op="prepare-seal-training", your trace_path and role_requests (absolute
@@ -185,6 +188,8 @@ native traces or role-authored candidates/decisions.
 
 The host restores H0 for five concurrent tests only after verify-freeze succeeds,
 then restores final for five concurrent tests after the complete H0 matrix.
-Each test is fresh and cannot access training judge. A valid no-op explicitly
+Each test is fresh and cannot access training judge. All five final tests read
+the same complete frozen SKILL.md before business actions and apply its rules
+only when their conditions hold. A valid no-op explicitly
 reuses the H0 matrix; failed learning produces neither final publication nor
 held-out completion. Ordinary RSI Benchmarks do not inherit this 5/5 contract.

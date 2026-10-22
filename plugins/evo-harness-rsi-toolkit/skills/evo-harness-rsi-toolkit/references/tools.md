@@ -20,12 +20,12 @@ of entry objects (`id,level,topic?,trigger,scope,body`), initially `[]`.
 |---|---|---|
 | prepare-judge-request | task_id, url | Data-only canonical request writer; derives all paths/attempt/roster from installed training.json, returns exact judge command and makes no HTTP call |
 | validate-candidates | contexts, train_ids, candidates, candidate_prefix | Read-only draft check for the Reflector before output sealing; no rewritten content |
-| validate-decisions | compile fields except output, plus max_entries/max_bytes | Read-only compile/export validation, including native reader index-line capacity, in a temporary directory before Evolver sealing; no published State |
+| validate-decisions | compile fields except output, plus max_bytes | Read-only compile/export validation of the complete rendered SKILL.md, including the whole-file UTF-8 budget and native 2000-UTF-16-unit physical-line capacity, in a temporary directory before Evolver sealing; no published State |
 | judge | split=train, task_id, attempt_id, train_ids, url, answer (JSON file), output; request file itself must have the canonical judge_request path | Writes full canonical ledger with raw feedback and hashes; CLI returns a short ledger path/hash/byte-count receipt |
 | capture | split=train, task_id, attempt_id, train_ids, answer, feedback (canonical receipt path), judge_request (canonical JSON path), inputs (text file paths), traces (all Solver JSONL segment paths), binding, output | Full context; requires exactly one canonical native judge exec and rejects changed or extra feedback. Guarded group roots obtain this request through control.py prepare-capture, never by copying grant paths. |
 | capture-evaluation | capture fields except feedback and judge_request, plus evaluation and evaluation_identity as described below | Bound native workspace feedback and captured context; no HTTP receipt |
 | compile | train_ids, contexts (captured files), candidates (array file), decisions (Evolver array file), library, limits, output | Validated new internal library; no learned prose is invented |
-| export | library, limits, max_entries, max_bytes, output (new directory) | Data-only learned package with fixed reader/selector and full file hashes |
+| export | library, limits, max_bytes, output (new directory) | Exactly one SKILL.md containing the fixed Reader and every retained rule, within the full-file budget; no truncation or per-task selection |
 | fingerprint | path (directory) | File map and canonical SHA-256 |
 | journal | action and fields below | Durable single-operation accounting; no dispatch |
 
@@ -126,10 +126,11 @@ Additional operations:
   inspection. It cannot replace guarded Reflector/Evolver sealing.
 - `audit-role`: traces, binding, materials (paths), outputs (paths); verifies
   full material receipts and output seals in actual paired tool results.
-- `verify-package`: path; validates the fixed reader/selector, index, every
-  entry hash and exact file allowlist, rejecting traces/answers/extra support.
+- `verify-package`: path; validates the fixed Reader, complete rule rendering,
+  byte/line limits and the sole-file SKILL.md allowlist, rejecting
+  traces/answers/extra support.
 - `seal-training`: private_learning, train_ids, contexts, candidates, decisions,
-  library (pre-batch), skill, roles, runtime, limits, max_entries, max_bytes, output.
+  library (pre-batch), skill, roles, runtime, limits, max_bytes, output.
   Each roles item is an audit-role
   request plus role=reflector/evolver, task_id for reflector, role_text_path.
   All materials/outputs/contexts must be within private_learning. It verifies

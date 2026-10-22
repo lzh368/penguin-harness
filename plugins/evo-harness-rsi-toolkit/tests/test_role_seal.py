@@ -20,8 +20,9 @@ class RoleSealTests(unittest.TestCase):
             helper = root / "native/agents/trainer/agent_state/skills/evo-harness-rsi-toolkit/scripts/evo.py"
             helper.parent.mkdir(parents=True)
             helper.write_bytes(TOOL.read_bytes())
+            helper.with_name("inspection.py").write_bytes(TOOL.with_name("inspection.py").read_bytes())
             training.update(guard_version=2, runtime={"provider": "fixture", "model_id": "no-model"},
-                limits={"general": 5, "topic": 5}, max_entries=5, max_bytes=16000)
+                limits={"general": 5, "topic": 5}, max_bytes=16000)
             (helper.parent.parent / "training.json").write_bytes(evo.encoded(training))
             return helper, training
         self.batch = fixtures.BatchTests(methodName="runTest")

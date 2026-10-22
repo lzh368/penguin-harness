@@ -5,10 +5,10 @@ exported by `evo.py` from `[]` with the frozen limits. Install it at
 `STATE/skills/evo-harness-learned/`. Append exactly once to `STATE/AGENTS.md`:
 
 ```text
-Before acting on a task, read the complete skills/evo-harness-learned/SKILL.md and index.json in your Agent State using native read_file or a separate foreground cat of each exact file, then follow the reader's selection procedure. Only the reader's supported read-only inspection of public task files/directories may precede selection. Do not run arbitrary code, invoke APIs, write files or read entry bodies before selection. Run the selector as a foreground native exec_command without redirects, pipes or wrappers, and observe its complete output before business API calls or writing the task answer. Do not modify your State.
+Before business actions, read the complete skills/evo-harness-learned/SKILL.md in your Agent State using native read_file or a separate foreground cat of that exact file. Only the Reader's supported read-only public task inspection may precede this complete read. Every rule is provided in this one file; there is no per-task selection step. Apply a rule only after checking its task conditions and necessary premises. Do not modify your State.
 ```
 
-The reader, selector, max_entries/max_bytes, models and tools stay identical in
+The fixed Reader, max_bytes, models and tools stay identical in
 H0 and final. On a new held-out Target
 set `memory.enabled: false` and `hooks.enabled: false` in system_config.yaml;
 retain these throughout. Existing Targets need a snapshot before changes and
@@ -17,8 +17,8 @@ authorization for changes beyond the learned slot. Never reset existing work.
 Before freezing a new H0, set the output capacity of both `exec_command` and
 `input_command` to at least `6 * max_bytes + 8192` characters: **104192** when the
 frozen guidance budget is 16000 UTF-8 bytes. Their native default is 16000
-characters, which can truncate a valid selector JSON receipt after adding JSON
-escaping and hashes. This is a fixed tool-output capacity, not a larger learned
+characters, which leave insufficient room for full guidance plus tool framing
+or escaped training material receipts. This is a fixed tool-output capacity, not a larger learned
 Skill or injection budget. H0, Trainer and final retain the same capacity.
 
 The exact native YAML field is `tools.builtin[].maxOutputLength`, selected by
@@ -88,9 +88,13 @@ adapter launches it as a native root, permitting one level of role children.
 Once the group exports its package, the host Controller verifies and copies
 only `artifacts/submission/skill/` into the Target learned slot, preserving every
 byte. No host regeneration/rewording of role content. The package allowlist is
-SKILL.md, index.json, select.py and indexed general/topic Markdown entries.
-Compare the exported hash, installed slot hash, tar members and actual trace
-selection receipt. The Selector is fixed tooling, never Evolver-written code.
+exactly SKILL.md: the fixed Reader and all retained general/topic rules in one
+file. The whole file, including metadata and framing, fits max_bytes; every
+physical line fits 2000 UTF-16 code units. No runtime index, selector, supporting
+code or per-entry files are installed. Compare the exported hash, installed
+slot hash, tar members and complete file observations in each Target's trace.
+All five final tasks receive the same complete bytes; loading a rule does not
+make its applicability conditions true. Never shorten or drop rules at injection.
 
 Archive old State, stage the new slot, increment State version, snapshot and
 hash before evaluation. On a failure retain the interrupted version and
@@ -102,8 +106,8 @@ then create the freeze request described in [control.md](control.md). Its native
 snapshots contain agent_state/ as their root, unlike the worker's State-only
 transport tar. verify-freeze compares every State file and the full learned
 package. Only the learned slot and one native plain top-level integer version
-may differ; both selection budgets remain fixed. H0 is always the valid empty
-reader. Changed guidance requires final_version > h0_version. An equivalent
+may differ; the full-file byte budget remains fixed. H0 is always the same
+valid Reader format with empty rules. Changed guidance requires final_version > h0_version. An equivalent
 no-op requires a successfully sealed complete training batch, identical State
 file contents and identical versions; missing/failed training is never no-op.
 
