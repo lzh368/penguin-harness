@@ -142,7 +142,7 @@ def _public_name_enumeration(argv, workdir, workspace, public_input=None):
     return predicates.get("-type") == "f"
 
 
-def _readonly_commands(call, workspace, slot, public_files=None, public_input=None):
+def _readonly_commands(call, workspace, slot, public_files=None, public_input=None, *, skill_files=None):
     """Allow only public-file reads, fixed Skill reads and discovery.
 
     Pipes can feed a bounded stdin head, or a bare stdin sort immediately after
@@ -152,6 +152,10 @@ def _readonly_commands(call, workspace, slot, public_files=None, public_input=No
     commands, workdir, redirects = _shell_commands(call, workspace)
     reads = []
     fixed = {slot + "/SKILL.md"}
+    if skill_files is not None:
+        require(isinstance(skill_files, (set, list, tuple)) and all(isinstance(p, str) and p.startswith("/") and _path(p, workspace) == p for p in skill_files),
+                "frozen Skill files must be canonical absolute paths")
+        fixed.update(skill_files)
     for position, item in enumerate(commands):
         argv = item["argv"]
         program = argv[0]
@@ -163,7 +167,7 @@ def _readonly_commands(call, workspace, slot, public_files=None, public_input=No
             require(operands or program == "head" and item["connector"] == "|", "read needs a literal file")
             paths = [_path(value, workdir) for value in operands]
             require(all(path in fixed or _public_file(path, workspace, public_files) for path in paths),
-                    "inspection may not read entry bodies or nonpublic files")
+                    "inspection may not read unlisted Skill or nonpublic files")
             reads.extend(paths)
         elif program == "pwd":
             require(all(value in ("-L", "-P") for value in argv[1:]), "unsupported pwd operand")

@@ -28,13 +28,18 @@ class RoleProtocolDeliveryTests(unittest.TestCase):
         contract = contracts[0]
         grant = next(v['evo_task'] for v in control.evo.json_values(prompt)
                      if isinstance(v, dict) and 'evo_task' in v)
-        self.assertEqual(contract, control.evo.candidate_contract('train_001', 'attempt-1', grant['inputs']))
+        self.assertEqual(contract, control.evo.candidate_contract('train_001', 'attempt-1', grant['inputs'], str(self.fixture.private / 'roles/train_001/candidates.json')))
         self.assertEqual([ref['path'] for ref in contract['input_refs']], grant['inputs'])
         for ref in contract['input_refs']:
             self.assertEqual(ref['sha256'], hashlib.sha256(Path(ref['path']).read_bytes()).hexdigest())
         self.assertLess(prompt.index('evo-candidate-contract-v1'), prompt.index('# Native learning roles'))
         self.assertEqual(prompt.count(control.role_text('solver')), 1)
         self.assertEqual(contract['task_id'], 'train_001')
+        self.assertEqual(contract['write_call'], {'tool': 'write_file', 'arguments': {
+            'file_path': str(self.fixture.private / 'roles/train_001/candidates.json'),
+            'content': 'REPLACE_WITH_YOUR_COMPLETE_CANDIDATE_ARRAY_AS_JSON_TEXT'}})
+        self.assertIn("not Python/shell read-modify-write", prompt)
+        self.assertIn("ignored by validation", contract['evidence_shape'])
         self.assertFalse(prepared['dispatched'])
         self.assertEqual(prepared['call']['thinking_level'], self.fixture.runtime['thinking_level'])
 

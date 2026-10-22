@@ -50,13 +50,16 @@ the executed description-only loop. See `evo_harness/cl_bench.py` lines
 1209, 856 and 908–940, especially 917–929.
 
 This version's full-group loading follows that official context-level approach.
-Combining the fixed Reader and every retained general/topic rule in one complete
-SKILL.md is this GDPevo/Penguin delivery arrangement, not a claim that the release
-uses that file layout. The private two-level library and four operations remain.
-Every final task reads the same complete bytes; H0 uses the same format with
-empty rules. There is no runtime index, selector or selected-entry count limit.
-The whole file, including Reader, metadata and framing, fits the fixed 16,000
-UTF-8 byte budget; it is never clipped at injection. Penguin uses native configured
+Each retained general/topic entry is an independent native Skill with its own
+SKILL.md. A fixed Reader lists the frozen group and loads every general
+description; every current-context/topic Skill is read in full. General bodies
+remain stored but must not be read into the task context. Thus the loading
+policy follows the official CL body/description distinction. Independent native
+Skill directories and the fixed manifest are the GDPevo/Penguin organization.
+The private two-level library and four operations remain. H0 has an empty
+manifest. There is no selector or selected-entry count limit. Reader, manifest,
+and all Skill bodies/frontmatter together fit the fixed 16,000 UTF-8 byte
+budget; no file or rule is clipped at injection. Penguin uses native configured
 models and provider-default sampling. Record every model and this adaptation;
 the byte budget is not an exact token budget.
 
@@ -115,3 +118,8 @@ Revision 2026.10.22.5 repairs execution interfaces only: missing material reads
 are detected before the single HTTP score, and an invalid unsealed candidate
 returns a recoverable normal tool result. Reflection, compilation and feedback
 rules are unchanged. Earlier fatal failures keep their original verdicts.
+
+Revision 2026.10.22.6 changes delivery organization only: retained entries are
+separate native Skills installed beside the fixed Reader. Every task loads the same
+current-context bodies and all general descriptions, never general bodies. Learning, feedback and the five/five protocol are unchanged;
+prior single-file runs keep their original versions and verdicts.

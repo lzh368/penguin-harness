@@ -59,6 +59,10 @@ class InstructionDeliveryTests(unittest.TestCase):
             self.assertEqual(text.count(sections[role]), 1)
             self.assertIn(str(fixture.private / "roles" / (role + ".md")), text)
             if role == "evolver":
+                self.assertIn("Supply a concise explicit description for each general entry", text)
+                self.assertIn("general Skill bodies are not loaded", text)
+                self.assertIn("do not relabel general entries as topic", text)
+                self.assertIn("Either level may remain empty", text)
                 material_line = next(line for line in text.splitlines() if line.startswith("Read all these files in full: "))
                 materials = json.loads(material_line.split(": ", 1)[1])
                 self.assertEqual(len(materials), 8)
@@ -73,18 +77,23 @@ class InstructionDeliveryTests(unittest.TestCase):
         reader = control.evo.READER.encode()
         packages = {}
         for package in (cold, final):
-            self.assertEqual({path.name for path in package.iterdir()}, {"SKILL.md"})
-            raw = (package / "SKILL.md").read_bytes()
+            receipt = control.evo.validate_package(package)
+            files = {path: (package / path).read_bytes() for path in receipt["files"]}
+            raw = files["SKILL.md"]
             self.assertTrue(raw.startswith(reader))
-            manifest = control.evo.parse_skill(raw)
+            manifest = control.evo.parse_reader(raw)
             self.assertEqual(manifest["max_bytes"], 16000)
-            self.assertLessEqual(len(raw), 16000)
-            packages["h0" if package == cold else "final"] = raw
-        self.assertEqual(control.evo.parse_skill(packages["h0"])["entries"], [])
-        manifest = control.evo.parse_skill(packages["final"])
+            self.assertLessEqual(sum(map(len, files.values())), 16000)
+            packages["h0" if package == cold else "final"] = files
+        self.assertEqual(control.evo.parse_reader(packages["h0"]["SKILL.md"])["entries"], [])
+        manifest = control.evo.parse_reader(packages["final"]["SKILL.md"])
         self.assertEqual([entry["id"] for entry in manifest["entries"]], ["fixture-field-review"])
+        item = manifest["entries"][0]
         body = "Before submission, compare the public required fields with the current document and fill any omitted public fields."
-        self.assertEqual(packages["final"].decode().count(body), 1)
+        self.assertEqual(packages["final"][item["path"]].decode().count(body), 1)
+        self.assertNotIn(body.encode(), packages["final"]["SKILL.md"])
+        self.assertEqual(item["description"], "Review publicly required form fields.")
+        self.assertEqual(item["load_mode"], "description")
 
         main = (fixture.skill / "SKILL.md").read_bytes()
         main_text = main.decode()
@@ -109,8 +118,9 @@ class InstructionDeliveryTests(unittest.TestCase):
             artifacts[name] = {"sha256": sha(raw), "bytes": len(raw)}
         save("main-SKILL.md", main)
         save("learned-Reader.md", reader)
-        for phase, raw in packages.items():
-            save(phase + "/SKILL.md", raw)
+        for phase, files in packages.items():
+            for path, raw in files.items():
+                save(phase + "/" + path, raw)
         for role in ("solver", "evolver"):
             save("roles/" + role + ".md", (fixture.private / "roles" / (role + ".md")).read_bytes())
         prepared = []
@@ -119,27 +129,29 @@ class InstructionDeliveryTests(unittest.TestCase):
             save(filename, prompt["raw"])
             prepared.append({"role": prompt["role"], "slot": prompt["slot"], "prompt_artifact": filename,
                              "original_call": prompt["call"], "sha256": sha(prompt["raw"])})
-        crlf_entry = {"id": "crlf-native-proof", "level": "general", "trigger": "Synthetic authorized records",
+        crlf_entry = {"id": "crlf-native-proof", "level": "general", "description": "Synthetic public-field review.", "trigger": "Synthetic authorized records",
             "scope": "Synthetic fixture only", "body": "SYNTHETIC retain successful steps.\r\nCheck documented fields before changing a step.\r\n"}
         crlf_library = directory / "crlf-source-library.json"
         crlf_library.write_bytes(control.evo.encoded([crlf_entry]))
         crlf_receipt = control.evo.export_skill({"library": str(crlf_library), "limits": {"general": 5, "topic": 5},
             "max_bytes": 16000, "output": str(directory / "crlf")})
-        packages["crlf"] = (directory / "crlf/SKILL.md").read_bytes()
-        assert b"\r" not in packages["crlf"]
+        packages["crlf"] = {path: (directory / "crlf" / path).read_bytes() for path in crlf_receipt["files"]}
+        assert all(b"\r" not in raw for raw in packages["crlf"].values())
         artifacts["crlf-source-library.json"] = {"sha256": sha(crlf_library.read_bytes()), "bytes": crlf_library.stat().st_size}
-        artifacts["crlf/SKILL.md"] = {"sha256": sha(packages["crlf"]), "bytes": len(packages["crlf"])}
+        for path, raw in packages["crlf"].items():
+            artifacts["crlf/" + path] = {"sha256": sha(raw), "bytes": len(raw)}
         sources = [SCRIPT, SCRIPT.with_name("evo.py"), SCRIPT.with_name("inspection.py"), fixture.skill / "SKILL.md",
                    fixture.skill / "references/roles.md", fixture.skill / "references/algorithm.md"]
-        manifest = {"schema": "evo-full-file-instruction-delivery-v1", "model_calls": 0, "network_calls": 0,
+        manifest = {"schema": "evo-context-skills-instruction-delivery-v1", "model_calls": 0, "network_calls": 0,
             "scope": "Synthetic native-shaped full batch: five sequential Solvers, two same-Solver reflections, one independent Evolver; actual budget/read/capture/seal/compile/export checks. HTTP response and model messages are fixtures.",
             "limitations": "This proves instruction delivery and mechanics, not that a future model will follow the content or improve scores. Native SDK transport is a separate zero-model probe.",
             "source_hashes": {str(path if path.parent == SCRIPT.parent else SCRIPT.parents[1] / path.relative_to(fixture.skill)): sha(path.read_bytes()) for path in sources},
             "runtime": fixture.runtime, "frozen_limits": {key: fixture.profile[key] for key in ("limits", "max_bytes")},
             "full_batch_accepted": True, "members": len(export["members"]), "sealed_learning_roles": len(export["roles"]),
             "main_method_objective_before_orchestration": introduction,
-            "runtime_packages": {phase: {"file": phase + "/SKILL.md", "bytes": len(raw), "sha256": sha(raw),
-                "entries": len(control.evo.parse_skill(raw)["entries"])} for phase, raw in packages.items()},
+            "runtime_packages": {phase: {"files": {path: sha(raw) for path, raw in files.items()},
+                "bytes": sum(map(len, files.values())),
+                "entries": len(control.evo.parse_reader(files["SKILL.md"])["entries"])} for phase, files in packages.items()},
             "selector_calls": 0, "prepared_prompts": prepared, "artifacts": artifacts}
         (directory / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
 

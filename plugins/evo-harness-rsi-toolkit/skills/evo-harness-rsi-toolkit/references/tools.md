@@ -14,18 +14,20 @@ request JSON only under private_learning/requests and executes only the two
 fixed helpers; native Solver leaves alone may execute judge.
 
 Common limits: `{"general":5,"topic":5}`. Internal `library.json` is an array
-of entry objects (`id,level,topic?,trigger,scope,body`), initially `[]`.
+of entry objects (`id,level,topic?,description?,trigger,scope,body`), initially `[]`. General entries require the Evolver-authored description; topic
+entries require topic. The runtime loads all current-context/topic bodies and
+all general descriptions, not general bodies.
 
 | op | Required request fields (in addition to op) | Output |
 |---|---|---|
 | prepare-judge-request | task_id, url | Data-only canonical request writer; derives all paths/attempt/roster from installed training.json, returns exact judge command and makes no HTTP call |
 | validate-candidates | contexts, train_ids, candidates, candidate_prefix | Read-only draft check for candidate structure before output sealing; no rewritten content |
-| validate-decisions | compile fields except output, plus max_bytes | Read-only compile/export validation of the complete rendered SKILL.md, including the whole-file UTF-8 budget and native 2000-UTF-16-unit physical-line capacity, in a temporary directory before Evolver sealing; no published State |
+| validate-decisions | compile fields except output, plus max_bytes | Read-only compile/export validation of the complete rendered package, including its total UTF-8 budget and native 2000-UTF-16-unit physical-line capacity, in a temporary directory before Evolver sealing; no published State |
 | judge | split=train, task_id, attempt_id, train_ids, url, answer (JSON file), output; request file itself must have the canonical judge_request path | Writes full canonical ledger with raw feedback and hashes; CLI returns a short ledger path/hash/byte-count receipt |
 | capture | split=train, task_id, attempt_id, train_ids, answer, feedback (canonical receipt path), judge_request (canonical JSON path), inputs (text file paths), traces (all Solver JSONL segment paths), binding, output | Full context; requires exactly one canonical native judge exec and rejects changed or extra feedback. Guarded group roots obtain this request through control.py prepare-capture, never by copying grant paths. |
 | capture-evaluation | capture fields except feedback and judge_request, plus evaluation and evaluation_identity as described below | Bound native workspace feedback and captured context; no HTTP receipt |
 | compile | train_ids, contexts (captured files), candidates (array file), decisions (Evolver array file), library, limits, output | Validated new internal library; no learned prose is invented |
-| export | library, limits, max_bytes, output (new directory) | Exactly one SKILL.md containing the fixed Reader and every retained rule, within the full-file budget; no truncation or per-task selection |
+| export | library, limits, max_bytes, output (new directory) | Fixed Reader/manifest plus one independent native Skill per retained entry, within the combined package budget; no truncation or per-task selection |
 | fingerprint | path (directory) | File map and canonical SHA-256 |
 | journal | action and fields below | Durable single-operation accounting; no dispatch |
 

@@ -111,10 +111,10 @@ class PublicationTests(unittest.TestCase):
         self.assertFalse(self.receipt.exists())
 
     def test_invalid_package_does_not_move_or_consume_placeholder(self):
-        self.library.write_bytes(self.evo.encoded([{"id": "too-large", "level": "general", "trigger": "x",
-            "scope": "x", "body": "X" * 16000}]))
+        self.library.write_bytes(self.evo.encoded([{"id": "too-large", "level": "general", "description": "Synthetic oversized fixture.", "trigger": "x",
+            "scope": "x", "body": "X\n" * 8000}]))
         before = self.marker.stat().st_ino
-        with self.assertRaisesRegex(ValueError, "complete SKILL.md exceeds frozen byte budget"):
+        with self.assertRaisesRegex(ValueError, "complete Skill package exceeds frozen byte budget"):
             self.evo.export_skill(self.req)
         self.assertEqual(self.marker.stat().st_ino, before)
         self.assertFalse(self.receipt.exists())

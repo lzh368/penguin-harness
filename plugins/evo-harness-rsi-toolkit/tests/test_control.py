@@ -991,7 +991,7 @@ class ControlTests(unittest.TestCase):
         ids = [candidate["id"] for candidate in evo.read(candidates)]
         self.assertEqual(len(set(ids)), 0 if empty_candidates else negative_count)
         operations = [{"op": "ADD", "candidate_ids": ids, "reason": "SYNTHETIC supported procedure", "entry": {
-            "id": "fixture-field-review", "level": "general", "trigger": "SYNTHETIC required-field task", "scope": "SYNTHETIC forms",
+            "id": "fixture-field-review", "level": "general", "description": "Review publicly required form fields.", "trigger": "SYNTHETIC required-field task", "scope": "SYNTHETIC forms",
             "body": "Before submission, compare the public required fields with the current document and fill any omitted public fields."}}]
         self.write(decisions, operations if ids else [])
         before_decisions = decisions.read_bytes()

@@ -138,16 +138,17 @@ native traces or role-authored candidates/decisions.
    verifies the original Solver identity, feedback/answer/order and output,
    and concatenates candidates without edits. Do not hand-supply a replacement
    learner identity. The Evolver receives all contexts, candidates and
-   prebatch-library.json plus the frozen entry ceilings and full-file budget.
+   prebatch-library.json plus the frozen entry ceilings and package budget.
    It validates its own decisions, then seals decisions.json. Zero candidates
    still requires this real Evolver call and explicit [] output. Missing-read
    or structural repair occurs in that same child before sealing. Audit its
    original completed trace and successful seal.
 6. Write a compile request using the five contexts, candidates.json,
    decisions.json, prebatch-library.json and frozen limits; execute evo.py.
-   Export the resulting library with unchanged limits/max_bytes as one complete
-   SKILL.md in the /app/submission/skill directory. The whole file includes the
-   fixed Reader, metadata and all retained rules; no selected subset is exported.
+   Export the resulting library with unchanged limits/max_bytes into
+   /app/submission/skill: a fixed Reader SKILL.md with the complete manifest,
+   plus methods/<native-name>/SKILL.md for every retained entry. Their total
+   bytes include all metadata and rules; no selected subset is exported.
    GDPevo precreates this directory with only
    an empty `.keep`; do not delete it or run a shell cleanup. The fixed export
    helper accepts exactly this placeholder at the installed training.json's
@@ -163,7 +164,7 @@ native traces or role-authored candidates/decisions.
    exported skill is an error; preserve it and report rather than clearing it.
    If publication fails, the helper attempts a no-overwrite rollback and keeps
    the receipt/backup on conflict. Do not automatically retry that export.
-   Even a valid no-op exports the same single-file Reader format with empty rules.
+   Even a valid no-op exports the same Reader format with an empty manifest and no methods.
    Private artifacts never enter the skill slot.
 7. Write a control request inside private_learning/requests/ with
    op="prepare-seal-training", your trace_path and role_requests (absolute
@@ -190,7 +191,8 @@ native traces or role-authored candidates/decisions.
 The host restores H0 for five concurrent tests only after verify-freeze succeeds,
 then restores final for five concurrent tests after the complete H0 matrix.
 Each test is fresh and cannot access training judge. All five final tests read
-the same complete frozen SKILL.md before business actions and apply its rules
+the same complete Reader with all general descriptions and every current-context
+Skill body before business actions; general bodies are not loaded. Apply rules
 only when their conditions hold. A valid no-op explicitly
 reuses the H0 matrix; failed learning produces neither final publication nor
 held-out completion. Ordinary RSI Benchmarks do not inherit this 5/5 contract.

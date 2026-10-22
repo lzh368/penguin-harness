@@ -1,7 +1,7 @@
 ---
 name: evo-harness-rsi-toolkit
 description: Run Evo-Harness with frozen Solver settings, negative-feedback reflection and batch compilation of general and task-type skills. Use native Penguin workers, State, snapshots and evaluation; the continuous GDPevo profile adds checked native delegation and export acceptance.
-version: 2026.10.22.5
+version: 2026.10.22.6
 ---
 
 # Evo-Harness
@@ -18,8 +18,8 @@ Implement [Evo-Harness v2](https://arxiv.org/html/2608.15071v2), §3,
 §4.5–4.6 and Appendix F, with the declared adaptations in
 [algorithm.md](references/algorithm.md). The
 [official release](https://github.com/A-EVO-Lab/a-evolve/tree/3c7c7b8c62a3f07da1d4407aa03f0ca079954bcf)
-is pinned for provenance. A frozen Solver reads one complete learned SKILL.md
-and applies its rules when their conditions hold; the original Solver reflects
+is pinned for provenance. A frozen Solver reads the fixed Reader and every current-context Skill body
+in full, plus every general description, then applies their rules when their conditions hold; the original Solver reflects
 on negative feedback in its own conversation to produce candidates; one Evolver compiles each
 complete batch with ADD / MERGE / REVISE / SKIP at general and topic levels.
 Keep the final compilation. There is no score-based candidate search or
@@ -44,9 +44,10 @@ Resolve together, from the request or frozen configuration:
 - One pass, one answer/feedback attempt per training task and one compilation
   per batch; runs=1 per test State by default. Freeze any changes before work.
 - Initially empty private library; at most 5 general and 5 entries per topic.
-  Export every retained rule into one SKILL.md of at most 16,000 UTF-8 bytes,
-  including the fixed Reader, metadata and framing. H0 uses the same format
-  with no rules. Keep this full-file budget fixed; record full-text delivery
+  Export each retained entry as an independent native Skill. The fixed Reader,
+  its complete manifest, and every Skill body and metadata together fit 16,000
+  UTF-8 bytes. H0 uses the same Reader with no methods. Keep this package budget
+  fixed; record context-body/general-description loading
   and byte budgeting as adaptations.
 - Current experiment USD authorization covering the main Session, every
   worker/role/Target and failed attempt. Historical approval is insufficient.
@@ -64,7 +65,7 @@ projects or read credentials. Read [state.md](references/state.md) and
 clear another experiment's State.
 
 Freeze versions and source hashes, runtime, training/test rosters, attempt and
-repeat counts, compilation limits and full-file byte budget, feedback predicate, phase order, concurrency,
+repeat counts, compilation limits and package byte budget, feedback predicate, phase order, concurrency,
 task timeout and compilation reserve, deployment pins, H0 State/package hashes,
 budget reserves and all adaptations. Use the native State and snapshot format.
 The Solver's models, instructions and tools stay fixed; only the learned slot
@@ -119,9 +120,11 @@ GDPevo experiment:
    are considered, but neither must be populated and coverage may use SKIP.
    Even zero candidates requires
    its real return and explicit empty decisions. Use compile and export to
-   validate its operations and produce the single complete learned SKILL.md.
-   All final tasks receive and read those same bytes. No per-task retrieval,
-   truncation or omitted retained rules is permitted. Refine an oversized
+   validate its operations and produce the complete Reader plus independent learned Skills.
+   All final tasks receive the same frozen package: fully read the Reader,
+   every current-context/topic body and all general descriptions; never read
+   general bodies. No per-task retrieval, truncation or omitted required
+   loading content is permitted. Refine an oversized
    unsealed draft through the existing validation step. Do not
    rewrite a role's content or generate executable support files.
 5. Verify the exported package and publish its exact bytes following state.md.

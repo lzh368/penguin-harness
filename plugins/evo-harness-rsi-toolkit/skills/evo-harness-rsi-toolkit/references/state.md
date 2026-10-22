@@ -5,13 +5,13 @@ exported by `evo.py` from `[]` with the frozen limits. Install it at
 `STATE/skills/evo-harness-learned/`. Append exactly once to `STATE/AGENTS.md`:
 
 ```text
-Before business actions, read the complete skills/evo-harness-learned/SKILL.md in your Agent State using native read_file or a separate foreground cat of that exact file. Only the Reader's supported read-only public task inspection may precede this complete read. Every rule is provided in this one file; there is no per-task selection step. Apply a rule only after checking its task conditions and necessary premises. Do not modify your State.
+Before business actions, read the complete skills/evo-harness-learned/SKILL.md including all general descriptions and every current-context Skill whose manifest load_mode is body in your Agent State using native read_file or a separate foreground cat of each exact file. Only the Reader's supported read-only public task inspection may precede these complete reads. Every task reads the same context bodies and general descriptions; never read general Skill bodies. There is no per-task selection step. Apply a rule only after checking its task conditions and necessary premises. Do not modify your State.
 ```
 
 The fixed Reader, max_bytes, models and tools stay identical in
 H0 and final. For a new held-out Target, use the native preparation below to
 disable memory and hooks; retain those settings throughout. Existing Targets need a snapshot before changes and
-authorization for changes beyond the learned slot. Never reset existing work.
+authorization for changes beyond the declared learned package. Never reset existing work.
 
 Before freezing a new H0, set the output capacity of both `exec_command` and
 `input_command` to at least `6 * max_bytes + 8192` characters: **104192** when the
@@ -73,17 +73,22 @@ do not disable Trainer hooks to bypass a rejected operation. This temporary
 delegation State is never the test State. The training
 adapter launches it as a native root, permitting one level of role children.
 Once the group exports its package, the host Controller verifies and copies
-only `artifacts/submission/skill/` into the Target learned slot, preserving every
-byte. No host regeneration/rewording of role content. The package allowlist is
-exactly SKILL.md: the fixed Reader and all retained general/topic rules in one
-file. The whole file, including metadata and framing, fits max_bytes; every
-physical line fits 2000 UTF-16 code units. No runtime index, selector, supporting
-code or per-entry files are installed. Compare the exported hash, installed
-slot hash, tar members and complete file observations in each Target's trace.
-All five final tasks receive the same complete bytes; loading a rule does not
+only the verified `artifacts/submission/skill/` package, preserving every byte.
+Use `evo.package_state_files` to map root SKILL.md to
+`skills/evo-harness-learned/SKILL.md` and each declared
+`methods/<native-name>/SKILL.md` to `skills/<native-name>/SKILL.md`. These sibling
+Skill directories are independently discoverable by native Penguin. Never place
+methods only below the Reader directory or regenerate/reword content. The exact
+manifest is the file allowlist; no selector, index, supporting code or unlisted
+files are installed. Reader plus manifest plus all body/frontmatter bytes fit
+max_bytes; every physical line fits 2000 UTF-16 code units. Compare exported
+file hashes, mapped State hashes, tar members and every complete file observation
+in each Target's trace.
+All five final tasks receive the same context bodies and general descriptions.
+General body reads are rejected even after required reads finish. Loading a rule does not
 make its applicability conditions true. Never shorten or drop rules at injection.
 
-Archive old State, stage the new slot, increment State version, snapshot and
+Archive old State, stage the exact new learned file set, increment State version, snapshot and
 hash before evaluation. On a failure retain the interrupted version and
 evidence; do not silently publish an empty package. Exact H0-equivalent
 packages use H0 measurements as reuse, never another score chosen afterward.
@@ -92,8 +97,8 @@ For guarded continuous GDPevo, first validate the full verify-export request,
 then create the freeze request described in [control.md](control.md). Its native
 snapshots contain agent_state/ as their root, unlike the worker's State-only
 transport tar. verify-freeze compares every State file and the full learned
-package. Only the learned slot and one native plain top-level integer version
-may differ; the full-file byte budget remains fixed. H0 is always the same
+package. Only the declared Reader/method Skill paths and one native plain top-level
+integer version may differ; the combined package byte budget remains fixed. H0 is always the same
 valid Reader format with empty rules. Changed guidance requires final_version > h0_version. An equivalent
 no-op requires a successfully sealed complete training batch, identical State
 file contents and identical versions; missing/failed training is never no-op.

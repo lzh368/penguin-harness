@@ -1,0 +1,11 @@
+{
+  "source_trace": "agent/penguin/traces/default_agent/2026-10-22/session-2026-10-22-08-02-13-4efa1b1d_001.jsonl",
+  "source_trace_sha256": "ee35daec9760a4de506343312fdefb96957b70fd391b933ccdbdda2c79c33a3c",
+  "call": {
+    "index": 197,
+    "call_id": "call_00_Gq8KUFS5mP4E7qw1mM8b8306",
+    "cmd": "python3 - <<'EOF'\nimport json\np=\"/logs/agent/evo-harness/roles/train_004/candidates.json\"\nd=json.load(open(p))\nfor c in d:\n    for e in c[\"evidence\"]:\n        if e[\"kind\"] in (\"answer\",\"feedback\"):\n            e.pop(\"sha256\",None)\nopen(p,\"w\").write(json.dumps(d,indent=2)+\"\\n\")\nprint(len(d), [len(c[\"evidence\"]) for c in d])\nEOF"
+  },
+  "source_candidate_path": "/logs/agent/evo-harness/roles/train_004/candidates.json",
+  "classification": "Original R15 attempt remains invalid: post-judge arbitrary Python. No execution or scoring data included."
+}

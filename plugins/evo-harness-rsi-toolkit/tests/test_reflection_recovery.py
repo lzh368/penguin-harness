@@ -137,14 +137,59 @@ class ReflectionRecoveryTests(unittest.TestCase):
         error = self.f.seal()
         self.assertFalse(error["complete"])
         self.assertEqual(error["code"], "candidate_draft_invalid")
-        self.f.candidate_write()
+        self.assertEqual(error["output_path"], str(self.f.output))
+        call = error["write_call"]
+        self.assertEqual(call["tool"], "write_file")
+        self.assertEqual(call["arguments"]["file_path"], str(self.f.output))
+        arguments = {**call["arguments"], "content": evo.encoded([self.f.candidate]).decode()}
+        self.f.output.write_text(arguments["content"])
+        self.f.tool(call["tool"], arguments, "Wrote file")
         self.assertTrue(self.f.seal()["complete"])
         self.f.finish()
         context = evo.read(self.f.capture()["path"])
         evo.validate_contexts([context], [self.f.task])
 
+    def test_018_original_python_and_same_own_path_are_still_boundary_violations(self):
+        record = json.loads((Path(__file__).parent / "fixtures/018-candidate-python-command.json").read_text())
+        self.f.read_feedback(); self.f.candidate_write()
+        before = list(self.f.rows)
+        for command in (record["call"]["cmd"], record["call"]["cmd"].replace(record["source_candidate_path"], str(self.f.output))):
+            with self.subTest(original=command == record["call"]["cmd"]):
+                self.f.rows = list(before)
+                call = self.f.tool("exec_command", {"cmd": command}, "SYNTHETIC no actual Python execution")
+                error = self.failed_seal(evo.ReflectionBoundaryError)
+                self.assertEqual((error.phase, error.tool_call_id), ("post_judge", call))
+                self.assertIn("one literal helper request", str(error))
+
+    def test_answer_feedback_extra_sha_is_ignored_without_cleanup_call(self):
+        self.f.candidate["evidence"] = [{"kind": kind, "claim": "SYNTHETIC original observation",
+            "epistemic": "observed", "sha256": "not-used-for-validation"} for kind in ("answer", "feedback")]
+        context = self.capture_valid()
+        self.assertTrue(context["reflection"]["status"] == "sealed")
+        self.assertTrue(all("sha256" in item for item in evo.read(self.f.output)[0]["evidence"]))
+
+    def test_equivalent_018_cleanup_uses_exact_native_write_without_new_judge(self):
+        self.f.read_feedback()
+        candidate = {**self.f.candidate, "evidence": [{"kind": kind, "claim": "SYNTHETIC original observation",
+            "epistemic": "observed", "sha256": "unused"} for kind in ("answer", "feedback")]}
+        self.f.candidate_write([candidate])
+        corrected = {**candidate, "evidence": [{key: value for key, value in item.items() if key != "sha256"}
+                                               for item in candidate["evidence"]]}
+        contract = evo.candidate_contract(self.f.task, "attempt-1", [str(self.f.input)], str(self.f.output))
+        call = contract["write_call"]
+        args = {**call["arguments"], "content": evo.encoded([corrected]).decode()}
+        self.f.output.write_text(args["content"])
+        self.f.tool(call["tool"], args, "Wrote file")
+        self.assertTrue(self.f.seal()["complete"])
+        self.f.finish()
+        context = evo.read(self.f.capture()["path"])
+        evo.validate_contexts([context], [self.f.task])
+        self.assertEqual(sum(row.get("payload", {}).get("tool_call_id") == "judge-once"
+                             and row["payload"].get("type") == "tool_call" for row in self.f.rows), 1)
+        self.assertEqual(self.f.answer.read_bytes(), context["answer_text"].encode())
+
     def test_contract_has_exact_public_hashes_and_no_business_contents(self):
-        contract = evo.candidate_contract(self.f.task, "attempt-1", [str(self.f.input)])
+        contract = evo.candidate_contract(self.f.task, "attempt-1", [str(self.f.input)], str(self.f.output))
         self.assertEqual(contract["input_refs"], [{"path": str(self.f.input),
             "sha256": evo.digest(self.f.input.read_bytes()), "bytes": len(self.f.input.read_bytes())}])
         self.assertEqual(contract["candidate_fields"]["task_id"], {"const": self.f.task})
@@ -186,7 +231,7 @@ class ReflectionRecoveryTests(unittest.TestCase):
         self.assertIn("unsealed candidate JSON", error["next_action"])
 
     def test_native_public_input_read_can_reference_prepared_hash_without_hash_query(self):
-        contract = evo.candidate_contract(self.f.task, "attempt-1", [str(self.f.input)])
+        contract = evo.candidate_contract(self.f.task, "attempt-1", [str(self.f.input)], str(self.f.output))
         for index, row in enumerate(self.f.rows):
             p = row.get("payload", {})
             if p.get("type") == "tool_call_output" and str(self.f.input) in p.get("output", ""):

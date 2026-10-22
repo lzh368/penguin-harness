@@ -42,8 +42,8 @@ An acknowledgment or a path in the prompt alone is not proof of reading.
 
 ## Solver (group training leaf)
 
-First satisfy the inherited learned Reader: observe the complete single learned
-SKILL.md through its supported read operation before business actions, helper
+First satisfy the inherited learned Reader: observe it, including all general descriptions, and every
+listed current-context Skill body in full through its supported read operations before business actions, helper
 calls, or file writes. Then read the installed training.json beside the method
 Skill for the exact frozen train_ids/attempt and canonical path policy; it
 contains no other member's answers. Read the complete assigned role file with
@@ -131,7 +131,9 @@ tool references carry a tool_call_id already observed in this same Session.
 The contract examples are complete objects: sha256 and tool_call_id are siblings
 of kind, not nested inside input/tool wrappers.
 `answer` and `feedback` references need only kind, claim and epistemic: no hash,
-path or extra identifier is required. The initial candidate contract supplies
+path or extra identifier is required. Existing extra sha256 fields on these two
+kinds are ignored by validation, not additional evidence; do not perform a
+mechanical edit merely to delete them. The initial candidate contract supplies
 all required fields before scoring; its hash table does not replace reading the
 public inputs. Do not inspect source/trace files or calculate hashes after judge.
 If a tool id is unavailable in your current observation, do not invent it or
@@ -160,9 +162,11 @@ Use the fixed validation/seal request supplied in your original Solver prompt;
 this checks structure and references, not the truth of an interpretation.
 A normal `complete: false`, `code: candidate_draft_invalid` seal result permits
 correction of your own unsealed draft; fatal boundary errors remain terminal.
-Rewrite the complete array with native write_file, without new attempts or
-feedback, then use the
-fixed seal-role-output request (file-digest only for unguarded RSI) and return
+Use the initial contract's exact output_path and write_call template (also
+returned with candidate_draft_invalid). Replace only arguments.content with
+the complete corrected JSON array as text and call native write_file directly.
+Use the draft already in your history; no Python/shell read-modify-write or
+read_file is needed or permitted. Then use the fixed seal-role-output request (file-digest only for unguarded RSI) and return
 its receipt. The sealed output is fixed; the coordinator cannot rewrite it. The internal
 seal label `reflector` identifies this phase of the original Solver, not a new
 Agent or a second billable Session. You do not edit State.
@@ -181,6 +185,11 @@ Produce one JSON array of operations:
 `op` ADD/MERGE/REVISE/SKIP, nonempty `candidate_ids`, and `reason`; non-SKIP
 operations include a complete replacement `entry` with id, level
 (general/topic), topic for topic entries, trigger, scope and Markdown body.
+General entries also require an explicit description that you author: concise
+purpose and applicability, not the procedure copied into metadata. All general
+descriptions are loaded; general bodies are stored but not loaded. Current-context
+(topic) bodies are all loaded. Preserve the evidence-supported level; never
+relabel a general rule as topic to bypass this policy or fill an empty layer.
 One operation can synthesize several candidates. Every candidate needs an
 explicit decision, including SKIP. Consider both general and topic levels;
 a candidate may support one operation at each level, only one level, or neither.
@@ -199,16 +208,16 @@ this batch has no score-based selection or training retest.
 
 The continuous role prompt supplies the exact frozen limits and max_bytes plus
 a validate-decisions request. limits.general caps general entries; limits.topic
-caps entries per topic. All retained entries are rendered into one SKILL.md;
-max_bytes covers its complete UTF-8 content, including the fixed Reader,
-metadata, headings and framing. Every physical line of that exported file must
+caps entries per topic. Each retained entry becomes an independent native Skill;
+max_bytes covers the entire package: fixed Reader, complete manifest, and all
+Skill bodies, frontmatter, headings and framing. Every physical line must
 fit 2000 UTF-16 code units so native read_file can observe it completely.
-Validate your own draft before sealing: the helper checks the actual full-file
+Validate your own draft before sealing: the helper checks the actual complete-package
 rendering and compilation constraints without publishing State or changing
 content. If oversized, refine your unsealed draft, combine supported overlap
 or use a justified SKIP; wrap overlong prose lines without clipping text.
 The coordinator cannot rewrite decisions, and export/injection cannot truncate
-the file or drop retained rules to fit. Limits are ceilings, not output quotas.
+any file or drop retained rules to fit. Limits are ceilings, not output quotas.
 
 Generalize only when evidence supports transfer; a useful topic procedure does
 not need recurrence in multiple tasks. Preserve each rule's field, entity,

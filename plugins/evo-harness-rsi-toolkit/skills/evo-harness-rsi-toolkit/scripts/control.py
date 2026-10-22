@@ -782,7 +782,8 @@ def role_request(req, meta, scratch, mode):
         access = Path(t["workspace"]) / "environment_access.md"
         check(access.is_file() and inputs, "public input/environment access missing")
         inputs.append(str(access))
-        candidate_contract = evo.candidate_contract(task, t["attempt_id"], inputs)
+        candidate = private / "roles" / task / "candidates.json"
+        candidate_contract = evo.candidate_contract(task, t["attempt_id"], inputs, str(candidate))
         solver_interface = (
             "Learn a reusable method from your own execution, retaining supported steps and conditions.\n"
             "Execution phases in this one native Session:\n"
@@ -792,7 +793,8 @@ def role_request(req, meta, scratch, mode):
             "3. On negative feedback, reason from the history already present, write your candidate array with native write_file, "
             "then execute the fixed seal request. Success returns after the complete feedback read without candidates. "
             "Post-judge tools are only bound feedback read-material, own candidate/request write_file and seal-role-output. "
-            "For an unsealed draft correction rewrite the complete candidate file with write_file.\n"
+            "Use the candidate contract's exact output_path and native write_call template; replace content with the complete JSON array. "
+            "An unsealed correction uses that same native write_file call, not Python/shell read-modify-write.\n"
             "No post-judge source/trace inspection or hash calculation is needed or permitted: use the supplied input_refs, "
             "already observed tool-call ids, or answer/feedback evidence without extra identifiers. "
             "A draft/receipt repair changes no answer or learning attempt. An unexecuted request may be corrected with write_file using the supplied template; "
@@ -813,7 +815,6 @@ def role_request(req, meta, scratch, mode):
         text += "\nBefore scoring, write and execute this preparation JSON with the local URL from environment_access.md; preparation makes zero judge calls or other HTTP calls: " + json.dumps(template)
         text += "\nUse its returned canonical judge command for the one actual scoring call: "
         text += f"python3 -B {shlex.quote(str(TOOL))} {shlex.quote(paths['judge_request'])}\n"
-        candidate = private / "roles" / task / "candidates.json"
         reflection_requests = candidate.parent / "requests"
         reflection_requests.mkdir(parents=True, exist_ok=True)
         text += (f"Before judge, ordinary preparation JSON may use {reflection_requests}. "
@@ -853,8 +854,8 @@ def role_request(req, meta, scratch, mode):
         text += "\nRead all these files in full: " + json.dumps(materials)
         text += "\nExact frozen compilation/injection limits: " + json.dumps({key: t[key] for key in ("limits", "max_bytes")})
         text += ("\nlimits.general is the total number of general entries; limits.topic is the maximum per topic. "
-                 "All compiled entries are exported together in one SKILL.md, with no entry selection. The entire file, including the fixed Reader, manifest and every procedure, must fit max_bytes UTF-8 bytes. "
-                 "Each physical SKILL.md line must fit 2000 UTF-16 code units: wrap without dropping conditions or content. All tasks read the same entire file. "
+                 "Each retained entry is exported as an independent native Skill. The fixed Reader, complete manifest and all Skill bodies/frontmatter together must fit max_bytes UTF-8 bytes, with no entry selection. "
+                 "Each physical SKILL.md line must fit 2000 UTF-16 code units: wrap without dropping conditions or content. All tasks read the same Reader with every general description plus every current-context/topic Skill body in full; general Skill bodies are not loaded. Supply a concise explicit description for each general entry, describing its purpose and applicability rather than copying its procedure. Keep levels evidence-based; do not relabel general entries as topic to load their bodies. "
                  "Before sealing, validate your own decisions with validate-decisions using the paths and frozen budgets below; "
                  "correct your own invalid JSON before seal-role-output, never ask the coordinator to rewrite it.\n")
         text += "Validation request: " + json.dumps({"op": "validate-decisions", "train_ids": t["train_ids"],

@@ -149,8 +149,8 @@ A verified identical no-op uses the same version and identical State file
 contents, even if tar metadata differs.
 
 verify-freeze reruns all original export/trace evidence every time. It checks
-the exact final slot, valid H0 Reader with empty rules, unchanged full-file byte budget,
-unchanged State outside the slot/top-level integer version, native snapshots
+the exact mapped Reader and method files, valid H0 Reader with empty rules,
+unchanged package byte budget, unchanged State outside those files/top-level integer version, native snapshots
 without links/escape/duplicates, and actual Target hashes. An earlier successful
 receipt never substitutes for this recheck.
 

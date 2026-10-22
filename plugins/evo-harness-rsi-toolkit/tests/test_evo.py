@@ -125,19 +125,20 @@ class BatchTests(unittest.TestCase):
         path.write_bytes(evo.encoded(value))
         return path
 
-    def test_complete_batch_compiles_and_exports_one_complete_skill(self):
+    def test_complete_batch_compiles_and_exports_independent_skill(self):
         self.assertEqual(evo.compile_batch(self.req)["candidates"], 5)
         pkg = self.root / "skill"
         receipt = evo.export_skill({"library": self.req["output"], "limits": self.req["limits"],
                                     "max_bytes": 16000, "output": str(pkg)})
         self.assertEqual(receipt, evo.validate_package(pkg))
         raw = (pkg / "SKILL.md").read_bytes()
-        self.assertEqual(set(receipt["files"]), {"SKILL.md"})
-        self.assertEqual({p.name for p in pkg.iterdir()}, {"SKILL.md"})
-        self.assertEqual(receipt["format"], "evo-full-skill-v1")
+        item = evo.parse_reader(raw)["entries"][0]
+        self.assertEqual(set(receipt["files"]), {"SKILL.md", item["path"]})
+        self.assertEqual({p.name for p in pkg.iterdir()}, {"SKILL.md", "methods"})
+        self.assertEqual(receipt["format"], "evo-multi-skill-v1")
         self.assertEqual(receipt["entries"], 1)
         self.assertEqual(receipt["max_bytes"], 16000)
-        self.assertEqual(raw.decode().count(self.entry["body"]), 1)
+        self.assertEqual((pkg / item["path"]).read_text().count(self.entry["body"]), 1)
         self.assertEqual(evo.parse_skill(raw)["entries"][0]["id"], self.entry["id"])
         self.assertFalse(list(pkg.rglob("__pycache__")))
 
@@ -147,7 +148,7 @@ class BatchTests(unittest.TestCase):
             evo.compile_batch(self.req)
 
     def test_same_candidate_can_support_both_harness_levels(self):
-        general = {**self.entry, "id": "general-procedure", "level": "general", "scope": "documented ledgers"}
+        general = {**self.entry, "id": "general-procedure", "level": "general", "description": "Review documented ledger fields.", "scope": "documented ledgers"}
         self.decisions.append({"op": "ADD", "candidate_ids": [c["id"] for c in self.candidates],
                                "reason": "shared structure across topics", "entry": general})
         self.save("decisions", self.decisions)
@@ -456,7 +457,7 @@ class BatchTests(unittest.TestCase):
         self.assertTrue(result["complete"])
         self.assertEqual(Path(request["decisions"]).read_bytes(), before)
         self.assertFalse(Path(self.req["output"]).exists())
-        with self.assertRaisesRegex(ValueError, "complete SKILL.md exceeds frozen byte budget"):
+        with self.assertRaisesRegex(ValueError, "complete Skill package exceeds frozen byte budget"):
             evo.validate_decisions({**request, "max_bytes": 5})
         with self.assertRaisesRegex(ValueError, "namespace"):
             evo.validate_candidate_file({**self.req, "candidate_prefix": "train_001-attempt-1-"})
@@ -486,7 +487,7 @@ class BatchTests(unittest.TestCase):
     def test_actual_full_skill_line_limit_matches_native_utf16_boundaries(self):
         # Metadata is in the readable entry body, not a separate index. Test
         # actual emitted framing, including Unicode and literal quotation marks.
-        example_line = next(line for line in evo.render_skill([self.entry], 16000).decode().split("\n")
+        example_line = next(line for line in next(raw for path, raw in evo.render_package([self.entry], 16000).items() if path != "SKILL.md").decode().split("\n")
                           if line.startswith("Trigger:"))
         overhead = (len(example_line.encode("utf-16-le")) - len(self.entry["trigger"].encode("utf-16-le"))) // 2
         capacity = 2000 - overhead
@@ -502,7 +503,7 @@ class BatchTests(unittest.TestCase):
                         "max_bytes": 16000}
                 package = self.root / ("readable-" + label)
                 evo.export_skill({**base, "output": str(package)})
-                raw = (package / "SKILL.md").read_bytes()
+                raw = (package / evo.parse_reader((package / "SKILL.md").read_bytes())["entries"][0]["path"]).read_bytes()
                 self.assertEqual(max(len(line.encode("utf-16-le")) // 2 for line in raw.decode().split("\n")), 2000)
                 self.assertFalse(evo.validate_package(package)["empty"])
                 self.save("readability-library", [{**self.entry, "trigger": invalid}])
@@ -516,7 +517,7 @@ class BatchTests(unittest.TestCase):
         self.save("readability-library", [self.entry])
         evo.export_skill({"library": str(self.root / "readability-library.json"), "limits": self.req["limits"],
                           "max_bytes": 16000, "output": str(package)})
-        file = package / "SKILL.md"
+        file = package / evo.parse_reader((package / "SKILL.md").read_bytes())["entries"][0]["path"]
         original = file.read_bytes()
         file.write_bytes(original.replace(self.entry["body"].encode(), b"Unsupported changed rule."))
         with self.assertRaises(ValueError):
