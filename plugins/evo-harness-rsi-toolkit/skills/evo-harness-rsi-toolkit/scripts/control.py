@@ -49,15 +49,24 @@ ROOT_OPS = {"read-material", "file-digest", "capture", "compile", "export", "fin
             "journal", "audit-role", "verify-package", "seal-training"}
 
 
+class ControlProtocolError(ValueError):
+    """A fixed public protocol diagnostic, without raw requests or tool output."""
+
+
 def check(value, message):
-    evo.require(value, message)
+    if not value:
+        raise ControlProtocolError(message)
 
 
-class WorkerPending(ValueError):
+class ControlRuntimeError(ControlProtocolError):
+    """A local parser/runtime failure, distinct from protocol noncompliance."""
+
+
+class WorkerPending(ControlProtocolError):
     """A specific native reply boundary has not completed; never a repair grant."""
 
 
-class WorkerFormatError(ValueError):
+class WorkerFormatError(ControlProtocolError):
     """Only document syntax can qualify for the one existing-value repair."""
 
 
@@ -206,11 +215,16 @@ def worker_yaml(text, mode, allow_fence=False):
     check(isinstance(text, str) and text.strip() and len(text.encode()) <= 1024 * 1024,
           "worker reply must be one bounded plain YAML document")
     if allow_fence:
-        # This is only the immutable pre-repair value source. Never strip the
-        # repaired/final reply, choose among multiple documents, or alter values.
-        fenced = re.fullmatch(r"\s*```(?:yaml|yml|text|plaintext)?[ \t]*\r?\n(.*?)\r?\n```\s*", text, re.S | re.I)
-        if fenced:
-            text = fenced[1]
+        # Only the immutable source of a formatting repair may have a wrapper.
+        # Outside the single fenced document accept plain prose with no YAML/JSON
+        # structure. Never select one record among several or rewrite values.
+        blocks = list(re.finditer(r"(?m)^[ \t]*```(?:yaml|yml|text|plaintext)?[ \t]*\r?\n(.*?)\r?\n[ \t]*```[ \t]*(?=\r?$)", text, re.S | re.I))
+        if len(blocks) == 1:
+            block = blocks[0]
+            prose = text[:block.start()] + text[block.end():]
+            plain_prose = not re.search(r"[{}\[\]:]|```|~~~|(?m:^[ \t]*(?:---|\.\.\.)[ \t]*$)", prose)
+            if plain_prose:
+                text = block[1]
     if re.search(r"(?m)^[ \t]*(?:```|~~~)", text):
         raise WorkerFormatError("worker reply must be plain YAML without Markdown fences")
     check(sha(mode["config"]) == mode["config_sha256"], "frozen experiment config changed")
@@ -222,10 +236,11 @@ def worker_yaml(text, mode, allow_fence=False):
                                 cwd=deployment["penguin_checkout"], env={"PATH": os.defpath}, check=False)
         if parsed.returncode == 2:
             raise WorkerFormatError("worker reply must be exactly one valid plain YAML mapping")
-        check(parsed.returncode == 0, "native worker YAML parser failed")
+        if parsed.returncode != 0:
+            raise ControlRuntimeError("native worker YAML parser failed")
         return json.loads(parsed.stdout)
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
-        raise ValueError("native worker YAML parser failed") from None
+        raise ControlRuntimeError("native worker YAML parser failed") from None
 
 
 def worker_identity(ticket):
@@ -745,12 +760,11 @@ def role_request(req, meta, scratch, mode):
         prior = t["train_ids"][:t["train_ids"].index(task)]
         for previous in prior:
             completed_context(t, previous, meta)
-    text = f"Caller agent: {meta.get('agent_id', state.parent.name)}\n" + role_text(role)
+    role_guidance = role_text(role)
+    text = ""
+    solver_interface = ""
     text += f"\nExact helper: {TOOL}\nPrivate evidence: {private}\n"
-    text += ("\nHelper requests are JSON files you write with write_file. Execute python3 -B EXACT_HELPER ABS_REQUEST.json. "
-             'Full reads use {"op":"read-material","path":"ABS_MATERIAL","offset":0}; repeat offsets 4000,8000,... until end=total. '
-             'Each read-material exec must contain exactly one helper invocation with a literal absolute helper and request path; no variables, shell loops, batching, pipes or redirection. Independent reads may be parallel native tool calls with distinct request files; await every full receipt before sealing. '
-             "Do not edit helpers, State, role text or evidence. Only the Solver uses its exact judge template below.\n")
+    text += '\nFull-read request JSON: {"op":"read-material","path":"ABS_MATERIAL","offset":0}; write it with write_file and use the exact helper above.\n'
     role_file = private / "roles" / (role + ".md")
     if role == "solver":
         directory = Path(t["workspace"]) / "train_tasks" / task
@@ -768,40 +782,49 @@ def role_request(req, meta, scratch, mode):
         access = Path(t["workspace"]) / "environment_access.md"
         check(access.is_file() and inputs, "public input/environment access missing")
         inputs.append(str(access))
+        candidate_contract = evo.candidate_contract(task, t["attempt_id"], inputs)
+        solver_interface = (
+            "Learn a reusable method from your own execution, retaining supported steps and conditions.\n"
+            "Execution phases in this one native Session:\n"
+            "1. Before judge: read the full learned Skill, assigned public inputs and role file; solve and finalize the answer. "
+            "The candidate contract below already supplies its exact JSON fields and input references. Keep tool-call ids from your own observed history when needed.\n"
+            "2. Judge once, then read every raw feedback chunk. The answer and business investigation are now closed.\n"
+            "3. On negative feedback, reason from the history already present, write your candidate array with native write_file, "
+            "then execute the fixed seal request. Success returns after the complete feedback read without candidates. "
+            "Post-judge tools are only bound feedback read-material, own candidate/request write_file and seal-role-output. "
+            "For an unsealed draft correction rewrite the complete candidate file with write_file.\n"
+            "No post-judge source/trace inspection or hash calculation is needed or permitted: use the supplied input_refs, "
+            "already observed tool-call ids, or answer/feedback evidence without extra identifiers. "
+            "A draft/receipt repair changes no answer or learning attempt. An unexecuted request may be corrected with write_file using the supplied template; "
+            "an executed history violation cannot be repaired by inspecting source or retrying.\n"
+            "Candidate contract (data only; author every lesson from actual evidence):\n"
+            + json.dumps(candidate_contract, ensure_ascii=False) + "\n\n")
         grant = {"evo_task": {"split": "train", "task_id": task, "attempt_id": t["attempt_id"], "inputs": inputs}}
         paths = evo.judge_paths(t, task, t["attempt_id"])
         # The Solver fills the existing API URL from its public access document;
         # the helper checks the canonical identity and never permits another attempt.
         text += "\n" + json.dumps(grant, ensure_ascii=False)
-        text += "\nFirst satisfy the learned reader inherited in your Agent State: use native read_file for the public task and the entire learned SKILL.md, completing every page before business actions. Every task observes the same complete frozen Skill; there is no selector. Complete all public inputs before solving. A complete native read_file of a granted public input also satisfies its read audit; do not duplicate that read through the helper. Use read-material for any incomplete or truncated native input; this does not replace the learned reader's own native read_file requirement.\n"
-        text += f"\nBefore judge, read full role file {role_file} using read-material. Read every granted public input completely, either with exact successful native read_file windows (all lines, before judge) or read-material chunks. Native output with any truncation, a line over 2000 UTF-16 units, or a file at least 8 MiB needs read-material instead. This public-input option never applies to the feedback ledger or learning-role materials."
-        text += f"\nFinal answer: {Path(t['answer_dir']) / (task + '.json')}\n"
-        text += "Use judge exactly once via one standalone helper command. Never probe judge directly. "
-        text += "After feedback, do not revise the answer or call the service again.\n"
+        text += f"\nAssigned role file: {role_file}. Complete its read-material receipts before judge. "
+        text += "First satisfy the inherited learned Reader and read every granted public input completely. The candidate input_refs identify those inputs; they are not observations.\n"
+        text += f"Final answer: {Path(t['answer_dir']) / (task + '.json')}\n"
         text += "Canonical judge paths: " + json.dumps({k: str(v) for k, v in paths.items()}, ensure_ascii=False)
         template = {"op": "prepare-judge-request", "task_id": task,
                     "url": "REPLACE_WITH_LOCAL_TRAINING_API_BASE/api/judge"}
-        text += "\nWrite this helper request to a separate private JSON file and execute it (it writes canonical request data and makes zero judge calls): " + json.dumps(template)
-        text += "\nAfter preparation, execute the returned canonical command exactly once. "
-        text += f"It must be: python3 -B {shlex.quote(str(TOOL))} {shlex.quote(paths['judge_request'])}\n"
-        text += "Judge stdout is a compact receipt. Afterwards read the canonical output feedback file fully with read-material chunks; never rerun judge to recover truncated output.\n"
+        text += "\nBefore scoring, write and execute this preparation JSON with the local URL from environment_access.md; preparation makes zero judge calls or other HTTP calls: " + json.dumps(template)
+        text += "\nExecute its returned canonical judge command exactly once: "
+        text += f"python3 -B {shlex.quote(str(TOOL))} {shlex.quote(paths['judge_request'])}\n"
         candidate = private / "roles" / task / "candidates.json"
         reflection_requests = candidate.parent / "requests"
         reflection_requests.mkdir(parents=True, exist_ok=True)
-        text += (f"\nAfter judge, use only {reflection_requests} for JSON helper requests. "
-                 "Use native write_file to create one read-material request per feedback offset and await every full receipt. "
-                 "Do not alter a request after its execution. Judge anomalies are method failures, never negative learning feedback. "
-                 "After successful scoring, the answer is immutable. No more business queries, second judge, skill-library reads, "
-                 "other-task candidates, or test materials are allowed. Keep the task history already observed in this same Session.\n")
-        text += (f"If authorized feedback is negative, perform the in-session reflection below and write candidates only to {candidate}. "
-                 f"Every id must start with {task}-{t['attempt_id']}- (for example {task}-{t['attempt_id']}-c01). "
-                 "Use lesson, trigger, evidence and scope_hint. A justified empty candidate list still requires the same-session reflection "
-                 "seal; absence of reflection is not an empty update. The seal validates the draft against this original task, answer and feedback. "
-                 "You may correct your own unsealed JSON after a structural validation error. "
-                 f"Then seal using {reflection_requests / 'seal.json'} and return after complete=true. "
-                 "For a successful non-negative result, finish the full feedback read and return without candidate generation or reflection sealing. "
-                 "Do not return after judge before checking whether reflection is required.\n")
-        text += "\nBinary inputs (read via appropriate tools, do not fabricate text receipts): " + json.dumps(binary)
+        text += (f"Before judge, ordinary preparation JSON may use {reflection_requests}. "
+                 "After judge, use fresh files in that directory only for bound feedback reads and the fixed seal request; do not repurpose an executed request.\n")
+        text += "First feedback request: " + json.dumps({"op": "read-material", "path": paths["output"], "offset": 0})
+        text += "\nRepeat offsets 4000,8000,... until end=total; await all complete raw feedback receipts. The short judge receipt is not the feedback.\n"
+        text += (f"Negative feedback candidate output: {candidate}; write the complete JSON array (including a justified []). "
+                 f"Seal request path: {reflection_requests / 'seal.json'}. "
+                 "Use the exact Seal request below in this original Session. Success requires full feedback observation but no candidate/seal. "
+                 "Judge anomalies stop the task and are not negative feedback.\n")
+        text += "Binary inputs (observe through appropriate tools; do not fabricate text receipts): " + json.dumps(binary)
         slot = f"solver/{task}/{t['attempt_id']}"
     else:
         contexts = [completed_context(t, task_id, meta) for task_id in t["train_ids"]]
@@ -847,13 +870,12 @@ def role_request(req, meta, scratch, mode):
         text += ("\nThe following grant and seal request apply only to negative-feedback reflection; a successful Solver returns after the full feedback read without using this seal.\n" if role == "solver" else "")
         text += "\nSeal request: " + json.dumps({"op": "seal-role-output", "role": seal_role,
                     **({"task_id": task} if role == "solver" else {})})
-        text += ("\nFor a negative Solver result, write the seal request only to your assigned reflection request directory seal.json; "
-                 "the Evolver writes its seal request in its scratchpad. Execute one foreground python3 -B command using the literal absolute helper and request paths. "
-                 "The helper discovers your current native Session from its server-injected environment and checks all your original trace segments, fixed materials and draft structure. "
-                 "If complete=false, read each missing offset in this same leaf with a separate read-material exec and retry seal; "
-                 "if draft validation fails, correct only your own unsealed draft and retry. This is receipt/format repair, never another Solver attempt, service call, or judge call. "
-                 "When sealing is required, do not claim completion until complete=true. Generic file-digest is not a role seal. "
-                 "Do not request parent steering. After successful sealing, do not change your output or retry learning.\n")
+        text += ("\nWrite this request with native write_file; Solver uses its assigned seal.json and Evolver its scratchpad. "
+                 "Execute one foreground python3 -B command with the exact absolute helper/request paths. "
+                 "The server binds the seal to this current native Session. Return only after complete=true when sealing is required. "
+                 "Use explicit recoverable draft/missing-read diagnostics in this same leaf; an executed history violation is final.\n")
+    text = (f"Caller agent: {meta.get('agent_id', state.parent.name)}\n" + solver_interface
+            + role_guidance + text)
     # The coordinator copies only a short native call. Preserve the complete
     # original role/grants in an immutable file; do not ask the model to retype
     # thousands of exact characters through a truncated tool-result window.
@@ -1538,6 +1560,25 @@ def execute(req):
     raise ValueError("unknown control operation")
 
 
+def public_error(error):
+    """Separate repairable format, protocol rejection and local runtime failures."""
+    if isinstance(error, ControlRuntimeError):
+        return {"error_code": "control_runtime_failure", "error": str(error), "retry_kind": "engineering_diagnosis"}
+    if isinstance(error, WorkerPending):
+        return {"error_code": "worker_pending", "error": str(error), "retry_kind": "await_original"}
+    if isinstance(error, WorkerFormatError):
+        return {"error_code": "worker_format_invalid", "error": str(error), "retry_kind": "registered_format_only"}
+    if isinstance(error, ControlProtocolError):
+        return {"error_code": "protocol_rejected", "error": str(error), "retry_kind": "none"}
+    if isinstance(error, json.JSONDecodeError):
+        return {"error_code": "invalid_request_json", "error": "Control request or evidence is not valid JSON", "retry_kind": "inspect_request"}
+    if isinstance(error, (KeyError, TypeError)):
+        return {"error_code": "invalid_request_shape", "error": "Control request or bound evidence lacks its required structure", "retry_kind": "inspect_request"}
+    if isinstance(error, OSError):
+        return {"error_code": "local_evidence_unavailable", "error": "A required local protocol file or runtime dependency could not be accessed", "retry_kind": "engineering_diagnosis"}
+    return {"error_code": "control_validation_failed", "error": "Control validation failed; preserve the request and original evidence for engineering diagnosis", "retry_kind": "none"}
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("request", nargs="?")
@@ -1547,8 +1588,7 @@ if __name__ == "__main__":
     try:
         result = hook(json.load(sys.stdin), args.state) if args.hook else execute(evo.read(args.request))
         print(json.dumps(result, ensure_ascii=False, allow_nan=False))
-    except Exception:
-        # Wrapper converts this non-zero result to an explicit native denial.
-        # Do not leak raw requests, credentials or provider/tool output in errors.
-        print(json.dumps({"error": "Evo guard input or runtime failure"}), file=sys.stderr)
+    except Exception as error:
+        # Nonzero remains a denial; expose no request, credential or tool output.
+        print(json.dumps(public_error(error), ensure_ascii=False), file=sys.stderr)
         sys.exit(2)

@@ -9,9 +9,8 @@ Before business actions, read the complete skills/evo-harness-learned/SKILL.md i
 ```
 
 The fixed Reader, max_bytes, models and tools stay identical in
-H0 and final. On a new held-out Target
-set `memory.enabled: false` and `hooks.enabled: false` in system_config.yaml;
-retain these throughout. Existing Targets need a snapshot before changes and
+H0 and final. For a new held-out Target, use the native preparation below to
+disable memory and hooks; retain those settings throughout. Existing Targets need a snapshot before changes and
 authorization for changes beyond the learned slot. Never reset existing work.
 
 Before freezing a new H0, set the output capacity of both `exec_command` and
@@ -21,38 +20,26 @@ characters, which leave insufficient room for full guidance plus tool framing
 or escaped training material receipts. This is a fixed tool-output capacity, not a larger learned
 Skill or injection budget. H0, Trainer and final retain the same capacity.
 
-The exact native YAML field is `tools.builtin[].maxOutputLength`, selected by
-`name`. Edit those two entries in the complete tools.builtin array created by
-native `penguin agent create`; preserve every other entry and every tool schema,
-description, permission and timeout. **Do not replace the array with two partial
-tool records**: native Penguin does not merge partial records with defaults.
-A model-free preparation command may update the fresh Target as follows (replace
-the literal State path and frozen byte limit). Preserve native YAML formatting:
-generic YAML reserialization can change its indentation and multiline scalar
-style, so use this exact field-only update on the native-created configuration.
-Also freeze the native adapter's `max_turns: -1` before taking the snapshot; the
-time limit still applies, and startup must not rewrite the frozen State.
+Prepare the fresh Target through the pinned Benchmark's native API helper before
+any Session or snapshot exists; do not hand-edit or regex-rewrite native YAML:
 
-```python
-from pathlib import Path
-import re
-state_config = Path("<STATE>/system_config.yaml")
-text = state_config.read_text()
-required_output_chars = 6 * 16000 + 8192
-assert len(re.findall(r"(?m)^max_turns: -?[0-9]+$", text)) == 1
-text = re.sub(r"(?m)^max_turns: -?[0-9]+$", "max_turns: -1", text)
-for name in ("exec_command", "input_command"):
-    pattern = r"(?m)^    - name: " + name + r"\n(?:(?!    - name:|  [A-Za-z_]|\S).*(?:\n|$))*"
-    blocks = list(re.finditer(pattern, text))
-    assert len(blocks) == 1, "Require the complete native tool configuration"
-    block = blocks[0]
-    limits = re.findall(r"(?m)^      maxOutputLength: ([0-9]+)$", block[0])
-    assert len(limits) == 1, "Require the native output-limit field"
-    updated = re.sub(r"(?m)^      maxOutputLength: [0-9]+$",
-                     "      maxOutputLength: " + str(max(int(limits[0]), required_output_chars)), block[0])
-    text = text[:block.start()] + updated + text[block.end():]
-state_config.write_text(text)
+```text
+node <benchmark>/agents/penguin_agent/helper.mjs prepare-evo-state <PENGUIN_HOME> <projectId> <targetAgentId> target
 ```
+
+The helper accepts only a fresh version-1 Agent with no native Sessions or
+snapshots. It reads the complete native configuration, preserves the entire
+built-in tools array and all other fields, sets maxTurns=-1, disables memory and
+Target hooks, and raises only the two output capacities to at least 104192. It
+uses one native config update when needed and verifies effective values. The
+model, thinking settings, time limits, permissions and other tools are unchanged.
+A matching configuration is a read-only no-op. Use its trainer mode only for a
+separately created fresh native Trainer; the ordinary prepare-trainer operation
+copies the already prepared H0 and installs the declared training hooks.
+
+Freeze only after preparation and readback. Harbor startup must find the frozen
+max_turns=-1 and make no config update; a mismatch is a setup error, never a
+reason to reserialize or repair a frozen State during evaluation.
 
 Read the file back through native State loading and verify both effective tool
 limits before recording the H0 snapshot. prepare-trainer and verify-freeze reject

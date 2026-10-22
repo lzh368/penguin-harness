@@ -52,7 +52,8 @@ thinking_level: <fixed thinking level>
 expected_members: [train_001, train_002, train_003, train_004, train_005]
 ~~~
 
-Invoke the returned call using native run_subagent. Record the child id; await
+Invoke the complete returned call unchanged using native run_subagent, including
+its description. Do not rewrite a registered prompt or its native arguments. Record the child id; await
 that child without new steering. Do not start any held-out worker yet.
 
 ## Training evaluation worker
@@ -96,7 +97,9 @@ native traces or role-authored candidates/decisions.
    window; never extend the task or spend a historical allocation.
 2. In listed member order request role-request with role=solver and task_id.
    The helper constructs the full role prompt, literal evo_task grant, public
-   text inputs, binary hashes, exact answer/judge paths and frozen runtime.
+   text inputs, binary hashes, exact answer/judge paths and frozen runtime. Its
+   initial prompt also supplies the exact candidate schema and authorized input
+   hashes, so reflection requires no later source/trace inspection or hash tool.
    Invoke its returned run_subagent call unchanged. This one Solver keeps its
    native conversation through the single judge, complete raw feedback and,
    for negative feedback, candidate generation and sealing. Its allocation

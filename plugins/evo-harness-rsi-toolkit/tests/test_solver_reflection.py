@@ -265,6 +265,10 @@ class SolverReflectionTests(unittest.TestCase):
         self.read_feedback()
         path = self.requests / "foreign.json"
         self.write(path, {"op": "read-material", "path": str(self.private / "prebatch-library.json")})
+        # A request file is only data; the actual forbidden invocation is the
+        # boundary violation. Unexecuted request drafts can be corrected.
+        self.tool("exec_command", {"cmd": shlex.join(["python3", "-B", str(self.helper), str(path)])},
+                  "SYNTHETIC forbidden read attempt")
         self.candidate_write()
         with self.assertRaisesRegex(ValueError, "restricted"):
             self.seal()
@@ -311,7 +315,12 @@ class SolverReflectionTests(unittest.TestCase):
 
     def test_complete_raw_feedback_cannot_be_replaced_by_compact_receipt(self):
         self.candidate_write()
-        self.assertFalse(self.seal()["complete"])
+        # A candidate already written before full feedback is an immutable
+        # ordering violation, not a missing-read repair opportunity.
+        with self.assertRaises(evo.ReflectionBoundaryError) as failure:
+            self.seal()
+        self.assertEqual(failure.exception.phase, "post_judge")
+        self.assertIsNotNone(failure.exception.tool_call_id)
 
     def test_request_write_cannot_be_replaced_after_execution(self):
         self.read_feedback()

@@ -1,7 +1,7 @@
 ---
 name: evo-harness-rsi-toolkit
 description: Run Evo-Harness with frozen Solver settings, negative-feedback reflection and batch compilation of general and task-type skills. Use native Penguin workers, State, snapshots and evaluation; the continuous GDPevo profile adds checked native delegation and export acceptance.
-version: 2026.10.22.3
+version: 2026.10.22.4
 ---
 
 # Evo-Harness
@@ -78,7 +78,8 @@ task, one batch compilation, then freezing, then all five H0 tests concurrently,
 then all five final tests concurrently. Do not run H0 tests before training
 under this profile. A valid equivalent H0 reuses its one complete matrix.
 The main Penguin configures the native guard and registers each exact worker
-call before invoking run_subagent itself. The guard does not run the experiment.
+call before invoking run_subagent itself. Copy the returned call object exactly,
+including description, prompt_file and prompt_sha256; do not rephrase a registered call. The guard does not run the experiment.
 The profile does not impose GDPevo's task count, phase order or training guard
 on ordinary RSI Benchmarks.
 

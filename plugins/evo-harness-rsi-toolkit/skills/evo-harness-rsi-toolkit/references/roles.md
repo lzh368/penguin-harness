@@ -34,7 +34,9 @@ Guarded Solver reflection/Evolver outputs use the fixed seal-role-output request
 in their prompt, not file-digest. The helper verifies the leaf's complete actual
 reads and draft structure. On missing offsets, the same leaf reads those chunks
 and retries sealing; on structural errors, it fixes its own unsealed draft.
-These repairs add no Solver attempt or scoring call. Once sealed, do not edit
+An unexecuted helper request may likewise be corrected with write_file using its
+fixed template. Repairs add no Solver attempt or scoring call and never erase
+an executed boundary violation. Once sealed, do not edit
 the output. Ordinary unguarded RSI continues to use file-digest after all reads.
 An acknowledgment or a path in the prompt alone is not proof of reading.
 
@@ -88,8 +90,10 @@ and seal reflection even when it yields an explicit empty candidate array.
 Return the answer, canonical judge/feedback paths, reflection seal if required,
 and your Session id; do not end the native run before this work completes.
 
-After the single judge, perform only bound feedback reads, your own candidate
-writes/validation and the fixed sealing requests. Do not alter the answer,
+Before judge, finish all input and role reads and understand the supplied candidate
+contract. Ordinary preparation JSON may use the assigned request directory.
+After the single judge, perform only bound feedback reads, your own native
+write_file candidate/request writes and the fixed sealing requests. Do not alter the answer,
 rescore, query the business service, read another task/candidate/test material,
 or retrieve the skill library for curation. Retain the information already in
 your conversation. Before retrying a missing feedback chunk or unsealed format
@@ -118,7 +122,16 @@ Output a JSON array of zero or more candidates with `id`, `task_id`,
 training every id starts with the assigned <task_id>-<attempt_id>- prefix, followed
 by a local unique suffix, for example train_001-attempt-1-c01. Different tasks must not invent a shared batch-wide counter. Evidence items use
 `kind` (input/tool/answer/feedback), `claim`, `epistemic` (observed/inferred);
-input references carry the exact sha256; tool references carry tool_call_id.
+input references carry the exact sha256 from the initial prompt's input_refs;
+tool references carry a tool_call_id already observed in this same Session.
+`answer` and `feedback` references need only kind, claim and epistemic: no hash,
+path or extra identifier is required. The initial candidate contract supplies
+all required fields before scoring; its hash table does not replace reading the
+public inputs. Do not inspect source/trace files or calculate hashes after judge.
+If a tool id is unavailable in your current observation, do not invent it or
+retrieve a trace: use a genuinely applicable supplied input, answer or feedback
+reference, or omit that unsupported claim. A feedback reference establishes
+only what the external feedback actually says.
 
 Distinguish explicit task definitions, observed records/actions, model
 interpretations and scoring feedback in those claims. An answer or self-check
@@ -139,7 +152,8 @@ answers stay in the private record, not as business constants. Zero candidates
 is valid only after this negative-feedback reflection was performed and sealed.
 Use the fixed validation/seal request supplied in your original Solver prompt;
 this checks structure and references, not the truth of an interpretation.
-Correct your own unsealed draft without new attempts or feedback, then use the
+Correct your own unsealed draft by rewriting the complete array with native
+write_file, without new attempts or feedback, then use the
 fixed seal-role-output request (file-digest only for unguarded RSI) and return
 its receipt. The sealed output is fixed; the coordinator cannot rewrite it. The internal
 seal label `reflector` identifies this phase of the original Solver, not a new

@@ -103,3 +103,10 @@ not relabelled as having used in-session reflection. Post-score tool boundaries
 are verified from the original paired trace and bound helper receipts. Native
 leaves do not run root hooks, so this is cooperative execution acceptance, not
 an arbitrary-code runtime sandbox. Violations block compilation and testing.
+
+Revision 2026.10.22.4 makes the original Solver's execution interface self-contained
+before scoring: candidate field types, evidence references and authorized input
+hashes are supplied with its native task. This adds no lesson, feedback, memory
+retrieval or model call. The phase boundary permits ordinary pre-judge preparation
+without treating it as a post-judge operation; actual post-judge access stays
+restricted. R13's failed runs retain their original evidence and verdicts.

@@ -49,6 +49,41 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
+class ReflectionBoundaryError(ValueError):
+    """An already-observed operation cannot be repaired by rewriting a draft."""
+    def __init__(self, message, phase, tool_call_id=None):
+        self.phase, self.tool_call_id = phase, tool_call_id
+        super().__init__(f"{phase}" + (f" tool_call_id={tool_call_id}" if tool_call_id else "") + ": " + str(message))
+
+
+class ReflectionDraftError(ValueError):
+    """Only the unsealed candidate JSON may be repaired in the same Session."""
+
+
+def candidate_contract(task_id, attempt_id, inputs):
+    """Prepare public evidence identifiers before solving; never learning content."""
+    ident(task_id); ident(attempt_id)
+    refs = []
+    require(isinstance(inputs, list) and inputs and len(set(inputs)) == len(inputs), "unique authorized inputs required")
+    for path in inputs:
+        require(isinstance(path, str) and Path(path).is_absolute(), "authorized input path must be absolute")
+        raw = regular(path).read_bytes()
+        refs.append({"path": path, "sha256": digest(raw), "bytes": len(raw)})
+    return {"schema": "evo-candidate-contract-v1", "task_id": task_id, "attempt_id": attempt_id,
+            "output_type": "JSON array; [] is an explicit justified empty candidate decision, still sealed for negative feedback",
+            "candidate_fields": {"id": {"type": "string identifier", "prefix": task_id + "-" + attempt_id + "-"},
+                "task_id": {"const": task_id}, "attempt_id": {"const": attempt_id},
+                "lesson": "nonempty string", "trigger": "nonempty string", "scope_hint": "nonempty string",
+                "evidence": "nonempty list of evidence objects"},
+            "evidence_fields": {"kind": ["input", "tool", "answer", "feedback"], "claim": "nonempty string",
+                "epistemic": ["observed", "inferred"], "input": {"sha256": "copy the exact hash from input_refs"},
+                "tool": {"tool_call_id": "copy a call id already seen in this original Solver Session; do not read trace files"},
+                "answer_feedback": "no extra identifier or hash required"},
+            "input_refs": refs,
+            "recovery": {"candidate_draft_invalid": "Correct only your own unsealed candidate JSON, then seal again in this same Session.",
+                         "reflection_boundary_violation": "Stop and return the error; already executed operations cannot be repaired or erased."}}
+
+
 def native_prompt(call):
     """Resolve the exact native task without reconstructing it through a model.
 
@@ -1006,7 +1041,7 @@ def solver_reflection_profile(fb, path_map=None):
     return profile if profile.get("reflection_mode") == "solver-session" else None
 
 
-def reflection_action(call, training, task_id, requests=None):
+def reflection_action(call, training, task_id, requests=None, executed_requests=None):
     """Finite post-judge protocol, reconstructed from native writes, never shell intent.
 
     Requests are plain data written through write_file. Only literal foreground
@@ -1018,6 +1053,7 @@ def reflection_action(call, training, task_id, requests=None):
     args = json.loads(call["arguments"])
     require(isinstance(args, dict), "invalid post-judge tool arguments")
     requests = requests if requests is not None else {}
+    executed_requests = executed_requests if executed_requests is not None else set(requests)
     directory = contract["request_dir"]
     def request_path(value):
         return (isinstance(value, str) and posixpath.dirname(value) == directory
@@ -1038,10 +1074,12 @@ def reflection_action(call, training, task_id, requests=None):
         if path == contract["output"]:
             return {"kind": "candidate-write", "path": path, "content": content}
         require(request_path(path), "post-judge writes are restricted to own candidates and request directory")
-        value = valid_request(json.loads(content))
-        require(path not in requests or requests[path] == value, "an executed reflection request cannot be changed")
-        requests[path] = value
-        return {"kind": "request-write", "path": path, "request": value}
+        # Literal request data has no effect until the helper is invoked.
+        # Keep its exact bytes so unexecuted format repairs remain possible,
+        # while an already-executed request cannot silently change meaning.
+        require(path not in executed_requests or requests[path] == content, "an executed reflection request cannot be changed")
+        requests[path] = content
+        return {"kind": "request-write", "path": path, "request_text": content}
     require(call.get("name") == "exec_command", "post-judge business queries, answer edits and extra tools are forbidden")
     pair = {"call": {"payload": call}}
     path = standalone_helper_request(pair, {"binding": {"agent_state": training.get("agent_state", "")}})
@@ -1049,7 +1087,9 @@ def reflection_action(call, training, task_id, requests=None):
     # helper in the original Session's State is supplied by the caller profile.
     require(path is not None and request_path(path) and path in requests,
             "post-judge exec needs one literal helper request previously written by this Solver")
-    return {"kind": requests[path]["op"], "path": path, "request": valid_request(requests[path])}
+    value = valid_request(json.loads(requests[path]))
+    executed_requests.add(path)
+    return {"kind": value["op"], "path": path, "request": value}
 
 
 def verify_solver_scoped_reads(pair, view, training, task, fb, contract):
@@ -1089,6 +1129,55 @@ def verify_solver_scoped_reads(pair, view, training, task, fb, contract):
                 "Solver cannot read held-out test materials")
 
 
+def reflection_operations(view, training, task, fb, contract):
+    """Separate preparation data from the finite operations after scoring.
+
+    A pre-judge request file can hold role/input reads or judge preparation.
+    It becomes a post-judge operation only when actually invoked after judge;
+    that invocation must still satisfy reflection_action's restricted protocol.
+    """
+    positions = observation_positions(view)
+    judges = [(pair, loc) for pair, loc in zip(view["pairs"], positions)
+              if standalone_helper_request(pair, view) == fb["judge_request_path"]]
+    if len(judges) != 1:
+        bad = judges[1] if len(judges) > 1 else (None, None)
+        raise ReflectionBoundaryError("requires exactly one canonical judge operation", "judge",
+                                      bad[0]["call"]["payload"]["tool_call_id"] if bad[0] else None)
+    judge_pair, (judge_at, judge_returned) = judges[0]
+    requests, executed, actions, sealed = {}, set(), [], False
+    for pair, (called, observed) in zip(view["pairs"], positions):
+        call = pair["call"]["payload"]
+        phase = "pre_judge" if called <= judge_at else "post_judge"
+        try:
+            if called <= judge_at:
+                verify_solver_scoped_reads(pair, view, training, task, fb, contract)
+                if call.get("name") == "write_file":
+                    args = json.loads(call["arguments"])
+                    path = args.get("file_path", "")
+                    require(path != contract["output"], "candidate was written before authorized feedback")
+                    if posixpath.dirname(path) == contract["request_dir"]:
+                        content = args["content"]
+                        require(isinstance(content, str), "prepared helper request needs literal content")
+                        require(path not in executed or requests[path] == content, "an executed reflection request cannot be changed")
+                        requests[path] = content
+                invoked = standalone_helper_request(pair, view)
+                if invoked in requests:
+                    executed.add(invoked)
+                require(observed <= judge_returned, "pre-judge operation completed after scoring boundary")
+                continue
+            require(called > judge_returned and called < observed, "post-judge actions must follow scoring observation")
+            require(not sealed, "no tool operation is allowed after successful reflection sealing")
+            action = reflection_action(call, {**training, "agent_state": view["binding"]["agent_state"]}, task, requests, executed)
+            require(pair["observation"]["payload"].get("stop_reason") == "completed", "post-judge operation did not complete")
+            actions.append((pair, called, observed, action))
+            if action["kind"] == "seal-role-output":
+                sealed = any(isinstance(v, dict) and v.get("op") == "seal-role-output" and v.get("complete") is True
+                             for v in json_values(pair["observation"]["payload"].get("output", "")))
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ReflectionBoundaryError(str(exc), phase, call.get("tool_call_id")) from exc
+    return judge_pair, (judge_at, judge_returned), actions
+
+
 def verify_solver_reflection(view, fb, path_map=None, require_seal=True, input_records=None):
     training = solver_reflection_profile(fb, path_map)
     if training is None:
@@ -1104,6 +1193,7 @@ def verify_solver_reflection(view, fb, path_map=None, require_seal=True, input_r
         require(sources == actual_sources, "all original Solver trace segments are required")
     task, attempt = fb["task_id"], fb["attempt_id"]
     contract = role_contract(training, "reflector", task)
+    _, _, actions = reflection_operations(view, training, task, fb, contract)
     require(fb["status"] == "ok", "judge error cannot become negative reflection")
     negative = feedback(fb, task, attempt, fb["answer_sha256"])
     judge = verify_judge_evidence(view, fb, fb["judge_request_path"], path_map)
@@ -1152,40 +1242,25 @@ def verify_solver_reflection(view, fb, path_map=None, require_seal=True, input_r
     feedback_reads, observed_feedback = verify_material_records({**view, "pairs": after}, records[1:], standalone=True)
     reads, _, missing = material_read_status(view, records, standalone=True)
     require(not missing, "original Solver must observe complete role and raw feedback")
-    requests, writes, sealed, seal_id = {}, [], False, None
-    for pair, (called, observed) in zip(view["pairs"], positions):
+    writes, sealed, seal_id = [], False, None
+    for pair, called, observed, action in actions:
         call, result = pair["call"]["payload"], pair["observation"]["payload"]
-        if called <= judge_at:
-            verify_solver_scoped_reads(pair, view, training, task, fb, contract)
-            # Fixed feedback/seal requests may be prepared before judging, but
-            # candidate creation itself must follow complete feedback observation.
-            if call.get("name") == "write_file":
-                args = json.loads(call["arguments"])
-                if args.get("file_path") == contract["output"]:
-                    raise ValueError("candidate was written before authorized feedback")
-                if posixpath.dirname(args.get("file_path", "")) == contract["request_dir"]:
-                    reflection_action(call, {**training, "agent_state": view["binding"]["agent_state"]}, task, requests)
-            require(observed <= judge_returned, "pre-judge operation completed after scoring boundary")
-            continue
-        require(called > judge_returned and called < observed, "post-judge actions must follow scoring observation")
-        require(not sealed, "no tool operation is allowed after successful reflection sealing")
-        action = reflection_action(call, {**training, "agent_state": view["binding"]["agent_state"]}, task, requests)
-        require(result.get("stop_reason") == "completed", "post-judge operation did not complete")
         if action["kind"] == "candidate-write":
             require(negative, "success cannot generate failure candidates")
-            require(called > observed_feedback, "full raw feedback must be observed before candidate writing")
+            if called <= observed_feedback:
+                raise ReflectionBoundaryError("full raw feedback must be observed before candidate writing", "post_judge", call["tool_call_id"])
             writes.append(action["content"])
         elif action["kind"] == "read-material":
             receipt = material({**action["request"], "path": mapped.get(action["request"]["path"], action["request"]["path"])})
             receipt["material_path"] = action["request"]["path"]
             require(contains_json(result["output"], receipt), "reflection feedback read was incomplete or fabricated")
         elif action["kind"] == "seal-role-output":
-            require(negative and called > observed_feedback and writes, "reflection seal requires feedback followed by a candidate draft")
-            output = regular(mapped.get(contract["output"], contract["output"])).read_bytes()
-            expected = role_seal_receipt(contract, view["binding"]["session_id"], reads, digest(output))
             values = list(json_values(result.get("output", "")))
             complete = [v for v in values if isinstance(v, dict) and v.get("op") == "seal-role-output" and v.get("complete") is True]
             if complete:
+                require(negative and called > observed_feedback and writes, "reflection seal requires feedback followed by a candidate draft")
+                output = regular(mapped.get(contract["output"], contract["output"])).read_bytes()
+                expected = role_seal_receipt(contract, view["binding"]["session_id"], reads, digest(output))
                 require(complete == [expected], "reflection output differs from its original successful seal")
                 require(writes[-1].encode() == output, "sealed candidate file differs from original Solver write")
                 sealed, seal_id = True, call["tool_call_id"]
@@ -1198,14 +1273,26 @@ def verify_solver_reflection(view, fb, path_map=None, require_seal=True, input_r
     if not negative:
         require(not writes and not sealed, "successful Solver must not invent failure reflection")
         return {**base, "status": "not-required"}
-    require(writes, "negative feedback requires the original Solver's explicit candidate decision")
-    candidate_raw = regular(mapped.get(contract["output"], contract["output"])).read_bytes()
-    require(writes[-1].encode() == candidate_raw, "candidate output changed after original Solver write")
-    candidates = json.loads(candidate_raw)
-    require(isinstance(candidates, list), "candidate output must be a JSON list; [] means an explicit empty decision")
-    require(all(c.get("id", "").startswith(task + "-" + attempt + "-") for c in candidates), "candidate namespace changed")
-    context = {"negative": True, "trace": view, "inputs": [{"sha256": fp} for _, _, fp in inputs]}
-    validate_candidates(candidates, {(task, attempt): context})
+    try:
+        require(writes, "negative feedback requires the original Solver's explicit candidate decision")
+        candidate_raw = regular(mapped.get(contract["output"], contract["output"])).read_bytes()
+        require(writes[-1].encode() == candidate_raw, "candidate output changed after original Solver write")
+        candidates = json.loads(candidate_raw)
+        require(isinstance(candidates, list) and all(isinstance(c, dict) for c in candidates), "candidate output must be a JSON list; [] means an explicit empty decision")
+        for index, candidate in enumerate(candidates):
+            missing = sorted({"id", "task_id", "attempt_id", "lesson", "trigger", "scope_hint", "evidence"} - set(candidate))
+            require(not missing, f"candidate[{index}] missing required fields: " + ", ".join(missing))
+            require(candidate["task_id"] == task and candidate["attempt_id"] == attempt,
+                    f"candidate[{index}] must retain assigned task_id={task} and attempt_id={attempt}")
+            require(isinstance(candidate["evidence"], list) and candidate["evidence"]
+                    and all(isinstance(ref, dict) for ref in candidate["evidence"]),
+                    f"candidate[{index}].evidence must be a nonempty list of evidence objects")
+        require(all(isinstance(c.get("id"), str) and c["id"].startswith(task + "-" + attempt + "-") for c in candidates), "candidate namespace changed")
+        context = {"negative": True, "trace": view, "inputs": [{"sha256": fp} for _, _, fp in inputs]}
+        validate_candidates(candidates, {(task, attempt): context})
+    except (ValueError, KeyError, TypeError, OSError) as exc:
+        message = ("candidate evidence is missing required field: " + str(exc)) if isinstance(exc, KeyError) else str(exc)
+        raise ReflectionDraftError(message) from exc
     require(not require_seal or sealed, "negative feedback is missing original Solver reflection sealing")
     return {**base, "status": "sealed" if sealed else "unsealed", "output": contract["output"],
             "output_sha256": digest(candidate_raw), "seal_tool_call_id": seal_id,
@@ -1415,9 +1502,18 @@ def seal_role_output(req, request_path):
                         for value in json_values(pair["observation"]["payload"]["output"])
                         if isinstance(value, dict)),
                 "original Solver reflection is already sealed; preserve the existing receipt and return")
+        fb = read(contract["materials"][1])
+        _, _, checked_actions = reflection_operations(view, training, req["task_id"], fb, contract)
     records = material_records(contract["materials"])
     reads, _, missing = material_read_status(view, records, standalone=True)
     if missing:
+        if contract.get("reflection_mode") == "solver-session":
+            if any(item["path"] == contract["materials"][0] for item in missing):
+                raise ReflectionBoundaryError("required Solver role was not fully observed before judge; this attempt cannot be repaired after scoring", "pre_judge")
+            early_candidate = next((pair["call"]["payload"]["tool_call_id"] for pair, _, _, action in checked_actions
+                                    if action["kind"] == "candidate-write"), None)
+            if early_candidate:
+                raise ReflectionBoundaryError("full raw feedback must be observed before candidate writing", "post_judge", early_candidate)
         return {"op": "seal-role-output", "complete": False, "sealed": False,
                 "missing_reads": missing[:64], "missing_read_count": len(missing), "more_missing_reads": len(missing) > 64,
                 "next_action": "In this same leaf, read each listed offset in one standalone literal helper exec; await complete output, then retry sealing to check any remaining offsets. Do not rerun Solver/judge or ask the parent to edit content."}
@@ -2289,5 +2385,13 @@ if __name__ == "__main__":
         print(json.dumps(judge_stdout(result) if request["op"] == "judge" else result,
                          ensure_ascii=False, allow_nan=False))
     except (ValueError, KeyError, OSError, TypeError) as exc:
-        print(json.dumps({"error": str(exc)}), file=sys.stderr)
+        error = {"error": str(exc)}
+        if isinstance(exc, ReflectionBoundaryError):
+            error.update(code="reflection_boundary_violation", recoverable=False, phase=exc.phase,
+                         tool_call_id=exc.tool_call_id,
+                         next_action="Stop this attempt and return this error to the parent. Preserve evidence; do not retry seal, answer, judge or reflection.")
+        elif isinstance(exc, ReflectionDraftError):
+            error.update(code="candidate_draft_invalid", recoverable=True, phase="post_judge",
+                         next_action="Correct only the original Solver's own unsealed candidate JSON using the supplied schema and evidence identifiers, then seal in this same Session. No queries, scoring, source or trace reads.")
+        print(json.dumps(error), file=sys.stderr)
         sys.exit(2)

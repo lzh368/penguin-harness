@@ -223,3 +223,14 @@ existing context is preserved and refused.
 Helpers validate cooperative execution; they are not a sandbox against
 arbitrary malicious code. The isolated container, restricted account/network
 and held-out judge disablement remain required.
+
+The returned native call is the registered value, including description; invoke
+it unchanged. The one evaluator formatting repair can extract an original
+plain YAML mapping or one fenced mapping surrounded only by plain prose without
+YAML/JSON structural delimiters. Multiple records or ambiguous structured text
+are not repairable by choosing one. The repaired reply must be pure YAML with
+identical fields and values, no tools or new Target execution. Failure remains
+failure; pending cost remains pending. Control errors distinguish pending work,
+invalid formatting, protocol rejection and local evidence/runtime availability
+without printing the raw request or tool output. A format diagnostic is not an
+authorization to retry training.
