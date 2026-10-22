@@ -143,3 +143,11 @@ and the fixed public JSON display loop are preparation operations. Business
 APIs and writes still require all required Skill observations first. These
 are recorded protocol extensions, not retroactive passes for .6/.7 evidence.
 Old018's business call before both topic observations remains invalid.
+
+Revision `2026.10.22.9` adds an explicitly separate historical-evidence replay
+protocol. Fresh learning children reconstruct authorized old training records;
+this is not the official original-Solver in-context proposal path and is never
+reported as such. It changes neither the normal full-RSI mechanism nor the
+general-description/context-body loading policy. One independent compilation
+uses fresh negative-source candidates; the authorized replay measures only one
+frozen final five-case test round, without new training or baseline calls.

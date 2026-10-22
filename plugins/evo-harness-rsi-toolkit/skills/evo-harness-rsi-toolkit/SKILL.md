@@ -1,7 +1,7 @@
 ---
 name: evo-harness-rsi-toolkit
 description: Run Evo-Harness with frozen Solver settings, negative-feedback reflection and batch compilation of general and task-type skills. Use native Penguin workers, State, snapshots and evaluation; the continuous GDPevo profile adds checked native delegation and export acceptance.
-version: 2026.10.22.8
+version: 2026.10.22.9
 ---
 
 # Evo-Harness
@@ -24,6 +24,17 @@ on negative feedback in its own conversation to produce candidates; one Evolver 
 complete batch with ADD / MERGE / REVISE / SKIP at general and topic levels.
 Keep the final compilation. There is no score-based candidate search or
 strictly-improving acceptance gate. Never learn from held-out tests.
+
+## Explicit historical-evidence replay
+
+When the installed `replay.json` selects `evo-harness-offline-replay-v1`, follow
+[replay.md](references/replay.md) instead of the live-training sequence below.
+Use fresh native learning children, clearly labeled as new reconstruction from
+historical evidence; do not claim original-Solver continuity. The frozen replay
+profile performs five source reviews, one Evolver, freeze, and one final-only
+five-case test round. It does not run training or H0. All native orchestration,
+learning quality, general/topic loading and byte-budget requirements remain.
+Without that explicit binding, use the normal full-RSI protocol below.
 
 ## Before you start
 

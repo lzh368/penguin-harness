@@ -1458,6 +1458,10 @@ def hook(payload, state):
         # if a future caller passes a child event; the parent validates its trace.
         if meta["source"] == "subagent":
             return {"context": ""} if event == "user_prompt" else {}
+        if ((Path(state) / "skills/evo-harness-rsi-toolkit/replay.json").exists()
+                or mode is not None and mode.get("mode") == "offline-replay"):
+            import replay
+            return replay.hook(payload, state, meta, scratch, rows, mode)
         if event == "user_prompt":
             if (Path(state) / "skills/evo-harness-rsi-toolkit/training.json").exists():
                 return {"context": training_bootstrap(meta, scratch, state, payload["trace_path"])}
