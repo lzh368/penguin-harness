@@ -134,8 +134,9 @@ class ReflectionRecoveryTests(unittest.TestCase):
     def test_schema_error_can_repair_only_unsealed_draft(self):
         self.f.read_feedback()
         self.f.candidate_write([{"id": self.f.task + "-attempt-1-c01"}])
-        error = self.failed_seal(evo.ReflectionDraftError)
-        self.assertNotIsInstance(error, evo.ReflectionBoundaryError)
+        error = self.f.seal()
+        self.assertFalse(error["complete"])
+        self.assertEqual(error["code"], "candidate_draft_invalid")
         self.f.candidate_write()
         self.assertTrue(self.f.seal()["complete"])
         self.f.finish()
@@ -148,7 +149,10 @@ class ReflectionRecoveryTests(unittest.TestCase):
             "sha256": evo.digest(self.f.input.read_bytes()), "bytes": len(self.f.input.read_bytes())}])
         self.assertEqual(contract["candidate_fields"]["task_id"], {"const": self.f.task})
         self.assertNotIn(self.f.input.read_text(), json.dumps(contract))
-        self.assertEqual(contract["evidence_fields"]["answer_feedback"], "no extra identifier or hash required")
+        example = contract["evidence_examples_by_kind"]["input"]
+        self.assertEqual(example["kind"], "input")
+        self.assertIn("sha256", example)
+        self.assertNotIn("input", example)
 
     def cli_seal(self):
         request = {"op": "seal-role-output", "role": "reflector", "task_id": self.f.task}
@@ -174,7 +178,9 @@ class ReflectionRecoveryTests(unittest.TestCase):
     def test_real_helper_cli_marks_schema_error_only_draft_repair(self):
         self.f.read_feedback(); self.f.candidate_write([{"id": self.f.task + "-attempt-1-c01"}])
         result, error = self.cli_seal()
-        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.returncode, 0)
+        self.assertFalse(error["complete"])
+        self.assertFalse(error["sealed"])
         self.assertEqual(error["code"], "candidate_draft_invalid")
         self.assertIs(error["recoverable"], True)
         self.assertIn("unsealed candidate JSON", error["next_action"])

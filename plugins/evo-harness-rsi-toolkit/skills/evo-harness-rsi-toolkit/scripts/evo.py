@@ -75,10 +75,12 @@ def candidate_contract(task_id, attempt_id, inputs):
                 "task_id": {"const": task_id}, "attempt_id": {"const": attempt_id},
                 "lesson": "nonempty string", "trigger": "nonempty string", "scope_hint": "nonempty string",
                 "evidence": "nonempty list of evidence objects"},
-            "evidence_fields": {"kind": ["input", "tool", "answer", "feedback"], "claim": "nonempty string",
-                "epistemic": ["observed", "inferred"], "input": {"sha256": "copy the exact hash from input_refs"},
-                "tool": {"tool_call_id": "copy a call id already seen in this original Solver Session; do not read trace files"},
-                "answer_feedback": "no extra identifier or hash required"},
+            "evidence_examples_by_kind": {
+                "input": {"kind": "input", "sha256": "EXACT_SHA256_FROM_INPUT_REFS", "claim": "YOUR_SUPPORTED_CLAIM", "epistemic": "observed"},
+                "tool": {"kind": "tool", "tool_call_id": "ORIGINAL_SESSION_CALL_ID", "claim": "YOUR_SUPPORTED_CLAIM", "epistemic": "observed"},
+                "answer": {"kind": "answer", "claim": "YOUR_SUPPORTED_CLAIM", "epistemic": "observed"},
+                "feedback": {"kind": "feedback", "claim": "YOUR_SUPPORTED_CLAIM", "epistemic": "observed"}},
+            "evidence_shape": "Each example is one complete evidence object, not a wrapper keyed by its kind. sha256 and tool_call_id are siblings of kind. Replace placeholders; epistemic may be observed or inferred. No extra identifier is required for answer/feedback.",
             "input_refs": refs,
             "recovery": {"candidate_draft_invalid": "Correct only your own unsealed candidate JSON, then seal again in this same Session.",
                          "reflection_boundary_violation": "Stop and return the error; already executed operations cannot be repaired or erased."}}
@@ -279,6 +281,10 @@ def judge(req, request_path=None):
                     and all(previous.get(k) == v for k, v in identity.items()), "attempt identity conflict")
             # Even an interrupted HTTP call is never repeated silently.
             return previous
+        if training.get("guard_version") == 2 and training.get("reflection_mode") == "solver-session":
+            readiness = judge_readiness(training, task, paths["judge_request"])
+            if not readiness["ready"]:
+                return readiness
         record = {**identity, "task_id": task, "attempt_id": attempt, "answer_sha256": digest(answer_bytes),
                   "status": "error", "error": "judge call in flight or interrupted", "score": None,
                   "correct": None, "url": req["url"], "request": {"task_id": task, "answer": answer}}
@@ -304,6 +310,8 @@ def judge(req, request_path=None):
 
 def judge_stdout(record):
     """Bounded CLI receipt; the canonical ledger retains the complete feedback."""
+    if record.get("op") == "judge-readiness":
+        return record
     raw = encoded(record)
     return {"source": "evo-judge-receipt", "feedback_path": record["feedback_path"],
             "sha256": digest(raw), "bytes": len(raw),
@@ -635,6 +643,8 @@ def verify_judge_evidence(view, fb, request_path, path_map=None):
                     require(not isinstance(other_req, dict) or other_req.get("op") != "judge",
                             "noncanonical or repeated judge operation")
         if authorized:
+            if is_unready_judge(pair, view, training, fb["task_id"], path_map):
+                continue
             if fb not in values:
                 require(judge_stdout(fb) in values, "judge command did not return bound receipt")
                 chunked.append(pair)
@@ -903,6 +913,10 @@ def verify_solver_skill(view, fb, path_map=None):
     training = json.loads(raw_profile)
     if training.get("guard_version") != 2:
         return None
+    return solver_skill_observation(view, training, fb["task_id"], fb["attempt_id"])
+
+
+def solver_skill_observation(view, training, task_id, attempt_id, allow_missing=False):
     expected = render_skill([], training["max_bytes"])
     workspace, state = view["binding"]["workspace"], view["binding"]["agent_state"]
     require(posixpath.isabs(workspace) and posixpath.isabs(state), "Solver native State/workspace must be absolute")
@@ -916,14 +930,14 @@ def verify_solver_skill(view, fb, path_map=None):
         for value in json_values(payload["text"]):
             grant = value.get("evo_task") if isinstance(value, dict) else None
             if (isinstance(grant, dict) and grant.get("split") == "train"
-                    and grant.get("task_id") == fb["task_id"] and grant.get("attempt_id") == fb["attempt_id"]):
+                    and grant.get("task_id") == task_id and grant.get("attempt_id") == attempt_id):
                 grants.append(grant)
     require(grants and all(grant == grants[0] for grant in grants), "Solver needs its unique public input grant")
     public = grants[0].get("inputs")
     require(isinstance(public, list) and public and all(isinstance(path, str) and posixpath.isabs(path) for path in public),
             "Solver public input grant must contain absolute paths")
     public = {inspection._path(path, workspace) for path in public}
-    public_input = workspace.rstrip("/") + "/train_tasks/" + fb["task_id"] + "/input"
+    public_input = workspace.rstrip("/") + "/train_tasks/" + task_id + "/input"
     positions = observation_positions(view)
     complete = native_file_read(view, target, expected.decode())
     for pair, (called, observed) in zip(view["pairs"], positions):
@@ -941,9 +955,10 @@ def verify_solver_skill(view, fb, path_map=None):
             continue
         if full_cat:
             complete = observed if complete is None else min(complete, observed)
-    require(complete is not None, "Solver frozen H0 Skill was not fully observed through native read_file or exact foreground cat")
+    if not allow_missing:
+        require(complete is not None, "Solver frozen H0 Skill was not fully observed through native read_file or exact foreground cat")
     for pair, (called, _) in zip(view["pairs"], positions):
-        if called >= complete:
+        if complete is not None and called >= complete:
             continue
         call = pair["call"]["payload"]
         if call.get("name") == "read_file":
@@ -954,10 +969,13 @@ def verify_solver_skill(view, fb, path_map=None):
         else:
             require(call.get("name") == "exec_command", "task actions may not precede the complete Solver H0 Skill read")
             inspection._readonly_commands(call, workspace, slot, public, public_input)
+    if complete is None:
+        require(allow_missing, "Solver frozen H0 Skill was not fully observed through native read_file or exact foreground cat")
+        return None
     return {"path": target, "sha256": digest(expected), "bytes": len(expected), "observed_at": complete}
 
 
-def verify_solver_inputs(view, records, before_call_id=None):
+def solver_input_read_status(view, records, before_call_id=None):
     """Keep helper receipts, with full native reads for granted public files."""
     receipts, last_read, missing = material_read_status(view, records)
     unresolved = {item["path"] for item in missing}
@@ -970,6 +988,12 @@ def verify_solver_inputs(view, records, before_call_id=None):
             unresolved.remove(path)
             last_read = max(last_read, observed)
     missing = [item for item in missing if item["path"] in unresolved]
+    return receipts, last_read, missing
+
+
+
+def verify_solver_inputs(view, records, before_call_id=None):
+    receipts, last_read, missing = solver_input_read_status(view, records, before_call_id)
     require(not missing, "material not fully read: " + (f"{missing[0]['path']} offset {missing[0]['offset']}" if missing else ""))
     return receipts, last_read
 
@@ -1129,7 +1153,7 @@ def verify_solver_scoped_reads(pair, view, training, task, fb, contract):
                 "Solver cannot read held-out test materials")
 
 
-def reflection_operations(view, training, task, fb, contract):
+def reflection_operations(view, training, task, fb, contract, path_map=None):
     """Separate preparation data from the finite operations after scoring.
 
     A pre-judge request file can hold role/input reads or judge preparation.
@@ -1138,7 +1162,8 @@ def reflection_operations(view, training, task, fb, contract):
     """
     positions = observation_positions(view)
     judges = [(pair, loc) for pair, loc in zip(view["pairs"], positions)
-              if standalone_helper_request(pair, view) == fb["judge_request_path"]]
+              if standalone_helper_request(pair, view) == fb["judge_request_path"]
+              and not is_unready_judge(pair, view, training, task, path_map)]
     if len(judges) != 1:
         bad = judges[1] if len(judges) > 1 else (None, None)
         raise ReflectionBoundaryError("requires exactly one canonical judge operation", "judge",
@@ -1193,7 +1218,7 @@ def verify_solver_reflection(view, fb, path_map=None, require_seal=True, input_r
         require(sources == actual_sources, "all original Solver trace segments are required")
     task, attempt = fb["task_id"], fb["attempt_id"]
     contract = role_contract(training, "reflector", task)
-    _, _, actions = reflection_operations(view, training, task, fb, contract)
+    _, _, actions = reflection_operations(view, training, task, fb, contract, path_map)
     require(fb["status"] == "ok", "judge error cannot become negative reflection")
     negative = feedback(fb, task, attempt, fb["answer_sha256"])
     judge = verify_judge_evidence(view, fb, fb["judge_request_path"], path_map)
@@ -1427,22 +1452,11 @@ def role_seal_receipt(contract, session_id, reads, output_sha256):
             "sha256": output_sha256, "materials": reads}
 
 
-def seal_role_output(req, request_path):
-    """A native learning leaf checks its own observations before sealing its draft.
-
-    The server injects PENGUIN_SESSION_ID for this leaf's exec. No request may
-    supply another Session, trace list, material scope or path remapping. The
-    only ignored unmatched action is this currently executing seal command.
-    """
-    require(set(req) <= {"op", "role", "task_id"} and req.get("op") == "seal-role-output",
-            "seal request accepts only op, role and assigned task_id")
-    require(request_path and Path(request_path).is_absolute(), "seal request path must be absolute")
+def native_role_view(training, contract, request_path):
+    """Bind this helper to the original claimed native role and current exec."""
     helper = regular(__file__).resolve()
     state = helper.parents[3]
-    training = read(helper.parent.parent / "training.json")
     private = Path(training["private_learning"])
-    require(read(private / "frozen-training.json") == training, "frozen training profile changed")
-    contract = role_contract(training, req["role"], req.get("task_id"))
     session_id = ident(os.environ.get("PENGUIN_SESSION_ID", ""))
     trace_root = state.parent / "traces"
     traces = sorted(trace_root.rglob(session_id + "_*.jsonl"))
@@ -1495,7 +1509,101 @@ def seal_role_output(req, request_path):
     active = calls[-1]
     require(standalone_helper_request({"call": {"payload": active}}, {"binding": binding}) == str(request_path),
             "seal must be one literal foreground helper command in the current native Session")
-    view = trace_view([str(path) for path in traces], binding, active_call=active["tool_call_id"])
+    return trace_view([str(path) for path in traces], binding, active_call=active["tool_call_id"])
+
+
+def judge_readiness(training, task_id, request_path):
+    """Check observed authorized material before the first actual scoring call."""
+    contract = role_contract(training, "reflector", task_id)
+    view = native_role_view(training, contract, request_path)
+    return judge_readiness_record(view, training, task_id)
+
+
+def judge_readiness_record(view, training, task_id, path_map=None):
+    contract = role_contract(training, "reflector", task_id)
+    original = [m["payload"]["text"] for m in view["messages"] if m["payload"].get("type") == "text"
+                and m["payload"].get("role") == "user" and m["payload"].get("sender") == "parent_agent"]
+    require(len(original) == 1, "judge readiness requires the original Solver task without steering")
+    grants = [value["evo_task"] for value in json_values(original[0])
+              if isinstance(value, dict) and set(value) == {"evo_task"}]
+    require(len(grants) == 1 and set(grants[0]) == {"split", "task_id", "attempt_id", "inputs"}
+            and grants[0]["split"] == "train" and grants[0]["task_id"] == task_id
+            and grants[0]["attempt_id"] == training["attempt_id"], "judge readiness task/attempt differs from original Solver grant")
+    inputs = grants[0]["inputs"]
+    require(isinstance(inputs, list) and inputs and all(isinstance(p, str) and Path(p).is_absolute() for p in inputs)
+            and len(inputs) == len(set(inputs)), "invalid original public input grant")
+    paths = judge_paths(training, task_id, training["attempt_id"])
+    scope = {"judge_request_path": paths["judge_request"], "training_snapshot": paths["training_snapshot"]}
+    for pair in view["pairs"]:
+        verify_solver_scoped_reads(pair, view, training, task_id, scope, contract)
+    skill = solver_skill_observation(view, training, task_id, training["attempt_id"], allow_missing=True)
+    mapped = path_map or {}
+    context_path = str(Path(training["private_learning"]) / "contexts" / (task_id + ".json"))
+    if context_path in mapped:
+        context = read(mapped[context_path])
+        require(context["task_id"] == task_id and context["attempt_id"] == training["attempt_id"]
+                and [item["source"] for item in context["inputs"]] == inputs, "portable readiness input identity changed")
+        input_records = [(item["source"], item["text"], item["sha256"]) for item in context["inputs"]]
+        require(all(digest(text.encode()) == fingerprint for _, text, fingerprint in input_records), "portable readiness input changed")
+    else:
+        input_records = material_records(inputs, path_map)
+    _, _, missing = solver_input_read_status(view, input_records)
+    _, _, role_missing = material_read_status(view, material_records(contract["materials"][:1], path_map), standalone=True)
+    missing += role_missing
+    plan = []
+    if skill is None:
+        path = str(Path(view["binding"]["agent_state"]) / "skills/evo-harness-learned/SKILL.md")
+        plan.append({"tool": "read_file", "arguments": {"file_path": path, "offset": 1, "limit": 2000}})
+        missing.insert(0, {"path": path, "offset": 1, "method": "native read_file"})
+    for item in [item for item in missing if item.get("method") != "native read_file"]:
+        request = {"op": "read-material", "path": item["path"], "offset": item["offset"]}
+        name = "ready-" + digest(encoded(request))[:24] + ".json"
+        destination = str(Path(contract["request_dir"]) / name)
+        plan.append({"request_path": destination, "request": request,
+                     "command": shlex.join(["python3", "-B", str(Path(view["binding"]["agent_state"]) / "skills/evo-harness-rsi-toolkit/scripts/evo.py"), destination])})
+    return {"op": "judge-readiness", "ready": not missing, "complete": not missing,
+            "recoverable": bool(missing), "task_id": task_id, "attempt_id": training["attempt_id"],
+            "session_id": view["binding"]["session_id"], "judge_calls": 0,
+            "missing_read_count": len(missing), "more_missing_reads": len(missing) > 8,
+            "missing_reads": missing[:8], "read_plan": plan[:8],
+            "next_action": "Read the exact listed paths in this original Solver Session. For each request, write its supplied JSON then execute its command. Retry the same canonical judge command after these reads; it checks all remaining material and returns the next bounded plan if needed. No scoring call or attempt was consumed." if missing
+                           else "Authorized material is fully observed; the canonical helper may perform the one scoring call."}
+
+
+def is_unready_judge(pair, view, training, task_id, path_map=None):
+    """A verified no-HTTP readiness result is not an actual judge operation."""
+    if training.get("guard_version") != 2 or training.get("reflection_mode") != "solver-session":
+        return False
+    values = list(json_values(pair["observation"]["payload"].get("output", "")))
+    if not any(isinstance(v, dict) and v.get("op") == "judge-readiness" for v in values):
+        return False
+    require(pair["observation"]["payload"].get("stop_reason") == "completed", "judge readiness operation did not complete")
+    called = view["messages"].index(pair["call"])
+    prefix = {**view, "messages": view["messages"][:called],
+              "pairs": [p for p, (_, observed) in zip(view["pairs"], observation_positions(view)) if observed < called]}
+    expected = judge_readiness_record(prefix, training, task_id, path_map)
+    require(not expected["ready"] and values == [expected], "judge readiness receipt differs from original observations")
+    return True
+
+
+def seal_role_output(req, request_path):
+    """A native learning leaf checks its own observations before sealing its draft.
+
+    The server injects PENGUIN_SESSION_ID for this leaf's exec. No request may
+    supply another Session, trace list, material scope or path remapping. The
+    only ignored unmatched action is this currently executing seal command.
+    """
+    require(set(req) <= {"op", "role", "task_id"} and req.get("op") == "seal-role-output",
+            "seal request accepts only op, role and assigned task_id")
+    require(request_path and Path(request_path).is_absolute(), "seal request path must be absolute")
+    helper = regular(__file__).resolve()
+    state = helper.parents[3]
+    training = read(helper.parent.parent / "training.json")
+    private = Path(training["private_learning"])
+    require(read(private / "frozen-training.json") == training, "frozen training profile changed")
+    contract = role_contract(training, req["role"], req.get("task_id"))
+    view = native_role_view(training, contract, request_path)
+    session_id = view["binding"]["session_id"]
     if contract.get("reflection_mode") == "solver-session":
         require(not any(value.get("op") == "seal-role-output" and value.get("complete") is True
                         for pair in view["pairs"] if standalone_helper_request(pair, view)
@@ -1520,7 +1628,13 @@ def seal_role_output(req, request_path):
     validation = contract["validation"]
     if contract.get("reflection_mode") == "solver-session":
         fb = read(contract["materials"][1])
-        verify_solver_reflection(view, fb, require_seal=False)
+        try:
+            verify_solver_reflection(view, fb, require_seal=False)
+        except ReflectionDraftError as exc:
+            return {"op": "seal-role-output", "complete": False, "sealed": False,
+                    "code": "candidate_draft_invalid", "recoverable": True, "phase": "post_judge",
+                    "task_id": req["task_id"], "session_id": session_id, "error": str(exc),
+                    "next_action": "Correct only your own unsealed candidate JSON using the supplied complete evidence-object examples, then seal in this same Session. Do not query services, rescore, or read source/trace files."}
     elif contract["role"] == "reflector":
         validate_candidate_file(validation)
     else:

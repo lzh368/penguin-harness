@@ -110,3 +110,8 @@ hashes are supplied with its native task. This adds no lesson, feedback, memory
 retrieval or model call. The phase boundary permits ordinary pre-judge preparation
 without treating it as a post-judge operation; actual post-judge access stays
 restricted. R13's failed runs retain their original evidence and verdicts.
+
+Revision 2026.10.22.5 repairs execution interfaces only: missing material reads
+are detected before the single HTTP score, and an invalid unsealed candidate
+returns a recoverable normal tool result. Reflection, compilation and feedback
+rules are unchanged. Earlier fatal failures keep their original verdicts.

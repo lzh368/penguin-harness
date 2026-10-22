@@ -60,7 +60,10 @@ training_snapshot = <private_learning>/frozen-training.json
 Prefer prepare-judge-request to generate this data from the installed profile:
 write a separate request containing op=prepare-judge-request, task_id and the
 public local judge URL, then run the fixed helper on that file. This preparation
-makes zero HTTP/model calls. Execute its returned canonical command exactly once.
+makes zero HTTP/model calls. Use its returned canonical command for one actual
+scoring call. Before HTTP it checks the original Solver's material observations.
+A `judge-readiness` / `ready:false` result means no scoring occurred: follow its
+exact bounded `read_plan`, then reuse that same command to check readiness again.
 The complete generated request file contains the required identity and operation:
 
 ```json
@@ -75,8 +78,9 @@ Execute only `python3 -B <absolute-installed-evo.py> <absolute-judge_request>`.
 The helper binds its actual request file and installed profile, reserves the
 canonical durable ledger before HTTP, and never silently repeats an interrupted
 call. Changing output, answer, attempt or roster cannot create another attempt.
-Do not call twice even when the helper would return its existing receipt:
-trace acceptance requires exactly one original canonical native exec. No direct
+After receiving the scoring receipt, do not invoke judge again even though the
+helper can recover an existing ledger without HTTP. Acceptance permits verified
+no-HTTP readiness checks before exactly one actual scoring operation. No direct
 HTTP probe or echoed/hand-authored receipt qualifies. A failed HTTP or parse
 result remains an error with unknown score, not zero, and blocks compilation.
 

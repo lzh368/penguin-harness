@@ -811,7 +811,7 @@ def role_request(req, meta, scratch, mode):
         template = {"op": "prepare-judge-request", "task_id": task,
                     "url": "REPLACE_WITH_LOCAL_TRAINING_API_BASE/api/judge"}
         text += "\nBefore scoring, write and execute this preparation JSON with the local URL from environment_access.md; preparation makes zero judge calls or other HTTP calls: " + json.dumps(template)
-        text += "\nExecute its returned canonical judge command exactly once: "
+        text += "\nUse its returned canonical judge command for the one actual scoring call: "
         text += f"python3 -B {shlex.quote(str(TOOL))} {shlex.quote(paths['judge_request'])}\n"
         candidate = private / "roles" / task / "candidates.json"
         reflection_requests = candidate.parent / "requests"

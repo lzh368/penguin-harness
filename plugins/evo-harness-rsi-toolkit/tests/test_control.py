@@ -270,12 +270,6 @@ class ControlTests(unittest.TestCase):
         self.write(Path(paths["answer"]), {"synthetic": task})
         with patch.object(evo, "__file__", str(helper)):
             generated = evo.prepare_judge_request({"task_id": task, "url": "http://127.0.0.1:9003/api/judge"})
-            with patch.object(evo.urllib.request, "build_opener") as opener:
-                response = opener.return_value.open.return_value.__enter__.return_value
-                response.status = 200
-                response.read.return_value = b'{"score": 1, "correct": true}'
-                feedback = evo.judge(evo.read(generated["judge_request"]))
-                self.assertEqual(opener.return_value.open.call_count, 1)
         count = 0
         def pair(output, command):
             nonlocal count
@@ -304,8 +298,17 @@ class ControlTests(unittest.TestCase):
             {"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "parent_agent", "text": control.evo.native_prompt(prepared["call"])}}]
             + h0_read_rows(binding, self.profile["max_bytes"])
             + reads([str(self.private / "roles/solver.md"), *grants[0]["inputs"]]))
-        self.append_trace(second, [{"type": "session_meta", "payload": binding}]
-            + pair(evo.judge_stdout(feedback), generated["command"])
+        active = pair({}, generated["command"])
+        self.append_trace(second, [{"type": "session_meta", "payload": binding}, active[0]])
+        with patch.object(evo, "__file__", str(helper)), patch.dict(os.environ, PENGUIN_SESSION_ID=session):
+            with patch.object(evo.urllib.request, "build_opener") as opener:
+                response = opener.return_value.open.return_value.__enter__.return_value
+                response.status = 200
+                response.read.return_value = b'{"score": 1, "correct": true}'
+                feedback = evo.judge(evo.read(generated["judge_request"]))
+                self.assertEqual(opener.return_value.open.call_count, 1)
+        active[1]["payload"]["output"] = json.dumps(evo.judge_stdout(feedback))
+        self.append_trace(second, [active[1]]
             + reads([paths["output"]], self.private / "roles" / task / "requests")
             + [{"type": "model_msg", "payload": {"type": "text", "role": "assistant", "text": "Synthetic Solver complete."}},
                {"type": "event_msg", "payload": {"type": "request_end", "status": "completed"}}])
@@ -929,20 +932,23 @@ class ControlTests(unittest.TestCase):
             with patch.object(evo, "__file__", str(helper)):
                 generated = evo.prepare_judge_request({"task_id": task, "url": "http://127.0.0.1:9003/api/judge"})
                 request = evo.read(generated["judge_request"])
-                with patch.object(evo.urllib.request, "build_opener") as opener:
-                    response = opener.return_value.open.return_value.__enter__.return_value
-                    response.status = 200
-                    response.read.return_value = json.dumps({"score": 0.5 if n <= negative_count else 1, "correct": n > negative_count}).encode()
-                    feedback = evo.judge(request)
             inputs = [str(self.workspace / "train_tasks" / task / "instruction.md"), str(self.workspace / "environment_access.md")]
             rows = [{"type": "session_meta", "payload": binding},
                     {"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "parent_agent", "text": control.evo.native_prompt(prepared["call"])}}]
             rows += h0_read_rows(binding, self.profile["max_bytes"])
             rows += reads([str(self.private / "roles/solver.md"), *inputs])
-            rows += pair("exec_command", evo.judge_stdout(feedback), {"cmd": generated["command"]})
-            rows += reads([paths["output"]], self.private / "roles" / task / "requests")
             trace = self.trace.parent / (binding["session_id"] + "_001.jsonl")
-            self.append_trace(trace, rows)
+            active = pair("exec_command", {}, {"cmd": generated["command"]})
+            self.append_trace(trace, rows + [active[0]])
+            with patch.object(evo, "__file__", str(helper)), patch.dict(os.environ, PENGUIN_SESSION_ID=binding["session_id"]):
+                with patch.object(evo.urllib.request, "build_opener") as opener:
+                    response = opener.return_value.open.return_value.__enter__.return_value
+                    response.status = 200
+                    response.read.return_value = json.dumps({"score": 0.5 if n <= negative_count else 1, "correct": n > negative_count}).encode()
+                    feedback = evo.judge(request)
+                    self.assertEqual(opener.return_value.open.call_count, 1)
+            active[1]["payload"]["output"] = json.dumps(evo.judge_stdout(feedback))
+            self.append_trace(trace, [active[1]] + reads([paths["output"]], self.private / "roles" / task / "requests"))
             if n <= negative_count:
                 candidate_path = self.private / "roles" / task / "candidates.json"
                 values = [{"id": task + "-attempt-1-c01", "task_id": task, "attempt_id": "attempt-1",

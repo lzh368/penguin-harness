@@ -66,12 +66,18 @@ class SolverReflectionTests(unittest.TestCase):
         self.read_material(self.role, "role", prepare=False)
         self.read_material(self.input, "input", prepare=False)
         self.judge_req, self.judge_path = fixtures.judge_request(self.root, self.training, self.task)
-        with patch.object(evo.urllib.request, "build_opener") as opener:
-            response = opener.return_value.open.return_value.__enter__.return_value
-            response.status, response.read.return_value = 200, b'{"score": 0.5, "correct": false, "feedback": "SYNTHETIC aggregate score only"}'
-            self.fb = evo.judge(self.judge_req)
-        self.tool("exec_command", {"cmd": shlex.join(["python3", "-B", str(self.helper), str(self.judge_path)])}, evo.judge_stdout(self.fb), call_id="judge-once")
-        self.feedback_path = Path(self.fb["feedback_path"])
+        self.feedback_path = Path(self.judge_req["output"])
+        if not getattr(self, "defer_judge", False):
+            self.rows.append({"type": "model_msg", "payload": {"type": "tool_call", "name": "exec_command",
+                "tool_call_id": "judge-once", "arguments": json.dumps({"cmd": shlex.join(["python3", "-B", str(self.helper), str(self.judge_path)])})}})
+            self.flush()
+            with patch.object(evo.urllib.request, "build_opener") as opener:
+                response = opener.return_value.open.return_value.__enter__.return_value
+                response.status, response.read.return_value = 200, b'{"score": 0.5, "correct": false, "feedback": "SYNTHETIC aggregate score only"}'
+                self.fb = evo.judge(self.judge_req)
+            self.rows.append({"type": "model_msg", "payload": {"type": "tool_call_output", "tool_call_id": "judge-once",
+                "stop_reason": "completed", "output": json.dumps(evo.judge_stdout(self.fb))}})
+            self.feedback_path = Path(self.fb["feedback_path"])
         self.candidate = {"id": self.task + "-attempt-1-c01", "task_id": self.task, "attempt_id": "attempt-1",
             "lesson": "SYNTHETIC retain documented entity and time boundaries when aggregating.", "trigger": "current ledger aggregation",
             "scope_hint": "the documented ledger model", "evidence": [{"kind": "tool", "tool_call_id": "judge-once", "epistemic": "observed", "claim": "aggregate feedback does not prove a field-specific error"}]}

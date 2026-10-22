@@ -65,18 +65,21 @@ shared business service. Once the final answer is written, run the data-only
 prepare-judge-request helper with task_id and the local /api/judge URL from
 environment_access.md. It derives the frozen attempt, roster, answer and feedback
 paths from the installed training.json, writes the canonical judge request and
-returns its exact command. Preparation makes no HTTP call; execute that returned
-judge command exactly once. Do not choose another output/attempt/config namespace.
+returns its exact command. Preparation makes no HTTP call. The judge helper
+checks full public-input, role and inherited Skill observations before HTTP.
+If it returns `judge-readiness` with `ready: false`, follow the exact `read_plan`
+paths and requests, then retry that same command: no scoring call was consumed.
+Only one actual scoring call is allowed. Do not choose another output/attempt/config namespace.
 The canonical command has this form:
 
 ```text
 python3 -B <absolute-installed-evo.py> <absolute-canonical-judge-request.json>
 ```
 
-No direct curl/HTTP probe, shell wrapper, chained command, alternate helper or
-repeated invocation is permitted. The CLI returns a short evo-judge-receipt
-binding the canonical feedback ledger path, hash and byte count. After this
-single judge command, read that ledger completely with read-material at offsets
+No direct curl/HTTP probe, shell wrapper, chained command or alternate helper
+is permitted. After actual scoring, the CLI returns a short evo-judge-receipt
+binding the canonical feedback ledger path, hash and byte count; do not invoke
+the judge helper again. Read that ledger completely with read-material at offsets
 0, 4000, 8000, ... until end=total; retain every untruncated chunk so the actual
 raw external feedback reaches your native trace. Do not treat the short receipt
 alone as full feedback evidence. On judge error stop and
@@ -87,6 +90,7 @@ Agent to reread a trace. Once the complete successful feedback ledger has been
 observed, follow the in-session reflection section for negative feedback only.
 A successful task returns without candidates. A negative task must complete
 and seal reflection even when it yields an explicit empty candidate array.
+
 Return the answer, canonical judge/feedback paths, reflection seal if required,
 and your Session id; do not end the native run before this work completes.
 
@@ -124,6 +128,8 @@ by a local unique suffix, for example train_001-attempt-1-c01. Different tasks m
 `kind` (input/tool/answer/feedback), `claim`, `epistemic` (observed/inferred);
 input references carry the exact sha256 from the initial prompt's input_refs;
 tool references carry a tool_call_id already observed in this same Session.
+The contract examples are complete objects: sha256 and tool_call_id are siblings
+of kind, not nested inside input/tool wrappers.
 `answer` and `feedback` references need only kind, claim and epistemic: no hash,
 path or extra identifier is required. The initial candidate contract supplies
 all required fields before scoring; its hash table does not replace reading the
@@ -152,8 +158,10 @@ answers stay in the private record, not as business constants. Zero candidates
 is valid only after this negative-feedback reflection was performed and sealed.
 Use the fixed validation/seal request supplied in your original Solver prompt;
 this checks structure and references, not the truth of an interpretation.
-Correct your own unsealed draft by rewriting the complete array with native
-write_file, without new attempts or feedback, then use the
+A normal `complete: false`, `code: candidate_draft_invalid` seal result permits
+correction of your own unsealed draft; fatal boundary errors remain terminal.
+Rewrite the complete array with native write_file, without new attempts or
+feedback, then use the
 fixed seal-role-output request (file-digest only for unguarded RSI) and return
 its receipt. The sealed output is fixed; the coordinator cannot rewrite it. The internal
 seal label `reflector` identifies this phase of the original Solver, not a new
