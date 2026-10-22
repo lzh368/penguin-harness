@@ -133,7 +133,8 @@ class FullSkillTests(unittest.TestCase):
                 high = mid
         good, bad = candidate(low), candidate(low + 1)
         files = evo.render_package([good], 16000)
-        self.assertEqual(sum(map(len, files.values())), 16000)
+        self.assertLessEqual(sum(map(len, files.values())), 16000)
+        self.assertEqual(evo.model_context(files)["injected_bytes"], 16000)
         self.assertIn("刘 😀".encode(), b"".join(files.values()))
         self.save([good]); evo.export_skill(self.req)
         self.assertEqual(self.files(), files)

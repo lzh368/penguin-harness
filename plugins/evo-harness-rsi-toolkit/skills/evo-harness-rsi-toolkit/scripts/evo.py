@@ -56,6 +56,14 @@ class ReflectionBoundaryError(ValueError):
         super().__init__(f"{phase}" + (f" tool_call_id={tool_call_id}" if tool_call_id else "") + ": " + str(message))
 
 
+class ReflectionRequestError(ValueError):
+    """A controlled local-data request was refused without performing it."""
+
+
+class ReflectionEntryNotReady(ValueError):
+    """Only a current safe request or missing feedback observation is repairable."""
+
+
 class ReflectionDraftError(ValueError):
     """Only the unsealed candidate JSON may be repaired in the same Session."""
 
@@ -352,12 +360,13 @@ def prepare_judge_request(req):
 
 def trace_view(paths, expected, path_map=None, active_call=None):
     """Preserve complete action/result pairs, with raw sources and no head/tail cut."""
-    messages, sources, metas = [], [], []
+    messages, sources, metas, native_rows = [], [], [], []
     for path in paths:
         raw = regular((path_map or {}).get(str(path), path)).read_bytes()
         sources.append({"path": str(path), "sha256": digest(raw), "bytes": len(raw)})
         for line_no, line in enumerate(raw.splitlines(), 1):
             row = json.loads(line)
+            native_rows.append((str(path), line_no, row))
             require(not row.get("origin"), "use original child trace, not forwarded duplicates")
             payload = row.get("payload", {})
             if row.get("type") == "session_meta":
@@ -393,7 +402,9 @@ def trace_view(paths, expected, path_map=None, active_call=None):
         require(messages[-1] == calls[active_call], "current seal must be the last native action")
         del calls[active_call]
     require(set(calls) == set(results), "incomplete action/observation pairing")
-    return {"binding": expected, "sources": sources, "truncated": False,
+    return {"binding": expected, "sources": sources, "truncated": False, "metas": metas,
+            "denied_calls": [row["payload"]["tool_call_id"] for i, (_, _, row) in enumerate(native_rows)
+                if row.get("payload", {}).get("type") == "tool_call" and native_dispatch_was_denied(native_rows, i, row["payload"]["tool_call_id"])],
             "messages": messages, "pairs": [{"call": calls[k], "observation": results[k]} for k in calls]}
 
 
@@ -614,6 +625,8 @@ def verify_judge_evidence(view, fb, request_path, path_map=None):
     chunked = []
     for pair in view["pairs"]:
         call, observation = pair["call"]["payload"], pair["observation"]["payload"]["output"]
+        if call["tool_call_id"] in view.get("denied_calls", []):
+            continue
         authorized = False
         receipt_read = call["name"] == "read_file"
         values = list(json_values(observation))
@@ -928,6 +941,12 @@ def verify_solver_skill(view, fb, path_map=None):
 
 def solver_skill_observation(view, training, task_id, attempt_id, allow_missing=False):
     expected = render_skill([], training["max_bytes"])
+    if training.get("context_transport") == CONTEXT_TRANSPORT:
+        metas = view.get("metas", [])
+        observed = context_observation(metas, {"SKILL.md": expected})
+        return {"path": view["binding"]["agent_state"] + "/skills/evo-harness-learned/SKILL.md",
+                "sha256": digest(expected), "bytes": len(expected), "observed_at": -1,
+                "context_transport": CONTEXT_TRANSPORT, "model_context": observed}
     workspace, state = view["binding"]["workspace"], view["binding"]["agent_state"]
     require(posixpath.isabs(workspace) and posixpath.isabs(state), "Solver native State/workspace must be absolute")
     slot = state.rstrip("/") + "/skills/evo-harness-learned"
@@ -1073,6 +1092,141 @@ def solver_reflection_profile(fb, path_map=None):
     return profile if profile.get("reflection_mode") == "solver-session" else None
 
 
+def reflection_evidence_value(req, view, training, fb, path_map=None):
+    """Read-only transforms of observed pre-judge data; no service calls or writes."""
+    def requested(condition, message):
+        if not condition:
+            raise ReflectionRequestError(message)
+    requested(training.get("reflection_evidence") == "observed-v1", "local reflection evidence was not authorized")
+    requested(set(req) <= {"op", "task_id", "source", "rows_path", "where", "group_by", "metrics", "offset"}
+            and req["op"] == "reflection-evidence" and req["task_id"] == fb["task_id"], "invalid local reflection request")
+    _, judge_end = next(loc for pair, loc in zip(view["pairs"], observation_positions(view))
+                        if standalone_helper_request(pair, view) == fb["judge_request_path"]
+                        and pair["call"]["payload"]["tool_call_id"] not in view.get("denied_calls", [])
+                        and not is_unready_judge(pair, view, training, fb["task_id"], path_map))
+    before = [pair for pair, (_, seen) in zip(view["pairs"], observation_positions(view)) if seen < judge_end]
+    source = req["source"]
+    requested(isinstance(source, dict), "source must be an object")
+    if set(source) == {"input"}:
+        grants = [v["evo_task"] for m in view["messages"] for v in json_values(m["payload"].get("text", ""))
+                  if isinstance(v, dict) and isinstance(v.get("evo_task"), dict)]
+        requested(len(grants) == 1 and source["input"] in grants[0]["inputs"], "reflection input is outside this task's grant")
+        context_source = str(Path(training["private_learning"]) / "contexts" / (fb["task_id"] + ".json"))
+        if path_map is not None and context_source in path_map:
+            context = read(path_map[context_source])
+            require(context["split"] == "train" and context["task_id"] == fb["task_id"]
+                    and context["attempt_id"] == fb["attempt_id"]
+                    and context["answer_sha256"] == fb["answer_sha256"]
+                    and context["trace"]["binding"]["session_id"] == view["binding"]["session_id"],
+                    "portable reflection context binding changed")
+            inputs = [item for item in context["inputs"] if item["source"] == source["input"]]
+            require(len(inputs) == 1, "portable reflection input missing or ambiguous")
+            raw = inputs[0]["text"].encode()
+            require(digest(raw) == inputs[0]["sha256"], "portable reflection input hash changed")
+        else:
+            raw = regular((path_map or {}).get(source["input"], source["input"])).read_bytes()
+        verify_solver_inputs({**view, "pairs": before}, [(source["input"], raw.decode(), digest(raw))])
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ReflectionRequestError("choose an already observed JSON source") from exc
+        source_hash = digest(raw)
+    else:
+        requested(set(source) == {"tool_call_id", "json_index"} and type(source["json_index"]) is int
+                and source["json_index"] >= 0, "source must name an observed input or JSON tool observation")
+        pairs = [p for p in before if p["call"]["payload"]["tool_call_id"] == source["tool_call_id"]]
+        requested(len(pairs) == 1, "source is not this Solver's observed pre-judge call")
+        output = pairs[0]["observation"]["payload"]
+        requested(output.get("stop_reason") == "completed" and not output.get("images"), "source observation incomplete")
+        values = list(json_values(output["output"]))
+        requested(source["json_index"] < len(values), "no complete JSON at the observed index; use existing history")
+        data, source_hash = values[source["json_index"]], digest(output["output"].encode())
+    def field(value, path):
+        requested(isinstance(path, list) and all(isinstance(k, (str, int)) and not isinstance(k, bool) for k in path), "field path must be a JSON key/index list")
+        for key in path:
+            value = value[key]
+        return value
+    rows = field(data, req.get("rows_path", []))
+    if any(key in req for key in ("where", "group_by", "metrics")):
+        requested(isinstance(rows, list), "aggregate source must be a JSON row array")
+        predicates = req.get("where", [])
+        requested(isinstance(predicates, list), "where must be a list")
+        def matches(row, condition):
+            requested(set(condition) in ({"field", "op", "value"}, {"field", "op", "right_field"}), "invalid comparison")
+            left = field(row, condition["field"])
+            right = field(row, condition["right_field"]) if "right_field" in condition else condition["value"]
+            op = condition["op"]
+            requested(op in ("eq", "ne", "lt", "le", "gt", "ge", "in"), "unsupported comparison")
+            if op == "eq": return left == right
+            if op == "ne": return left != right
+            if op == "lt": return left < right
+            if op == "le": return left <= right
+            if op == "gt": return left > right
+            if op == "ge": return left >= right
+            return left in right
+        rows = [row for row in rows if all(matches(row, c) for c in predicates)]
+        if "metrics" in req:
+            requested(isinstance(req["metrics"], dict), "metrics must be an object")
+            requested(isinstance(req.get("group_by", []), list), "group_by must be a list")
+            groups = {}
+            for row in rows:
+                key = json.dumps([field(row, path) for path in req.get("group_by", [])], sort_keys=True)
+                groups.setdefault(key, []).append(row)
+            if not req.get("group_by") and not groups:
+                groups["[]"] = []
+            result = []
+            for key, group in sorted(groups.items()):
+                value = {"group": json.loads(key)}
+                for name, metric in req["metrics"].items():
+                    ident(name)
+                    requested(set(metric) <= {"op", "field"}, "invalid metric")
+                    op = metric["op"]
+                    requested(op in ("count", "distinct", "sum", "min", "max"), "unsupported metric")
+                    values = [field(row, metric["field"]) for row in group] if op != "count" else []
+                    if op == "count": value[name] = len(group)
+                    elif op == "distinct": value[name] = len({json.dumps(v, sort_keys=True) for v in values})
+                    else:
+                        requested(all(type(v) in (int, float) and math.isfinite(v) for v in values), "numeric metric required")
+                        value[name] = sum(values) if op == "sum" else (min(values) if op == "min" else max(values)) if values else None
+                result.append(value)
+            rows = result
+    text = encoded(rows).decode()
+    offset = req.get("offset", 0)
+    requested(type(offset) is int and 0 <= offset <= len(text), "invalid local evidence offset")
+    return {"op": "reflection-evidence", "task_id": fb["task_id"], "source_sha256": source_hash,
+            "sha256": digest(text.encode()), "offset": offset, "end": min(offset + 4000, len(text)),
+            "total": len(text), "text": text[offset:offset + 4000]}
+
+
+def reflection_evidence(req, request_path):
+    helper = regular(__file__).resolve()
+    training = read(helper.parent.parent / "training.json")
+    require(read(Path(training["private_learning"]) / "frozen-training.json") == training, "frozen training changed")
+    contract = role_contract(training, "reflector", req["task_id"])
+    require(str(Path(request_path).parent) == contract["request_dir"], "use own reflection request directory")
+    view = native_role_view(training, contract, request_path)
+    fb = read(judge_paths(training, req["task_id"], training["attempt_id"])["output"])
+    require(fb["status"] == "ok", "judge error is not reflection feedback")
+    reflection_operations(view, training, req["task_id"], fb, contract)
+    verify_judge_evidence(view, fb, fb["judge_request_path"])
+    positions = observation_positions(view)
+    returned = next(seen for pair, (_, seen) in zip(view["pairs"], positions)
+                    if standalone_helper_request(pair, view) == fb["judge_request_path"]
+                    and pair["call"]["payload"]["tool_call_id"] not in view.get("denied_calls", [])
+                    and not is_unready_judge(pair, view, training, req["task_id"]))
+    after = [p for p, (called, _) in zip(view["pairs"], positions) if called > returned]
+    try:
+        verify_material_records({**view, "pairs": after}, material_records(contract["materials"][1:]), standalone=True)
+    except ValueError as exc:
+        raise ReflectionEntryNotReady("read the complete bound feedback before this optional local calculation") from exc
+    require(not any(isinstance(v, dict) and v.get("op") == "seal-role-output" and v.get("complete")
+                    for p in view["pairs"] for v in json_values(p["observation"]["payload"]["output"])), "reflection already sealed")
+    try:
+        return reflection_evidence_value(req, view, training, fb)
+    except (ReflectionRequestError, KeyError, TypeError, IndexError) as exc:
+        raise ReflectionEntryNotReady(str(exc)) from exc
+
+
 def reflection_action(call, training, task_id, requests=None, executed_requests=None):
     """Finite post-judge protocol, reconstructed from native writes, never shell intent.
 
@@ -1096,6 +1250,9 @@ def reflection_action(call, training, task_id, requests=None, executed_requests=
             require(set(value) <= {"op", "path", "offset"} and value.get("path") == contract["materials"][1]
                     and type(value.get("offset", 0)) is int and value.get("offset", 0) >= 0,
                     "post-judge reads are restricted to this attempt's complete feedback")
+        elif value.get("op") == "reflection-evidence":
+            require(training.get("reflection_evidence") == "observed-v1" and value.get("task_id") == task_id,
+                    "local evidence is not authorized for this task/profile")
         else:
             require(value == {"op": "seal-role-output", "role": "reflector", "task_id": task_id},
                     "post-judge helper is restricted to feedback reading or original Solver sealing")
@@ -1171,6 +1328,7 @@ def reflection_operations(view, training, task, fb, contract, path_map=None):
     positions = observation_positions(view)
     judges = [(pair, loc) for pair, loc in zip(view["pairs"], positions)
               if standalone_helper_request(pair, view) == fb["judge_request_path"]
+              and pair["call"]["payload"]["tool_call_id"] not in view.get("denied_calls", [])
               and not is_unready_judge(pair, view, training, task, path_map)]
     if len(judges) != 1:
         bad = judges[1] if len(judges) > 1 else (None, None)
@@ -1181,6 +1339,8 @@ def reflection_operations(view, training, task, fb, contract, path_map=None):
     for pair, (called, observed) in zip(view["pairs"], positions):
         call = pair["call"]["payload"]
         phase = "pre_judge" if called <= judge_at else "post_judge"
+        if call["tool_call_id"] in view.get("denied_calls", []):
+            continue  # Native decision + aborted receipt prove no operation occurred.
         try:
             if called <= judge_at:
                 verify_solver_scoped_reads(pair, view, training, task, fb, contract)
@@ -1287,6 +1447,20 @@ def verify_solver_reflection(view, fb, path_map=None, require_seal=True, input_r
             receipt = material({**action["request"], "path": mapped.get(action["request"]["path"], action["request"]["path"])})
             receipt["material_path"] = action["request"]["path"]
             require(contains_json(result["output"], receipt), "reflection feedback read was incomplete or fabricated")
+        elif action["kind"] == "reflection-evidence":
+            values = list(json_values(result["output"]))
+            refused = (len(values) == 1 and isinstance(values[0], dict)
+                       and values[0].get("code") == "reflection_evidence_unready"
+                       and values[0].get("recoverable") is True and "error" in values[0])
+            if called <= observed_feedback:
+                require(refused, "complete raw feedback must precede local reflection evidence")
+                continue  # The controlled entry refused before returning any data.
+            try:
+                expected = reflection_evidence_value(action["request"], view, training, fb, path_map)
+            except (ReflectionRequestError, KeyError, TypeError, IndexError):
+                require(refused, "invalid local evidence request lacks its refusal receipt")
+                continue
+            require(contains_json(result["output"], expected), "local reflection evidence receipt changed")
         elif action["kind"] == "seal-role-output":
             values = list(json_values(result.get("output", "")))
             complete = [v for v in values if isinstance(v, dict) and v.get("op") == "seal-role-output" and v.get("complete") is True]
@@ -2102,7 +2276,7 @@ def verify_compilation(req):
     return expected
 
 
-READER = '''---
+LEGACY_READER = '''---
 name: evo-harness-learned
 description: Before task work read this Reader and follow all its native read_file calls; context bodies and general descriptions only.
 version: 2026.10.22.10
@@ -2147,6 +2321,110 @@ answers or learn from test feedback.
 ## Frozen group Skills and native read_file requests
 
 '''
+
+READER = """---
+name: evo-harness-learned
+description: Frozen group methods; current-context bodies and general descriptions only.
+version: 2026.10.22.12
+---
+
+The deterministic install-context entry supplies this Reader, all general
+descriptions below and every current-context/topic body in the native initial
+system context. No selector, extra file read or manual loading is required when
+that frozen context is present. General bodies are not injected. All five tests
+receive the identical set. The manifest also retains exact native read plans
+for explicit file inspection; inspection does not choose or replace methods.
+
+A loaded method is conditional: check its fields, entities, time basis, grain
+and necessary premises against the current request and authorized facts.
+Obtain unknown thresholds, labels, defaults and priority there. Preserve useful
+queries, joins and calculations; an unresolved premise needs a bounded branch,
+not a mandatory guess. Produce only requested outputs. No training answers or
+test feedback are learning material. Empty entries are the normal H0.
+
+## Frozen group Skills
+
+"""
+
+CONTEXT_TRANSPORT = "agents-md-v1"
+CONTEXT_OPEN = "<!-- evo-frozen-context-v1\n"
+CONTEXT_CLOSE = "\n/evo-frozen-context-v1 -->"
+
+
+def model_context(files):
+    """Render precisely the frozen loading set; no model choice or text editing."""
+    manifest = validate_package_files(files)
+    loaded = {"SKILL.md": files["SKILL.md"], **{e["path"]: files[e["path"]]
+              for e in manifest["entries"] if e["load_mode"] == "body"}}
+    text = "\n".join(raw.decode() for raw in loaded.values())
+    metadata = {"transport": CONTEXT_TRANSPORT,
+                "loading_policy": "official-cl-context-body-general-description",
+                "files": {name: digest(raw) for name, raw in loaded.items()},
+                "bytes": len(text.encode()), "sha256": digest(text.encode())}
+    require(CONTEXT_OPEN not in text and CONTEXT_CLOSE not in text, "reserved context framing in Skill")
+    block = CONTEXT_OPEN + json.dumps(metadata, sort_keys=True, separators=(",", ":")) + "\n" + text + CONTEXT_CLOSE
+    require(len(block.encode()) <= manifest["max_bytes"], "actual context with metadata exceeds frozen byte budget")
+    return {**metadata, "text": text, "block": block, "injected_bytes": len(block.encode())}
+
+
+def split_context(text):
+    """Remove exactly one own block, preserving all other native instructions."""
+    if CONTEXT_OPEN not in text and CONTEXT_CLOSE not in text:
+        return text, None
+    require(text.count(CONTEXT_OPEN) == text.count(CONTEXT_CLOSE) == 1, "ambiguous frozen context block")
+    begin, end = text.index(CONTEXT_OPEN), text.index(CONTEXT_CLOSE) + len(CONTEXT_CLOSE)
+    return text[:begin] + text[end:], text[begin:end]
+
+
+def install_context(req):
+    """Prepare one State before snapshotting; never dispatch or mutate a live run."""
+    state = Path(req["state"])
+    require(state.is_dir() and not state.is_symlink(), "native State required")
+    reader = regular(state / "skills/evo-harness-learned/SKILL.md").read_bytes()
+    manifest = parse_reader(reader)
+    files = {"SKILL.md": reader, **{entry["path"]: regular(state / entry["state_path"]).read_bytes()
+                                for entry in manifest["entries"]}}
+    validate_package_files(files)
+    context = model_context(files)
+    agents = regular(state / "AGENTS.md")
+    config_path = regular(state / "system_config.yaml")
+    config = config_path.read_text()
+    blocks = list(re.finditer(r"(?m)^skills:\n(?:[ \t].*\n|\n)*", config))
+    if blocks:
+        require(len(blocks) == 1 and len(re.findall(r"(?m)^  enabled: (?:true|false)$", blocks[0][0])) == 1,
+                "prepare native emitted skills.enabled configuration before installing context")
+        block = re.sub(r"(?m)^  enabled: (?:true|false)$", "  enabled: false", blocks[0][0])
+        config = config[:blocks[0].start()] + block + config[blocks[0].end():]
+    else:
+        require(not re.search(r"(?m)^skills:", config), "unsupported native skills configuration")
+        config = config.rstrip("\n") + "\nskills:\n  enabled: false\n"
+    base, old = split_context(agents.read_text())
+    # New blocks always occupy the original trailing position. No outside text
+    # normalization, no runtime config changes, and no mutable sidecar receipt.
+    updated = base + context["block"]
+    if config_path.read_text() != config:
+        atomic(config_path, config.encode())
+    if agents.read_text() != updated:
+        atomic(agents, updated.encode())
+    return {key: value for key, value in context.items() if key not in ("text", "block")}
+
+
+class IncompleteContextObservation(ValueError):
+    """Native prompt metadata absent; no claim about actual loaded text."""
+
+
+def context_observation(metas, files):
+    context = model_context(files)
+    if not metas or any(meta.get("system_prompt") is None for meta in metas):
+        raise IncompleteContextObservation("missing native model-context metadata")
+    for meta in metas:
+        prompt = meta["system_prompt"]
+        require(isinstance(prompt, str) and prompt.count(CONTEXT_OPEN) == prompt.count(CONTEXT_CLOSE) == 1,
+                "frozen Skill context absent or duplicated in actual model system prompt")
+        _, actual = split_context(prompt)
+        require(actual == context["block"], "actual model Skill text/length/hash differs from frozen context")
+    return {key: value for key, value in context.items() if key not in ("text", "block")}
+
 
 FULL_SKILL_SCHEMA = "evo-multi-skill-v1"
 FULL_SKILL_OPEN = "<!-- evo-multi-skill-v1\n"
@@ -2217,6 +2495,7 @@ def render_package(entries, max_bytes):
     manifest["read_calls"] = context_read_calls(manifest["entries"], files)
     files["SKILL.md"] = READER.encode() + FULL_SKILL_OPEN.encode() + encoded(manifest) + FULL_SKILL_CLOSE.encode()
     validate_package_files(files)
+    model_context(files)  # include actual injection framing/metadata before freeze
     return files
 
 
@@ -2227,7 +2506,8 @@ def render_skill(entries, max_bytes):
 
 def parse_reader(raw):
     """Validate the fixed Reader and its complete, deterministic package manifest."""
-    prefix = (READER + FULL_SKILL_OPEN).encode()
+    prefixes = [(reader + FULL_SKILL_OPEN).encode() for reader in (READER, LEGACY_READER)]
+    prefix = next((value for value in prefixes if raw.startswith(value)), prefixes[0])
     require(raw.startswith(prefix) and raw.endswith(FULL_SKILL_CLOSE.encode()), "learned reader or multi-Skill format changed")
     manifest_raw = raw[len(prefix):-len(FULL_SKILL_CLOSE.encode())]
     manifest = json.loads(manifest_raw)
@@ -2606,9 +2886,10 @@ def execute(req, request_path=None):
                "validate-candidates": validate_candidate_file, "validate-decisions": validate_decisions,
                "read-material": material, "audit-role": audit_role,
                "seal-role-output": lambda r: seal_role_output(r, request_path),
+               "reflection-evidence": lambda r: reflection_evidence(r, request_path),
                "seal-training": seal_training,
                "file-digest": lambda r: {"file_path": r["path"], "sha256": digest(regular(r["path"]).read_bytes())},
-               "export": export_skill, "journal": journal,
+               "export": export_skill, "journal": journal, "install-context": install_context,
                "verify-package": lambda r: validate_package(r["path"]),
                "fingerprint": lambda r: {"files": filemap(r["path"]),
                     "sha256": digest(encoded(filemap(r["path"])))} }
@@ -2622,12 +2903,18 @@ if __name__ == "__main__":
         result = execute(request, sys.argv[1])
         print(json.dumps(judge_stdout(result) if request["op"] == "judge" else result,
                          ensure_ascii=False, allow_nan=False))
-    except (ValueError, KeyError, OSError, TypeError) as exc:
+    except (ValueError, KeyError, OSError, TypeError, IndexError) as exc:
         error = {"error": str(exc)}
         if isinstance(exc, ReflectionBoundaryError):
             error.update(code="reflection_boundary_violation", recoverable=False, phase=exc.phase,
                          tool_call_id=exc.tool_call_id,
                          next_action="Stop this attempt and return this error to the parent. Preserve evidence; do not retry seal, answer, judge or reflection.")
+        elif isinstance(exc, ReflectionEntryNotReady):
+            error.update(code="reflection_evidence_unready", recoverable=True,
+                         next_action="Use existing history, or correct only this bound local-data request after full feedback. This entry made no business query, answer write or scoring call.")
+        elif isinstance(locals().get("request"), dict) and request.get("op") == "reflection-evidence":
+            error.update(code="reflection_evidence_invalid", recoverable=False,
+                         next_action="Preserve the invalid history/evidence and report it; do not retry answer, judge or reflection.")
         elif isinstance(exc, ReflectionDraftError):
             error.update(code="candidate_draft_invalid", recoverable=True, phase="post_judge",
                          next_action="Correct only the original Solver's own unsealed candidate JSON using the supplied schema and evidence identifiers, then seal in this same Session. No queries, scoring, source or trace reads.")

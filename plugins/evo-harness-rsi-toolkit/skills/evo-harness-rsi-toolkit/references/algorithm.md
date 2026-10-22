@@ -153,3 +153,16 @@ uses fresh negative-source candidates; the authorized replay measures only one
 frozen final five-case test round, without new training or baseline calls.
 
 Revision `2026.10.22.10` adds an explicit diagnostic `record-only` audit policy to historical replay and corrects native Session cost ownership parsing. It changes neither the learning algorithm nor the full-RSI entry. Diagnostic completion is not protocol validity; actual scores and audit outcomes are reported separately.
+
+### .12 transport and receipt revision
+
+The loading SET stays aligned with the pinned official CL path: full context
+bodies, general descriptions only. Delivery now uses an exact marked native
+AGENTS.md system-context block prepared before snapshots, not model-driven file
+reads. The actual system_prompt in every original Session segment must contain
+the identical bound text, byte length and hash. This does not retroactively
+satisfy earlier tool-read protocols. Same-Solver reflection may use the declared
+pure observed-data entry after full feedback; no new business data or test scope.
+Held-out records are derived from native trial facts; diagnostic audit gaps are
+separate from measurement progress. These are declared GDPevo engineering
+adaptations; no extra learning role, train retest or score acceptance is added.

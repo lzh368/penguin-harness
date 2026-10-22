@@ -473,7 +473,7 @@ def controller_trace(mode):
     return metas[0], scratch
 
 
-def worker_result(meta, scratch, mode, ticket):
+def legacy_worker_result(meta, scratch, mode, ticket):
     source = native_worker(meta, scratch, mode, ticket)
     path = scratch / "evo-guard/format" / (source["handle"] + ".json")
     child = source["rows"]
@@ -502,6 +502,53 @@ def worker_result(meta, scratch, mode, ticket):
     check(same_record(before, repair["original_result"]) and same_record(after, before),
           "formatting repair changed original result values")
     return after, source
+
+
+def worker_result(meta, scratch, mode, ticket):
+    config = evo.read(mode["config"])
+    if ticket["phase"] == "training" or config.get("receipt_policy") != "native-trial-v1":
+        return legacy_worker_result(meta, scratch, mode, ticket)
+    source = native_worker(meta, scratch, mode, ticket)
+    text = worker_text(source["rows"])
+    reply, reply_issue = None, None
+    try:
+        reply = worker_yaml(text, mode, allow_fence=True)
+    except (ValueError, KeyError, OSError) as exc:
+        reply_issue = str(exc)
+    # The original worker binds the trial. Never scan all jobs and choose a
+    # favourable result or copy the planned identity over actual runtime data.
+    trial_id = reply.get("session_id") if isinstance(reply, dict) else None
+    if not isinstance(trial_id, str):
+        names = set(re.findall(r"\bharbor:([A-Za-z0-9_.-]+)", text))
+        check(len(names) == 1, "worker reply lacks a unique original Harbor trial binding; preserve diagnostic data")
+        trial_id = "harbor:" + names.pop()
+    identity = worker_identity(ticket)
+    registered = registered_benchmarks(mode)
+    check(identity["case_id"] in registered["test"]["case_ids"], "unregistered test identity")
+    deployment = config["deployment"]
+    benchmark = Path(deployment["penguin_home"]) / deployment["project_id"] / "benchmarks" / config["test_benchmark_id"]
+    module = protocol_module(mode)
+    injection = module.helper(Path(mode["protocol"]).with_name("injection.py"))
+    acceptance = module.helper(Path(mode["protocol"]).with_name("acceptance.py"))
+    frozen = evo.read(mode["freeze_request"])
+    receipt = injection.canonical_worker_cell({"identity": identity, "session_id": trial_id,
+        "benchmark": str(benchmark), "snapshot": frozen[ticket["phase"] + "_snapshot"],
+        "runtime": config["runtime"], "launch": evo.read(benchmark / identity["case_id"] / "statement/harbor-launch.json"),
+        "config_value": config}, evo, acceptance)
+    if receipt["pending"]:
+        raise WorkerPending(receipt["reason"])
+    receipt.update(worker_session=source["session_id"], worker_reply_sha256=evo.digest(text.encode()),
+                   original_reply=reply, reply_issue=reply_issue,
+                   corrected_fields={key: {"reported": reply.get(key), "actual": value}
+                                     for key, value in receipt["cell"].items()
+                                     if isinstance(reply, dict) and reply.get(key) != value})
+    directory = scratch / "evo-guard/native-records"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / (evo.digest(evo.encoded(receipt)) + ".json")
+    if not path.exists():
+        evo.write_once(path, evo.encoded(receipt))
+    source["native_record"] = receipt
+    return receipt["cell"], source
 
 
 def verify_format_repairs(mode):
@@ -566,8 +613,13 @@ def validate_workers(mode, phase):
         try:
             source = native_worker(meta, scratch, mode, ticket)
             item.update(subagent_id=source["handle"], session_id=source["session_id"])
-            value, _ = worker_result(meta, scratch, mode, ticket)
+            value, checked_source = worker_result(meta, scratch, mode, ticket)
             item.update(valid=True, cell=value)
+            if "native_record" in checked_source:
+                record = checked_source["native_record"]
+                item.update(audit_status=record["audit"].get("audit_status", "passed"),
+                            audit_issues=record["audit"].get("audit_issues", []),
+                            corrected_fields=record["corrected_fields"], source="original-native-trial")
         except WorkerPending as exc:
             item.update(pending=True, reason=str(exc))
         except WorkerFormatError as exc:
@@ -666,6 +718,7 @@ def freeze(mode, phase="final"):
     frozen_profile = evo.read(Path(exported["private_learning"]) / "frozen-training.json")
     check(frozen_profile["config_sha256"] == mode["config_sha256"] and frozen_profile["guard_version"] == 2,
           "export belongs to another experiment/profile")
+    check(request.get("context_transport") == config.get("context_transport"), "freeze context transport differs from frozen config")
     request["active_state"] = phase
     return module.execute({**request, "op": "verify-freeze"})
 
@@ -787,12 +840,12 @@ def role_request(req, meta, scratch, mode):
         solver_interface = (
             "Learn a reusable method from your own execution, retaining supported steps and conditions.\n"
             "Execution phases in this one native Session:\n"
-            "1. Before judge: read the full learned Skill, assigned public inputs and role file; solve and finalize the answer. "
+            "1. Before judge: use the complete frozen Skill in the declared native initial context (legacy transport follows its read plan), read assigned public inputs and role file; solve and finalize the answer. "
             "The candidate contract below already supplies its exact JSON fields and input references. Keep tool-call ids from your own observed history when needed.\n"
             "2. Judge once, then read every raw feedback chunk. The answer and business investigation are now closed.\n"
             "3. On negative feedback, reason from the history already present, write your candidate array with native write_file, "
             "then execute the fixed seal request. Success returns after the complete feedback read without candidates. "
-            "Post-judge tools are only bound feedback read-material, own candidate/request write_file and seal-role-output. "
+            "After full feedback, use your existing history; when observed-v1 is declared, the supplied reflection-evidence entry can transform only already observed current-task JSON. Other post-judge tools are bound feedback read-material, own candidate/request write_file and seal-role-output. "
             "Use the candidate contract's exact output_path and native write_call template; replace content with the complete JSON array. "
             "An unsealed correction uses that same native write_file call, not Python/shell read-modify-write.\n"
             "No post-judge source/trace inspection or hash calculation is needed or permitted: use the supplied input_refs, "
@@ -818,13 +871,21 @@ def role_request(req, meta, scratch, mode):
         reflection_requests = candidate.parent / "requests"
         reflection_requests.mkdir(parents=True, exist_ok=True)
         text += (f"Before judge, ordinary preparation JSON may use {reflection_requests}. "
-                 "After judge, use fresh files in that directory only for bound feedback reads and the fixed seal request; do not repurpose an executed request.\n")
+                 "After judge, use fresh files there for bound feedback, declared local evidence or the fixed seal; do not repurpose an executed request.\n")
         text += "First feedback request: " + json.dumps({"op": "read-material", "path": paths["output"], "offset": 0})
         text += "\nRepeat offsets 4000,8000,... until end=total; await all complete raw feedback receipts. The short judge receipt is not the feedback.\n"
         text += (f"Negative feedback candidate output: {candidate}; write the complete JSON array (including a justified []). "
                  f"Seal request path: {reflection_requests / 'seal.json'}. "
                  "Use the exact Seal request below in this original Session. Success requires full feedback observation but no candidate/seal. "
                  "Judge anomalies stop the task and are not negative feedback.\n")
+        if t.get("reflection_evidence") == "observed-v1":
+            text += "\nOptional local reflection entry (after FULL feedback; use history first): " + json.dumps({
+                "op": "reflection-evidence", "task_id": task,
+                "source": {"tool_call_id": "YOUR_OWN_OBSERVED_PRE_JUDGE_CALL_ID", "json_index": 0},
+                "rows_path": [], "offset": 0})
+            text += "\nWrite this request in your own requests directory and use the exact evo helper. Use a real observed call id, or source=" + json.dumps({"input": "EXACT_GRANTED_PREVIOUSLY_READ_JSON_PATH"})
+            text += "; no source/trace/cache lookup. JSON key/index paths are arrays. Optional transform example (synthetic fields; adapt to your actual source): " + json.dumps({"where": [{"field": ["status"], "op": "eq", "value": "failed"}], "group_by": [["team"]], "metrics": {"runs": {"op": "count"}, "days": {"op": "distinct", "field": ["date"]}}})
+            text += "\nSupported comparisons eq/ne/lt/le/gt/ge/in; use right_field instead of value for same-row comparison. Metrics count/distinct/sum/min/max; count has no field. Page offsets 0,4000,... until end=total. No judge or query.\n"
         text += "Binary inputs (observe through appropriate tools; do not fabricate text receipts): " + json.dumps(binary)
         slot = f"solver/{task}/{t['attempt_id']}"
     else:
@@ -855,7 +916,7 @@ def role_request(req, meta, scratch, mode):
         text += "\nExact frozen compilation/injection limits: " + json.dumps({key: t[key] for key in ("limits", "max_bytes")})
         text += ("\nlimits.general is the total number of general entries; limits.topic is the maximum per topic. "
                  "Each retained entry is exported as an independent native Skill. The fixed Reader, complete manifest and all Skill bodies/frontmatter together must fit max_bytes UTF-8 bytes, with no entry selection. "
-                 "Each physical SKILL.md line must fit 2000 UTF-16 code units: wrap without dropping conditions or content. All tasks read the same Reader with every general description plus every current-context/topic Skill body in full; general Skill bodies are not loaded. Supply a concise explicit description for each general entry, giving a self-contained method summary with applicability, core operation and necessary boundary, not just topic keywords or a complete copy of the body. Keep levels evidence-based; do not relabel general entries as topic to load their bodies. "
+                 "Each physical SKILL.md line must fit 2000 UTF-16 code units: wrap without dropping conditions or content. All tasks receive the same Reader with every general description plus every current-context/topic Skill body in full; general Skill bodies are not loaded. Supply a concise explicit description for each general entry, giving a self-contained method summary with applicability, core operation and necessary boundary, not just topic keywords or a complete copy of the body. Keep levels evidence-based; do not relabel general entries as topic to load their bodies. "
                  "Before sealing, validate your own decisions with validate-decisions using the paths and frozen budgets below; "
                  "correct your own invalid JSON before seal-role-output, never ask the coordinator to rewrite it.\n")
         text += "Validation request: " + json.dumps({"op": "validate-decisions", "train_ids": t["train_ids"],
@@ -1369,10 +1430,12 @@ def controller_final(mode):
             "config": mode["config"], "config_sha256": mode["config_sha256"],
             "matrix_request": matrix_path, "snapshot": frozen_request[phase + "_snapshot"],
             "runtime": config["runtime"], "expected_version": accepted[phase]["version"], "benchmark": str(benchmark)})
-        check(receipt["complete"] is True, "actual frozen Skill injection is not verified")
+        check(receipt.get("measurement_complete", receipt["complete"]) is True, "original trial matrix incomplete")
         injection.append(receipt)
     check(request.get("host_cost_status") == "pending_final_request", "own final request cost must remain pending, not falsely settled")
-    return {"complete": True, "equivalent_h0": accepted["equivalent_h0"], "host_cost_status": "pending_final_request", "injection": injection}
+    return {"complete": all(r["complete"] for r in injection), "measurement_complete": True,
+            "status": "valid" if all(r["complete"] for r in injection) else "diagnostic",
+            "equivalent_h0": accepted["equivalent_h0"], "host_cost_status": "pending_final_request", "injection": injection}
 
 
 def block_goal(scratch, reason):
@@ -1513,6 +1576,9 @@ def hook(payload, state):
                 return waiting
             accepted = training_final(meta, mode) if mode["mode"] == "training" else controller_final(mode)
             evo.atomic(scratch / "evo-acceptance.json", evo.encoded(accepted))
+            if not accepted["complete"]:
+                block_goal(scratch, "Measurements finished; evidence gaps retained as diagnostic")
+                return {"decision": "stop", "reason": "Measurements finished; final audit is diagnostic", "output": {"complete": False, "measurement_complete": True, "status": "diagnostic"}}
             return {"decision": "stop", "reason": "Evo method evidence verified", "output": {"complete": True}}
         raise ValueError("unknown native hook")
     except (ValueError, KeyError, OSError, TypeError, IndexError) as error:

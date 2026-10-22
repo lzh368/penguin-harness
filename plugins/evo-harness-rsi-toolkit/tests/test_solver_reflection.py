@@ -31,7 +31,8 @@ class SolverReflectionTests(unittest.TestCase):
             "private_learning": str(self.private), "answer_dir": str(self.root / "answers"),
             "feedback_dir": str(self.private / "feedback"), "guard_version": 2,
             "reflection_mode": "solver-session", "max_bytes": 16000, "limits": {"general": 5, "topic": 5},
-            "runtime": {"provider": "fixture", "model_id": "no-model", "thinking_level": "xhigh"}}
+            "runtime": {"provider": "fixture", "model_id": "no-model", "thinking_level": "xhigh"},
+            **getattr(self, "protocol_options", {})}
         (self.helper.parent.parent / "training.json").write_bytes(evo.encoded(self.training))
         self.contract = evo.role_contract(self.training, "reflector", self.task)
         self.role = Path(self.contract["materials"][0]); self.role.parent.mkdir(parents=True)

@@ -1,9 +1,11 @@
 # Native learning roles
 
-Learn methods for future tasks: when to use them, what information to obtain,
-how to query, join, calculate or decide, and how the result serves the task.
-Preserve useful operations and improve supported gaps; a list of warnings or
-a new business rule inferred from a low score is not a method.
+Learn reusable methods from actual execution. Around one operational goal,
+state applicability, required inputs, queries and joins, calculation or judgment,
+the result's use and branch boundaries. Preserve correct operations; change only
+evidence-supported gaps. Keep instance IDs, dates and amounts in private records;
+write parameters and methods in the Skill. Warnings alone or a new business rule
+inferred from a low total score do not supply a method.
 
 For ordinary RSI the host calls `run_subagent` with the complete role text.
 For guarded continuous GDPevo the group root first uses control.py role-request
@@ -42,13 +44,13 @@ An acknowledgment or a path in the prompt alone is not proof of reading.
 
 ## Solver (group training leaf)
 
-Before substantive work, satisfy the inherited learned Reader: observe it, including all general descriptions, and every
-listed current-context Skill body in full through its supported read operations before business actions, helper
-calls, or file writes. The Reader permits a final exact cat after literal
-pwd/ls and short echo separators joined by &&; full output must finish first.
-Reading your exact own native AGENTS.md and installed toolkit/training.json is
-pre-judge preparation and may precede the Skill read. The config supplies the
-frozen train_ids/attempt and canonical paths, not other members' answers. Read the complete assigned role file with
+Before substantive work, use the frozen learned context supplied by install-context
+in your native initial system prompt when training.json declares agents-md-v1.
+It includes the Reader, every general description and all current-context/topic
+bodies. No selector or extra Skill read is needed. If that transport is not frozen,
+observe the complete Reader and every listed body through the supplied native read
+plan before business work. Own AGENTS.md and training.json are preparation, not
+hidden answers. Read the complete assigned role file with
 read-material. Every granted public input must be fully observed before solving:
 complete successful native read_file output also satisfies that input's audit,
 so do not duplicate a full native read with the helper. Normal offset/limit pages
@@ -98,8 +100,12 @@ and your Session id; do not end the native run before this work completes.
 
 Before judge, finish all input and role reads and understand the supplied candidate
 contract. Ordinary preparation JSON may use the assigned request directory.
-After the single judge, perform only bound feedback reads, your own native
-write_file candidate/request writes and the fixed sealing requests. Do not alter the answer,
+After the single judge, use your own conversation first. Once full feedback is
+observed, the declared observed-v1 reflection-evidence entry may reread an already
+observed bound input or transform a complete pre-judge JSON tool observation.
+It performs only explicit row filters/grouping/counts/sums/min/max; it cannot
+open a cache path, execute Python, contact a service or use another task. Write
+own candidate/request JSON and seal through the fixed entry. Do not alter the answer,
 rescore, query the business service, read another task/candidate/test material,
 or retrieve the skill library for curation. Retain the information already in
 your conversation. Before retrying a missing feedback chunk or unsealed format
@@ -167,103 +173,81 @@ correction of your own unsealed draft; fatal boundary errors remain terminal.
 Use the initial contract's exact output_path and write_call template (also
 returned with candidate_draft_invalid). Replace only arguments.content with
 the complete corrected JSON array as text and call native write_file directly.
-Use the draft already in your history; no Python/shell read-modify-write or
-read_file is needed or permitted. Then use the fixed seal-role-output request (file-digest only for unguarded RSI) and return
+Use the draft already in your history; no Python/shell read-modify-write is needed or permitted. Then use the fixed seal-role-output request (file-digest only for unguarded RSI) and return
 its receipt. The sealed output is fixed; the coordinator cannot rewrite it. The internal
 seal label `reflector` identifies this phase of the original Solver, not a new
 Agent or a second billable Session. You do not edit State.
 
 ## Evolver
 
-Compile supported methods, not a catalogue of failures. Read all authorized
-batch candidates, every assigned bound context in full, and the complete
-pre-batch library. Reconcile each candidate with the original actions and final
-delivery, including counterevidence and useful operations in the other contexts.
-For continuous GDPevo this includes all five contexts. Successful contexts can
-constrain a candidate's scope, but do not create new positive-source candidates
-or establish correctness of every local inference.
+Compile the reusable methods above from the frozen batch; reconcile their
+premises and executable steps before writing any retained entry.
 
-Produce one JSON array of operations:
-`op` ADD/MERGE/REVISE/SKIP, nonempty `candidate_ids`, and `reason`; non-SKIP
-operations include a complete replacement `entry` with id, level
+Read all authorized candidates, the complete pre-batch library and all five
+bound training contexts. Rejudge each candidate against the original actions,
+final delivery and counterevidence. A scalar score neither locates a failed
+field nor proves the candidate's explanation; success does not prove every
+local judgment. A performed or already corrected step is useful prior work,
+not an omission. Successful contexts constrain scope; they do not create new
+positive-source candidates.
+
+Produce one JSON array of ADD/MERGE/REVISE/SKIP operations with nonempty
+candidate_ids and reason. In the existing reason explain the original operation,
+the evidenced gap or useful method, the query/join/calculation/decision that
+would change, and correct steps retained. Walk through the FINAL VISIBLE TEXT
+on one already supplied relevant training scene, including counterevidence or
+a previously correct substep: can its inputs, operations and branches actually
+be followed, and does it preserve that correct work? This is a consistency
+check, not a new solve, judge, proof of benefit or demonstrated score repair.
+
+Preserve the scope and certainty of the supporting facts in the text Solver
+receives: field, entity, time basis, record grain and necessary premises.
+Query order does not establish source priority; a balance-calculation condition
+does not become an eligibility condition; run count is not distinct failed-day
+count. Obtain unknown thresholds, labels, defaults and priority from the current
+task or authorized evidence. Facts and valid logic may support useful derivations
+without a verbatim instruction or recurrence in several tasks. If a business
+premise is unsupported, narrow it to a check with an unresolved branch or SKIP;
+labeling a mandatory guess "assumed" does not justify it. Continue to retain
+supported retrieval, joins, deduplication and arithmetic: uncertainty about a
+parameter must not erase the usable method or leave only "check carefully".
+A spread of observed values does not identify an unstated policy cutoff; compare
+only quantities with compatible units. A defensible calculation and a justified
+business decision are separate claims.
+
+Non-SKIP operations include a complete replacement entry: id, level
 (general/topic), topic for topic entries, trigger, scope and Markdown body.
-General entries also require an explicit description that you author: a concise,
-self-contained method summary: applicability, core operation/principle, and
-necessary boundary. A reader who receives only this description must know what
-to do and what remains task-dependent. Do not supply just topic keywords or
-copy the complete body into metadata. All general
-descriptions are loaded; general bodies are stored but not loaded. Current-context
-(topic) bodies are all loaded. Preserve the evidence-supported level; never
-relabel a general rule as topic to bypass this policy or fill an empty layer.
-One operation can synthesize several candidates. Every candidate needs an
-explicit decision, including SKIP. Consider both general and topic levels;
-a candidate may support one operation at each level, only one level, or neither.
-Use each candidate at most once per level. Either level may remain empty:
-slot limits are ceilings, not targets. SKIP may name level general/topic or all.
-Combine changes to the same target into one operation. ADD uses a new id;
-MERGE/REVISE target an existing entry. SKIP records noise, duplication,
-contradiction or an unsupported premise without inventing content.
+Evolver chooses the level from the evidence and transfer scope; no new classifier.
+General requires an authored, concise, self-contained description: applicability,
+core operation and necessary boundary. General descriptions alone are injected;
+general bodies remain in the installed package but are not injected. Current-context/topic bodies
+are injected in full. Verify these ACTUALLY VISIBLE descriptions/bodies; conditions
+in a reason or an unloaded body cannot repair an unconditional visible rule.
+Do not use topic keywords as a description, paste a whole body into metadata,
+or relabel general as topic to bypass loading. A loaded method remains conditional
+on the current task satisfying its premises. No selector or other-group content.
 
-In reason, connect the original operation, supported gap or reuse, proposed
-change and its evidence: identify the query, join, calculation or decision that
-would actually change, plus effective steps to retain. Check the candidate's interpretation, not just its
-citations: a step already performed cannot become a failure in the explanation.
-Retain useful parts while correcting supported gaps. A proposed improvement
-is not a demonstrated repair of lost points or a guarantee of higher scores;
-this batch has no score-based selection or training retest.
+Combine only methods serving the same operational goal. Every candidate gets a
+decision, including SKIP; use each at most once per level. One candidate may
+support both levels, one, or neither. Either level may be empty. Counts are
+ceilings, not quotas. ADD uses a new id; MERGE/REVISE targets an existing entry;
+combine changes to the same target. SKIP may name general/topic/all and records
+unsupported premises, contradictions, duplication or noise without invention.
 
-The continuous role prompt supplies the exact frozen limits and max_bytes plus
-a validate-decisions request. limits.general caps general entries; limits.topic
-caps entries per topic. Each retained entry becomes an independent native Skill;
-max_bytes covers the entire package: fixed Reader, complete manifest, and all
-Skill bodies, frontmatter, headings and framing. Every physical line must
-fit 2000 UTF-16 code units so native read_file can observe it completely.
-Validate your own draft before sealing: the helper checks the actual complete-package
-rendering and compilation constraints without publishing State or changing
-content. If oversized, refine your unsealed draft, combine supported overlap
-or use a justified SKIP; wrap overlong prose lines without clipping text.
-The coordinator cannot rewrite decisions, and export/injection cannot truncate
-any file or drop retained rules to fit. Limits are ceilings, not output quotas.
+The prompt supplies frozen limits, max_bytes and a validate-decisions request.
+Each retained entry is an independent native Skill. The entire package, including
+Reader, manifest, metadata and ALL stored bodies, must fit 16,000 UTF-8 bytes;
+max_bytes can be lower. Each physical line fits 2000 UTF-16 units. Validate the
+complete rendering before sealing. If too large, refine the unsealed methods,
+merge supported overlap or justify SKIP; export and injection never clip or drop
+rules. The helper validates structure and provenance, not semantic truth.
 
-Generalize only when evidence supports transfer; a useful topic procedure does
-not need recurrence in multiple tasks. Preserve each rule's field, entity,
-time basis and granularity: a row rule is not automatically an entity or batch
-rule, event counts are not distinct-day counts, and a condition cannot transfer
-between fields without an applicable definition or valid inference from
-authorized facts. Carry
-the support's certainty into trigger, scope and body. Obtain thresholds,
-output labels, defaults and source priority from applicable task definitions
-and authorized evidence, not familiar conventions or field names alone.
-Logical inference is allowed when its premises hold. If a necessary premise
-is unresolved, give a bounded checking branch with an uncertainty outcome,
-narrow the rule or SKIP it; adding “assumed” to an unsupported mandatory action
-does not establish it. Merge overlap and revise conflicts without appending
-every memory or erasing useful local rules to fill the general layer.
-
-Write a coherent “when → inspect → query/join/calculate/decide → result → use”
-procedure with necessary conditions and alternative branches in its body.
-The trigger states when the rule applies. Before business actions the Solver
-receives all topic bodies and all general descriptions, never general bodies.
-Check those actually visible texts for necessary premises and actionable steps;
-private provenance or an unloaded body cannot supply a missing condition.
-Their presence does not establish their preconditions.
-Put checks of relevant task facts and authorized business records before the
-steps that depend on them. Keep title, trigger, scope and body consistent. In reason,
-walk through the text actually injected (general description or topic body)
-using an already read relevant training scene
-and check available counterevidence or a previously correct substep. Note an
-uncovered boundary instead of inventing a case. This uses supplied records,
-not another Solver attempt or judge call; matching a historical prediction
-proves consistency, not its premises. Do not force correct work to be repeated
-or add unrequested answer fields. Export methods and conditions only; raw
-answers, traces, feedback dumps and provenance remain in private method records.
-For example, "avoid duplicate counts" is only a reminder. A method states:
-for a distinct-day count, filter the entity and time window, convert timestamps
-to the required date basis, deduplicate dates, then count; count runs directly
-only if one run per day is established. This is a synthetic expression example,
-not a required domain rule. If the original Solver already compared dates,
-retain that supported step; do not claim adding that comparison repairs a loss.
-Do not generate executable support code.
-No test data, test scores, extra training passes, model changes or acceptance
-thresholds. Seal your output using the fixed seal-role-output request in guarded training (file-digest only for unguarded RSI) and return the successful receipt. You do not publish
-Target State.
+For example, instead of "avoid duplicate counts", a method for failed DAYS
+filters the required entity, failure status and time window, converts timestamps
+to the specified date basis, deduplicates dates, then counts; use row count only
+if one eligible run per day is established. If that was already done, retain it
+without claiming a repair. This is a synthetic expression example, not a new
+domain rule. Produce only requested answer fields, and no executable support code.
+Seal through the supplied seal-role-output request (file-digest only in ordinary
+unguarded RSI). You do not publish Target State. No test material/feedback,
+training retest, score acceptance gate, extra learning pass or model change.

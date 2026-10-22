@@ -90,6 +90,16 @@ If that repair still lacks valid YAML, stop; it does not authorize rescoring.
 Pre-start Harbor engineering repair remains within the original worker and must
 prove no Target/model request began. Preserve all failed launch records.
 
+For the declared .12 native-trial receipt policy, validate-workers derives held-out
+cells from the original worker-bound terminal raw trial, actual runtime, State,
+verifier reward, timing and cost. Original worker replies remain immutable;
+differences receive an appended native-records receipt, never a Target rerun.
+Missing ordinary receipt/observation/cost fields stay diagnostic or pending;
+actual conflicting runtime/State or fake evidence is rejected. A worker's
+completed reply does not finish its original Harbor job: await the same job.
+Complete H0 measurements permit final measurements even with ordinary audit gaps;
+final acceptance separately reports valid/diagnostic. No missing score becomes zero.
+
 Before dispatch initialize the canonical budget journal: the training root uses
 <private_learning>/journal.json with training_budget_usd; the main Controller
 uses <scratchpad>/evo-guard/journal.json with the authorized total budget. Reserve
@@ -126,6 +136,7 @@ At the returned freeze_request path write:
 ~~~json
 {
   "op": "verify-freeze",
+  "context_transport": "agents-md-v1",
   "evo_tool": "<absolute-installed-evo.py>",
   "export_request": "<absolute-complete-verify-export-request.json>",
   "h0_snapshot": "<native-H0-agent_state-rooted.tar.gz>",
@@ -150,7 +161,7 @@ contents, even if tar metadata differs.
 
 verify-freeze reruns all original export/trace evidence every time. It checks
 the exact mapped Reader and method files, valid H0 Reader with empty rules,
-unchanged package byte budget, unchanged State outside those files/top-level integer version, native snapshots
+unchanged package byte budget, unchanged State outside those files, the exact deterministic context block and top-level integer version, native snapshots
 without links/escape/duplicates, and actual Target hashes. An earlier successful
 receipt never substitutes for this recheck.
 
@@ -190,8 +201,7 @@ Completion also verifies actual Skill use from each original Harbor trial:
 unchanged frozen State and complete observations of the same hash-bound
 SKILL.md from every Target. This audit does not alter test scores or expose test answers
 to learners. Missing injection evidence leaves the raw measurement intact but
-cannot establish a complete method run. Missing, incomplete or changed evidence
-yields method_failed and blocks Goal completion; it does not select H0 as a substitute.
+cannot establish a complete method run. Missing ordinary evidence under .12 is recorded as diagnostic after measurements complete; changed runtime/State or incomplete learning still yields method_failed; it does not select H0 as a substitute.
 
 ## Training root records
 

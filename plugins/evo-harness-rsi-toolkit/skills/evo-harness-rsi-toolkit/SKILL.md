@@ -1,7 +1,7 @@
 ---
 name: evo-harness-rsi-toolkit
 description: Run Evo-Harness with frozen Solver settings, negative-feedback reflection and batch compilation of general and task-type skills. Use native Penguin workers, State, snapshots and evaluation; the continuous GDPevo profile adds checked native delegation and export acceptance.
-version: 2026.10.22.11
+version: 2026.10.22.12
 ---
 
 # Evo-Harness
@@ -18,7 +18,7 @@ Implement [Evo-Harness v2](https://arxiv.org/html/2608.15071v2), §3,
 §4.5–4.6 and Appendix F, with the declared adaptations in
 [algorithm.md](references/algorithm.md). The
 [official release](https://github.com/A-EVO-Lab/a-evolve/tree/3c7c7b8c62a3f07da1d4407aa03f0ca079954bcf)
-is pinned for provenance. A frozen Solver reads the fixed Reader and every current-context Skill body
+is pinned for provenance. The declared deterministic native context supplies a frozen Solver with the fixed Reader and every current-context Skill body
 in full, plus every general description, then applies their rules when their conditions hold; the original Solver reflects
 on negative feedback in its own conversation to produce candidates; one Evolver compiles each
 complete batch with ADD / MERGE / REVISE / SKIP at general and topic levels.
@@ -80,11 +80,19 @@ repeat counts, compilation limits and package byte budget, feedback predicate, p
 task timeout and compilation reserve, deployment pins, H0 State/package hashes,
 budget reserves and all adaptations. Use the native State and snapshot format.
 The Solver's models, instructions and tools stay fixed; only the learned slot
-and a final State version may change.
+and its deterministic AGENTS.md context block and a final State version may change. All surrounding instructions remain byte-identical.
 
 For the continuous GDPevo profile, also read
 [group-training.md](references/group-training.md) and
 [control.md](references/control.md), plus the pinned benchmark protocol.
+The .12 protocol declares context_transport=agents-md-v1,
+reflection_evidence=observed-v1 and receipt_policy=native-trial-v1. Before each
+H0/final snapshot, invoke evo.py with {"op":"install-context","state":"ABS_NATIVE_TARGET_STATE"}.
+It copies exactly the frozen Reader, general descriptions and topic bodies to
+a marked block in native AGENTS.md; the native system prompt loads it without
+Agent file choreography. Verify its actual Session metadata text/hash/length.
+Do not append a legacy mandatory tool-read instruction for this transport.
+This is a new declared transport/permission revision, never a waiver for old runs.
 This profile is one whole group: five sequential training members in one Harbor
 task, one batch compilation, then freezing, then all five H0 tests concurrently,
 then all five final tests concurrently. Do not run H0 tests before training

@@ -7,7 +7,9 @@ they are not five independent Harbor trials. See [control.md](control.md).
 
 ## Host preparation and worker
 
-Keep the test Target at a sanitized frozen H0. Create a separate fresh Trainer
+Keep the test Target at a sanitized frozen H0. For .12, first run install-context
+on its mapped empty package before snapshotting or preparing the Trainer.
+ Create a separate fresh Trainer
 from those Solver settings through the benchmark prepare-trainer operation.
 Pass config, config_sha256, repo, evo_tool, base_state, output, method_skill,
 method_hooks, training_budget_usd and host_operation_id. method_hooks is the
@@ -21,7 +23,8 @@ training.json freezes train_ids, attempt_id=attempt-1, limits,
 max_bytes, runtime, workspace=/app, private_learning=/logs/agent/evo-harness,
 answer_dir=/app/submission/answers, feedback_dir under private_learning,
 training_budget_usd, host_operation_id, config_sha256, compilation_reserve_sec
-and solving_timeout_sec. The host reserves this training allocation once for
+and solving_timeout_sec. The .12 profile also binds agents-md-v1 context transport,
+observed-v1 local reflection and native-trial-v1 receipt handling. The host reserves this training allocation once for
 the container root and all its children; host/worker overhead is separate.
 
 After configure-controller, call the pinned protocol's prepare-benchmarks with
@@ -190,7 +193,7 @@ native traces or role-authored candidates/decisions.
 
 The host restores H0 for five concurrent tests only after verify-freeze succeeds,
 then restores final for five concurrent tests after the complete H0 matrix.
-Each test is fresh and cannot access training judge. All five final tests read
+Each test is fresh and cannot access training judge. All five final tests receive
 the same complete Reader with all general descriptions and every current-context
 Skill body before business actions; general bodies are not loaded. Apply rules
 only when their conditions hold. A valid no-op explicitly

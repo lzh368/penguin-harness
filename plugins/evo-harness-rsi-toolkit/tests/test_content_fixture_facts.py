@@ -62,6 +62,24 @@ class ContentFixtureFactsTests(unittest.TestCase):
         self.assertEqual(len(keys) == len(set(keys)), case["expected"]["mapping_unique"])
         self.assertNotEqual(total, naive)
 
+    def test_query_order_does_not_resolve_a_recorded_conflict(self):
+        facts = self.cases["query_order_not_authority"]["authorized_facts"]
+        self.assertNotEqual(facts["ledger_value"], facts["policy_value"])
+        self.assertIsNone(facts["field_authority"])
+
+    def test_observed_separation_does_not_supply_a_policy_threshold(self):
+        facts = self.cases["observed_spread_not_policy_cutoff"]["authorized_facts"]
+        self.assertEqual(sum(facts["latencies_ms"]) / 2, 20)
+        self.assertIsNone(facts["policy_cutoff_ms"])
+
+    def test_condition_in_unloaded_general_body_cannot_fix_its_description(self):
+        case = self.cases["general_visible_conditions"]
+        facts = case["authorized_facts"]
+        scoped = sum(r["amount"] for r in facts["records"] if r["account"] == facts["requested_account"])
+        self.assertEqual(scoped, case["expected"]["scoped_total"])
+        self.assertEqual(sum(r["amount"] for r in facts["records"]), case["expected"]["unconditional_total"])
+        self.assertNotEqual(scoped, sum(r["amount"] for r in facts["records"]))
+
 
 if __name__ == "__main__":
     unittest.main()

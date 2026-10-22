@@ -65,7 +65,7 @@ class InstructionDeliveryTests(unittest.TestCase):
                 self.assertNotIn("describing its purpose and applicability", text)
                 self.assertIn("general Skill bodies are not loaded", text)
                 self.assertIn("do not relabel general entries as topic", text)
-                self.assertIn("Either level may remain empty", text)
+                self.assertIn("Either level may be empty", text)
                 material_line = next(line for line in text.splitlines() if line.startswith("Read all these files in full: "))
                 materials = json.loads(material_line.split(": ", 1)[1])
                 self.assertEqual(len(materials), 8)

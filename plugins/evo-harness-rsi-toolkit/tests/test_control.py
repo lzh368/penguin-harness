@@ -71,6 +71,7 @@ class ControlTests(unittest.TestCase):
             "workspace": str(self.workspace), "runtime": self.runtime, "training_budget_usd": 1,
             "solving_timeout_sec": 21600, "compilation_reserve_sec": 3600,
             "limits": {"general": 5, "topic": 5}, "max_bytes": 16000}
+        self.profile.update(getattr(self, "protocol_options", {}))
         self.write(self.skill / "training.json", self.profile)
         for task in self.profile["train_ids"]:
             file = self.workspace / "train_tasks" / task / "instruction.md"
@@ -83,6 +84,11 @@ class ControlTests(unittest.TestCase):
             "max_bytes": 16000, "output": str(self.state / "skills/evo-harness-learned")})
         self.meta = {"session_id": "synthetic-root", "agent_state": str(self.state), "workspace": str(self.workspace),
                      "source": "cli", "provider": "fixture", "model_id": "no-model"}
+        if self.profile.get("context_transport") == control.evo.CONTEXT_TRANSPORT:
+            (self.state / "AGENTS.md").write_text("Synthetic fixed native instructions\n")
+            (self.state / "system_config.yaml").write_text("version: 1\nskills:\n  enabled: true\n")
+            control.evo.install_context({"state": str(self.state)})
+            self.meta["system_prompt"] = (self.state / "AGENTS.md").read_text()
         self.trace = self.state.parent / "traces/synthetic-root_001.jsonl"
         self.trace.parent.mkdir()
         self.trace.write_text(json.dumps({"type": "session_meta", "payload": self.meta}) + "\n")
@@ -956,7 +962,7 @@ class ControlTests(unittest.TestCase):
                     "output": f"[subagent running in background with subagent_id subagent-{session_id}; completion will arrive]"}},
             ])
             evo.journal({**common, "action": "bind", "operation_id": prepared["operation_id"], "external_id": session_id})
-            return {**self.meta, "session_id": session_id, "source": "subagent", "parent_trace": str(self.trace)}
+            return {**{k: v for k, v in self.meta.items() if k != "system_prompt"}, "session_id": session_id, "source": "subagent", "parent_trace": str(self.trace)}
         def seal_leaf(prepared, binding, materials, role, task=None):
             trace = self.trace.parent / (binding["session_id"] + "_001.jsonl")
             request = {"op": "seal-role-output", "role": role, **({"task_id": task} if task else {})}
@@ -982,7 +988,7 @@ class ControlTests(unittest.TestCase):
                 generated = evo.prepare_judge_request({"task_id": task, "url": "http://127.0.0.1:9003/api/judge"})
                 request = evo.read(generated["judge_request"])
             inputs = [str(self.workspace / "train_tasks" / task / "instruction.md"), str(self.workspace / "environment_access.md")]
-            rows = [{"type": "session_meta", "payload": binding},
+            rows = [{"type": "session_meta", "payload": {**binding, **({"system_prompt": self.meta["system_prompt"]} if "system_prompt" in self.meta else {})}},
                     {"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "parent_agent", "text": control.evo.native_prompt(prepared["call"])}}]
             rows += h0_read_rows(binding, self.profile["max_bytes"])
             rows += reads([str(self.private / "roles/solver.md"), *inputs])

@@ -48,11 +48,11 @@ class RoleProtocolDeliveryTests(unittest.TestCase):
         seals = [v for v in control.evo.json_values(prompt) if isinstance(v, dict)
                  and v == {'op': 'seal-role-output', 'role': 'reflector', 'task_id': 'train_001'}]
         self.assertTrue(seals)
-        self.assertIn('Post-judge tools are only bound feedback read-material', prompt)
+        self.assertIn('Other post-judge tools are bound feedback read-material', prompt)
         self.assertIn('write_file', prompt)
         self.assertIn('answer/feedback evidence without extra identifiers', prompt)
         self.assertIn('Before judge, ordinary preparation JSON may use', prompt)
-        self.assertIn('use fresh files in that directory only for bound feedback reads', prompt)
+        self.assertIn('use fresh files there for bound feedback, declared local evidence', prompt)
         self.assertIn('candidate input_refs identify those inputs; they are not observations', prompt)
         self.assertIn('A draft/receipt repair changes no answer', prompt)
         self.assertIn('In-session reflection', prompt)

@@ -2,11 +2,22 @@
 
 Use the native `agent_state/skills/` format. H0 is an empty learned package
 exported by `evo.py` from `[]` with the frozen limits. Install it at
-`STATE/skills/evo-harness-learned/`. Append exactly once to `STATE/AGENTS.md`:
+`STATE/skills/evo-harness-learned/` and map independent method files using the
+manifest as described below. For the declared .12 agents-md-v1 transport, invoke
+one deterministic entry before each H0/final snapshot:
 
-```text
-Before business actions, read the complete skills/evo-harness-learned/SKILL.md including all general descriptions and every current-context Skill whose manifest load_mode is body in your Agent State using native read_file or the Reader's finite foreground cat protocol for each exact file. Before these complete reads, only the Reader's supported read-only preparation and exact own instruction/config grants are allowed; none substitutes for Skill coverage. Follow its generated native read_file calls for every topic page. Every task reads the same context bodies and general descriptions; never read general Skill bodies. There is no per-task selection step. Apply a rule only after checking its task conditions and necessary premises. Do not modify your State.
+```json
+{"op":"install-context","state":"ABS_NATIVE_TARGET_STATE"}
 ```
+
+Run this request with the installed evo.py. It copies the complete fixed loading
+set into one marked AGENTS.md block without changing surrounding instructions.
+The native system template must contain {{AGENTS_MD}}. The original native
+session_meta records the actual assembled system_prompt; verify the exact block,
+text length and hashes in every context segment. This replaces model-driven
+loading for the NEW protocol only. Do not append the legacy mandatory read-tool
+contract or change a running/frozen State. Legacy experiments retain their own
+Reader/read-tool evidence requirements and original conclusions.
 
 The fixed Reader, max_bytes, models and tools stay identical in
 H0 and final. For a new held-out Target, use the native preparation below to
@@ -88,10 +99,10 @@ methods only below the Reader directory or regenerate/reword content. The exact
 manifest is the file allowlist; no selector, index, supporting code or unlisted
 files are installed. Reader plus manifest plus all body/frontmatter bytes fit
 max_bytes; every physical line fits 2000 UTF-16 code units. Compare exported
-file hashes, mapped State hashes, tar members and every complete file observation
-in each Target's trace.
+file hashes, mapped State hashes, tar members and the actual full context block
+in each new-protocol Target trace (legacy runs retain native file observations).
 All five final tasks receive the same context bodies and general descriptions.
-General body reads are rejected even after required reads finish. Loading a rule does not
+General body reads remain outside the description-only loading policy. Loading a rule does not
 make its applicability conditions true. Never shorten or drop rules at injection.
 
 Archive old State, stage the exact new learned file set, increment State version, snapshot and
@@ -105,7 +116,7 @@ snapshots contain agent_state/ as their root, unlike the worker's State-only
 transport tar. Both omit the three top-level transport exclusions above.
 verify-freeze compares every transported State file and the full learned
 package. Only the declared Reader/method Skill paths and one native plain top-level
-integer version may differ; the combined package byte budget remains fixed. H0 is always the same
+integer version and the exact deterministic AGENTS.md block may differ; all surrounding AGENTS.md bytes remain identical; the combined package byte budget remains fixed. H0 is always the same
 valid Reader format with empty rules. Changed guidance requires final_version > h0_version. An equivalent
 no-op requires a successfully sealed complete training batch, identical State
 file contents and identical versions; missing/failed training is never no-op.
