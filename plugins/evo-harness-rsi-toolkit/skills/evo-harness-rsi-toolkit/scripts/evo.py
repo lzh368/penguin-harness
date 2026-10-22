@@ -2080,7 +2080,7 @@ def verify_compilation(req):
 READER = '''---
 name: evo-harness-learned
 description: Before task work read this Reader and follow all its native read_file calls; context bodies and general descriptions only.
-version: 2026.10.22.9
+version: 2026.10.22.10
 ---
 
 For the frozen GDPevo adapter, this Reader is:
@@ -2150,7 +2150,7 @@ def method_prefix(entry_id, level, description=None):
     description = (general_description(description) if level == "general" else
                    "Frozen current-context Evo-Harness method; read its complete body with the group Reader.")
     return (f"---\nname: {name}\ndescription: {json.dumps(description, ensure_ascii=False)}\n"
-            f"version: 2026.10.22.9\n---\n\n# {entry_id}\n\nLevel: {level}\n")
+            f"version: 2026.10.22.10\n---\n\n# {entry_id}\n\nLevel: {level}\n")
 
 
 GDPEVO_STATE = "/opt/penguin-bench/home/default_project/agents/default_agent/agent_state"

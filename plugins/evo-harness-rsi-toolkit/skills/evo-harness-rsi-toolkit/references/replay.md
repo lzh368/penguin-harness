@@ -71,7 +71,7 @@ python3 -B <installed-toolkit>/scripts/replay.py <absolute-request.json>
 `status` is read-only and returns existing records and reservations. Repeating a
 preparation request reuses its exact immutable ticket; it does not authorize a
 second dispatch. If a child is still running, wait for its original completion.
-Missing or conflicting evidence remains a failure. Preserve errors and charges;
+Strict profiles retain blocking evidence checks. In an explicitly frozen `audit_policy: record-only` profile, incomplete read/order/seal evidence is recorded as `audit_passed: false` and processing continues with the real child output; it is never certified as valid. Preserve errors and charges;
 never turn an unexecuted/missing learner into a successful empty candidate list.
 
 ## Source and learning boundary
@@ -88,8 +88,7 @@ remain independently hash-bound. Preparation never changes original evidence.
 Every child's complete prompt includes its content-quality guidance, exact
 output path, native write_file template and ready-made bounded material
 read requests. Each chunk is at most 32,000 source characters and its complete
-JSON receipt is at most 60,000 UTF-8 bytes, below the native default 64,000 output
-capacity; escaped text may require smaller chunks. Execute those foreground read commands individually until all
+JSON receipt is at most 60,000 UTF-8 bytes, requiring a deployment-verified `exec_command.maxOutputLength >= 64000` (the native default is 16000); escaped text may require smaller chunks. Execute those foreground read commands individually until all
 chunks are actually observed. A path, parent summary, short receipt or truncated
 output cannot substitute for the material. Requests are already on disk; do not
 recreate them, use shell loops, inspect source code or calculate hashes.
@@ -131,3 +130,5 @@ These are audited cooperative native execution constraints, not a new sandbox
 for arbitrary hostile code. Complete evidence shows what was loaded, authored,
 frozen and evaluated. Neither the new protocol nor offline tests prove a score
 improvement. Test answers and detailed feedback are never supplied to learning.
+
+Revision `2026.10.22.10` permits the explicitly authorized diagnostic policy. `complete` means artifacts or measurements were collected; `audit_passed` separately states their evidence audit. Unknown charges remain reserved. Actual child identity, immutable source boundaries, no repeated semantic dispatch/scoring, actual trial scores, and the frozen Skill contents remain required. Audit warnings do not authorize test feedback for learning or permit invented missing outputs. No full-RSI behavior changes.

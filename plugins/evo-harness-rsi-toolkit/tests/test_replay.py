@@ -265,14 +265,14 @@ class ReplayTests(unittest.TestCase):
         self.assertTrue(self.seal(child,sid,contract,ticket)['complete'])
 
     def test_native_budget_includes_main_and_container_pending_without_reset(self):
-        controller={'key':'session-parent','provider':'fixture','requests':2,'cost':.2,'hasUncosted':False}
+        controller={'key':'session-parent','requests':2,'cost':.2,'hasUncosted':False}
         def api(home,path,stream=False):
-            if path.endswith('usage?groupBy=session'):return {'groups':[controller]}
+            if path.endswith('usage?groupBy=session'):return {'groupBy':'session','groups':[controller]}
             if path.endswith('/agents'):return {'agents':[{'agentId':'controller'}]}
             if path.endswith('/sessions'):return {'sessions':[{'sessionId':'session-parent','projectId':'project','status':'running'}]}
             raise AssertionError(path)
         job=self.root/'home/project/benchmarks/replay-test/.jobs/one/trial/agent/penguin-cost-by-session.json'
-        write(job,{'groups':[{'key':'container-child','provider':'fixture','requests':1,'cost':.3,'hasUncosted':True}]})
+        write(job,{'groupBy':'session','groups':[{'key':'container-child','requests':1,'cost':.3,'hasUncosted':True}]})
         with patch.object(replay,'native_api',side_effect=api):
             first=replay.budget_snapshot(self.meta,self.scratch,self.mode,self.config)
             self.assertAlmostEqual(first['known_usd'],.5)
@@ -289,9 +289,9 @@ class ReplayTests(unittest.TestCase):
         receipt=self.run_role('learner',self.ids[0],[])
         sid=receipt['session_id']; pending=True
         def api(home,path,stream=False):
-            if path.endswith('usage?groupBy=session'):return {'groups':[
-                {'key':'session-parent','provider':'fixture','requests':2,'cost':.2,'hasUncosted':False},
-                {'key':sid,'provider':'fixture','requests':1,'cost':.1,'hasUncosted':pending}]}
+            if path.endswith('usage?groupBy=session'):return {'groupBy':'session','groups':[
+                {'key':'session-parent','requests':2,'cost':.2,'hasUncosted':False},
+                {'key':sid,'requests':1,'cost':.1,'hasUncosted':pending}]}
             if path.endswith('/agents'):return {'agents':[{'agentId':'controller'}]}
             if path.endswith('/sessions'):return {'sessions':[
                 {'sessionId':'session-parent','projectId':'project','status':'running'},
@@ -318,11 +318,139 @@ class ReplayTests(unittest.TestCase):
             replay.original_view(altered,expected_session=sid)
 
     def test_usage_groups_do_not_double_count_and_unknown_is_pending(self):
-        usage={'groups':[{'key':'session-A','provider':'fixture','requests':2,'cost':.21,'hasUncosted':False},
-                         {'key':'session-B','provider':'fixture','requests':1,'cost':None,'hasUncosted':True}]}
+        usage={'groupBy':'session','groups':[{'key':'session-A','requests':2,'cost':.21,'hasUncosted':False},
+                         {'key':'session-B','requests':1,'cost':None,'hasUncosted':True}]}
         cost,complete,_=replay.price_groups(usage)
         self.assertAlmostEqual(cost,.21);self.assertFalse(complete)
         with self.assertRaisesRegex(ValueError,'duplicate'):
-            replay.price_groups({'groups':usage['groups']+[usage['groups'][0]]})
+            replay.price_groups({'groupBy':'session','groups':usage['groups']+[usage['groups'][0]]})
+
+    def test_session_owner_is_counted_once_even_if_optional_provider_differs(self):
+        first={'key':'session-A','provider':'first','requests':2,'cost':.21,'hasUncosted':False}
+        second={**first,'provider':'second'}
+        total,complete,owners=replay.price_groups({'groupBy':'session','groups':[first]})
+        self.assertEqual(list(owners),['session-A'])
+        self.assertAlmostEqual(total,.21);self.assertTrue(complete)
+        with self.assertRaisesRegex(ValueError,'duplicate owner'):
+            replay.price_groups({'groupBy':'session','groups':[first,second]})
+
+    def test_model_or_ungrouped_usage_cannot_substitute_for_session_cost(self):
+        first={'key':'deepseek-flash','provider':'deepseek','requests':2,'cost':.21,'hasUncosted':False}
+        for document in ({'groupBy':'model','groups':[first]}, {'groups':[first]}):
+            with self.subTest(document=document),self.assertRaisesRegex(ValueError,'groupBy=session'):
+                replay.price_groups(document)
+
+    def record_only(self):
+        self.config['audit_policy']='record-only'
+        write(self.configpath,self.config)
+        self.mode['config_sha256']=control.sha(self.configpath)
+        write(self.scratch/control.MARKER,self.mode)
+        ledger=evo.read(control.journal_path(self.scratch,self.mode))
+        ledger['config_sha256']=self.mode['config_sha256']
+        write(control.journal_path(self.scratch,self.mode),ledger)
+
+    def test_real_api_capture_budget_gate_preserves_cost_and_pending_without_provider(self):
+        fixture=Path(__file__).parent/'fixtures/replay-native-budget-api-r3.json'
+        before=control.sha(fixture); captured=evo.read(fixture)
+        self.assertFalse(captured['contains_credentials'])
+        self.assertEqual(captured['model_calls'],0)
+        config=captured['config'];config['deployment']['penguin_home']=str(self.root/'isolated-real-home')
+        mode={**captured['mode'],'private':str(self.root/'isolated-real-private')}
+        scratch=self.root/'isolated-real-scratch'
+        write(control.journal_path(scratch,mode),captured['journal'])
+        for op in captured['journal']['operations'].values():
+            if op['slot']!='controller':write(scratch/'evo-guard/dispatch/actual-unclaimed.json',{'slot':op['slot'],'call':{}})
+        responses=captured['responses']
+        usage=next(v for k,v in responses.items() if k.endswith('/usage?groupBy=session'))
+        self.assertTrue(usage['groups']);self.assertTrue(all('provider' not in g for g in usage['groups']))
+        expected=sum(g.get('cost') or 0 for g in usage['groups'])
+        self.assertGreater(expected,0)
+        target_fixture=Path(__file__).parent/'fixtures/replay-native-target-cost.json'
+        target_before=control.sha(target_fixture);target=evo.read(target_fixture)
+        self.assertEqual(target['document']['groupBy'],'session')
+        self.assertTrue(all('provider' not in g for g in target['document']['groups']))
+        target_cost=sum(g.get('cost') or 0 for g in target['document']['groups'])
+        target_path=Path(config['deployment']['penguin_home'])/config['deployment']['project_id']/'benchmarks'/config['test_benchmark_id']/'.jobs'/'real-trial'/'agent/penguin-cost-by-session.json'
+        write(target_path,target['document'])
+        def api(home,path,stream=False):return responses[path]
+        with patch.object(replay,'native_api',side_effect=api):
+            first=replay.budget_gate(captured['meta'],scratch,mode,config)
+            second=replay.budget_gate(captured['meta'],scratch,mode,config)
+            self.assertEqual(first,second)
+            self.assertAlmostEqual(first['known_host_usd'],expected)
+            self.assertAlmostEqual(first['known_target_usd'],target_cost)
+            self.assertAlmostEqual(first['unsettled_reserve_usd'],1.3)
+            self.assertAlmostEqual(first['supervised_usd'],expected+target_cost+1.3)
+            with self.assertRaisesRegex(ValueError,'budget reached'):
+                replay.budget_gate(captured['meta'],scratch,mode,{**config,'budget_usd':expected+target_cost+1.29})
+        live=next(v for k,v in responses.items() if k.endswith('/stream'))
+        self.assertEqual(live['type'],'task_state');self.assertIn('state',live);self.assertIn('queued',live)
+        self.assertEqual(control.sha(fixture),before)
+        self.assertEqual(control.sha(target_fixture),target_before)
+
+    def test_record_only_missing_read_still_collects_actual_output_and_compiles(self):
+        self.record_only()
+        child,sid,handle,contract,ticket=self.launch(self.request(task=self.ids[0]))
+        last=contract['read_plan'][-1]
+        self.reads(child,contract,omit=(last['path'],last['offset']))
+        self.write_output(child,contract,self.candidate(self.ids[0]))
+        result=self.seal(child,sid,contract,ticket)
+        self.assertTrue(result['complete']);self.assertFalse(result['audit_passed'])
+        self.finish(child,handle)
+        collected=replay.collect_role({'role':'learner','task_id':self.ids[0]},self.meta,self.scratch,self.mode,self.config)
+        self.assertTrue(collected['complete']);self.assertFalse(collected['audit_passed'])
+        for task in self.ids[1:]:self.run_role('learner',task,[])
+        self.run_role('evolver',None,[{'op':'SKIP','candidate_ids':[self.candidate(self.ids[0])[0]['id']],'reason':'Evidence is insufficient to retain an executable rule.'}])
+        learned=replay.learning(self.mode,self.config)
+        self.assertTrue(learned['complete']);self.assertFalse(learned['audit_passed'])
+        self.assertEqual(learned['package']['entries'],0)
+        seal=write(replay.private(self.mode)/'learning.json',learned)
+        verified=replay.verify_learning_seal(self.config,seal)
+        self.assertFalse(verified['audit_passed']);self.assertTrue(verified['complete'])
+
+    def test_record_only_missing_seal_is_diagnostic_not_empty_success(self):
+        self.record_only()
+        child,sid,handle,contract,ticket=self.launch(self.request(task=self.ids[0]))
+        self.reads(child,contract);self.write_output(child,contract,self.candidate(self.ids[0]));self.finish(child,handle)
+        collected=replay.collect_role({'role':'learner','task_id':self.ids[0]},self.meta,self.scratch,self.mode,self.config)
+        self.assertFalse(collected['audit_passed']);self.assertEqual(len(evo.read(collected['output'])),1)
+
+    def test_record_only_source_isolation_and_missing_output_remain_hard(self):
+        self.record_only()
+        child,sid,handle,contract,ticket=self.launch(self.request(task=self.ids[0]))
+        self.reads(child,contract);self.finish(child,handle)
+        with self.assertRaisesRegex(ValueError,'missing actual child-authored output'):
+            replay.collect_role({'role':'learner','task_id':self.ids[0]},self.meta,self.scratch,self.mode,self.config)
+        self.operation(child,'read_file',{'file_path':'/test/answer.json'})
+        with self.assertRaisesRegex(ValueError,'other sources, tests'):
+            replay.collect_role({'role':'learner','task_id':self.ids[0]},self.meta,self.scratch,self.mode,self.config)
+
+    def test_record_only_does_not_bypass_budget(self):
+        self.record_only();prepared=self.request(task=self.ids[0])
+        with patch.object(replay,'budget_gate',side_effect=ValueError('budget reached')):
+            with self.assertRaisesRegex(ValueError,'budget reached'):
+                replay.authorize(prepared['call'],self.meta,self.scratch,self.mode,'blocked')
+
+    def test_record_only_confirmed_trial_boundary_failure_preserves_diagnostics(self):
+        self.record_only()
+        result={'complete':False,'hard_failure':True,'audit_status':'failed','measurement_record':'/preserved/raw-measurements.json'}
+        module=type('Benchmark',(),{'execute':lambda _,req:result})()
+        with patch.object(control,'phase_tickets',return_value=list(range(5))), \
+             patch.object(control,'worker_result',side_effect=lambda *a:({'case_id':str(a[-1]),'run':1},{'session_id':str(a[-1])})), \
+             patch.object(replay,'benchmark',return_value=module):
+            with self.assertRaisesRegex(ValueError,'actual measurements preserved'):
+                replay.collect_round({'round':1},self.meta,self.scratch,self.mode,self.config)
+        self.assertEqual(evo.read(replay.private(self.mode)/'round-1-diagnostic.json'),result)
+        self.assertFalse((replay.private(self.mode)/'round-1.json').exists())
+
+    def test_record_only_stop_keeps_benchmark_failed_audit_status(self):
+        self.record_only()
+        result={'complete':True,'protocol':replay.PROTOCOL,**replay.audit_summary(self.mode,self.config),
+                'audit_passed':False,'audit_status':'failed'}
+        with patch.object(control,'pending_stop',return_value=None),patch.object(replay,'completion',return_value=result):
+            stopped=replay.hook({'hook':'stop'},str(self.state),self.meta,self.scratch,[],self.mode)
+        self.assertEqual(stopped['decision'],'stop')
+        self.assertFalse(stopped['output']['audit_passed'])
+        self.assertEqual(stopped['output']['audit_status'],'failed')
 
 if __name__=='__main__':unittest.main()

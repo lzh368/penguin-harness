@@ -151,3 +151,5 @@ reported as such. It changes neither the normal full-RSI mechanism nor the
 general-description/context-body loading policy. One independent compilation
 uses fresh negative-source candidates; the authorized replay measures only one
 frozen final five-case test round, without new training or baseline calls.
+
+Revision `2026.10.22.10` adds an explicit diagnostic `record-only` audit policy to historical replay and corrects native Session cost ownership parsing. It changes neither the learning algorithm nor the full-RSI entry. Diagnostic completion is not protocol validity; actual scores and audit outcomes are reported separately.

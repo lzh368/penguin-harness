@@ -25,6 +25,38 @@ HERE = Path(__file__).resolve()
 check = evo.require
 
 
+def record_only(config):
+    return config.get("audit_policy", "strict") == "record-only"
+
+
+def audit(mode, config, stage, action):
+    """Evidence uncertainty is retained, never relabeled as protocol validity."""
+    try:
+        action()
+        return {"audit_passed": True, "audit_status": "passed"}
+    except (ValueError, KeyError, TypeError, OSError) as error:
+        if not record_only(config):
+            raise
+        record = {"protocol": PROTOCOL, "config_sha256": mode["config_sha256"],
+                  "stage": stage, "audit_passed": False, "audit_status": "failed",
+                  "error": control.public_error(error), "diagnostic_only": True}
+        path = private(mode) / "audits" / (evo.digest(evo.encoded(record)) + ".json")
+        stable(path, record)
+        return {"audit_passed": False, "audit_status": "failed", "audit_record": str(path)}
+
+
+def audit_summary(mode, config):
+    records = sorted(str(p) for p in (private(mode) / "audits").glob("*.json"))
+    return {"audit_policy": config.get("audit_policy", "strict"), "audit_passed": not records,
+            "audit_status": "failed" if records else "passed", "audit_records": records,
+            "complete_means": "artifacts or measurements collected; not a validity certification"}
+
+
+def receipt_core(receipt):
+    return {k: v for k, v in receipt.items() if k not in (
+        "audit_passed", "audit_status", "audit_record", "audit_records", "audit_policy", "complete_means")}
+
+
 def stable(path, value):
     """Idempotent preparation, never overwrite a prior record."""
     raw = value if isinstance(value, bytes) else evo.encoded(value)
@@ -85,9 +117,10 @@ def verify_learning_seal(config, seal_path):
         collect_role({"role": "learner", "task_id": task}, meta, scratch, mode, config)
     collect_role({"role": "evolver"}, meta, scratch, mode, config)
     current = learning(mode, config)
-    check(current == recorded, "learning seal changed")
+    check((receipt_core(current) == receipt_core(recorded)) if record_only(config) else current == recorded, "learning seal changed")
     return {"complete": True, "package_path": current["package_path"], "package_sha256": current["package"]["sha256"],
-            "source_manifest_sha256": config["source_manifest_sha256"]}
+            "source_manifest_sha256": config["source_manifest_sha256"],
+            **(audit_summary(mode, config) if record_only(config) else {})}
 
 
 def verify_mode(mode):
@@ -128,6 +161,7 @@ def bootstrap(payload, state, meta, scratch, mode):
     check(control.sha(reference["config"]) == reference["config_sha256"], "installed replay reference changed")
     config = evo.read(reference["config"])
     check(config["protocol"] == PROTOCOL and config["paid_authorized"] is True, "explicit authorized offline replay required")
+    check(config.get("audit_policy", "strict") in ("strict", "record-only"), "unknown replay audit policy")
     check(config["test_repeats"] == 1 and config["test_phase_order"] == ["final_test"], "one final-only test round required")
     check(config["runtime"]["provider"] == meta["provider"] and config["runtime"]["model_id"] == meta["model_id"], "replay controller runtime changed")
     source_manifest(config)
@@ -163,7 +197,10 @@ def bootstrap(payload, state, meta, scratch, mode):
         "run one final-only round of five registered native evaluation workers, at most five concurrently. "
         "Use prepare-benchmark, prepare-freeze, worker-request, collect-round and verify-completion. "
         "No new training or base, no test feedback to learning, no inherited candidate/Skill. Reconcile costs before dispatch; "
-        "unknown cost remains reserved. Helpers prepare and verify; YOU call the native tools and arrange the whole experiment."}
+        "unknown cost remains reserved. Helpers prepare and verify; YOU call the native tools and arrange the whole experiment. "
+        + ("This run is diagnostic record-only: preserve audit warnings, continue collecting actual outputs and scores, "
+           "and report audit_passed separately. Never fabricate missing data or bypass budget/source isolation."
+           if record_only(config) else "")}
 
 
 def role_guidance(role):
@@ -195,7 +232,7 @@ def material_value(path, content, fingerprint, start, end):
 
 
 def read_plan(directory, paths, contract_path):
-    """Large replay-only chunks, rendered below native's default 64000 limit.
+    """Large replay-only chunks, requiring a verified exec output cap >=64000.
 
     Bound actual UTF-8 bytes (also an upper bound on UTF-16 code units), not
     source length. JSON escaping and long trace lines are included in the cap.
@@ -322,6 +359,11 @@ def prepare_role(req, meta, scratch, mode, config):
             "initial_library": [], "decisions": "JSON array; op, candidate_ids, reason, and complete entry for non-SKIP. Every candidate needs a decision; [] valid only when no candidates."}) + "\n"
     text += "Native output call template: " + json.dumps(evo.candidate_write_call(str(output))) + "\n"
     text += "Seal command: " + shlex.join(["python3", "-B", str(HERE), str(sealpath)]) + "\n"
+    if record_only(config):
+        text += ("Diagnostic audit policy: complete means the actual output was collected, not that its evidence passed. "
+                 "Preserve any audit warnings and continue; do not restart or invent an empty output to clear them. "
+                 "Unparseable/invalid output still requires your own write_file correction and reseal. "
+                 "Budget, authorized source boundaries and the prohibition on tests/business/judge calls remain in force.\n")
     text += "Bound replay contract:\n" + json.dumps({"evo_replay_role": contract}, ensure_ascii=False) + "\n"
     prompt = stable(directory / "prompt.txt", text.encode())
     call = {"description": "Replay " + name, "prompt_file": prompt, "prompt_sha256": control.sha(prompt),
@@ -380,7 +422,7 @@ def original_view(contract, active_request=None, expected_session=None):
     return evo.trace_view([str(p) for p in paths], binding, active_call=active), ticket, mode
 
 
-def audit_operations(view, contract):
+def audit_operations(view, contract, diagnostic=False):
     records = []
     for item in contract["materials"]:
         check(control.sha(item["path"]) == item["sha256"], "assigned replay material changed")
@@ -410,7 +452,7 @@ def audit_operations(view, contract):
                 check(len(values) == 1 and isinstance(values[0], dict), "seal output is not one structured result")
                 receipt = values[0]
                 if receipt.get("complete") is True:
-                    check(not missing and writes and receipt == seal_receipt(contract, view, reads, evo.digest(writes[-1].encode())), "unbound successful replay seal")
+                    check(not missing and writes and (receipt_core(receipt) if diagnostic else receipt) == seal_receipt(contract, view, reads, evo.digest(writes[-1].encode())), "unbound successful replay seal")
                     sealed = True
                 else:
                     check(receipt.get("protocol") == PROTOCOL and receipt.get("recoverable") is True
@@ -418,6 +460,41 @@ def audit_operations(view, contract):
         else:
             check(False, "replay permits only prepared material reads, own output write_file and seal; no business, judge, source lookup or child")
     return reads, missing, writes, sealed
+
+
+def source_boundary(view, contract):
+    """Keep the learning inputs isolated even when observation audits are deferred."""
+    plans = {p["request_path"] for p in contract["read_plan"]}
+    for pair in view["pairs"]:
+        call = pair["call"]["payload"]
+        args = json.loads(call["arguments"])
+        if call["name"] == "write_file":
+            check(args.get("file_path") == contract["output"], "replay writes must stay in the assigned output")
+        elif call["name"] == "read_file":
+            check(args.get("file_path") in {m["path"] for m in contract["materials"]} | {contract["output"]},
+                  "replay cannot access other sources, tests, business or judge services")
+        elif call["name"] == "exec_command":
+            _, path, request = control.safe_helper(args, {HERE})
+            check((str(path) in plans and request.get("op") == "read-material") or
+                  (str(path) == contract["seal_request"] and request.get("op") == "seal-role"),
+                  "replay cannot access other sources, tests, business or judge services")
+        else:
+            check(False, "replay cannot access other sources, tests, business or judge services")
+
+
+def observed_role(view, contract, mode, config):
+    if not record_only(config):
+        return (*audit_operations(view, contract), {"audit_passed": True, "audit_status": "passed"})
+    source_boundary(view, contract)
+    status = audit(mode, config, contract["slot"] + "/operations", lambda: audit_operations(view, contract, diagnostic=True))
+    reads, _, missing = material_status(view, contract)
+    writes = [json.loads(p["call"]["payload"]["arguments"])["content"] for p in view["pairs"]
+              if p["call"]["payload"].get("name") == "write_file"
+              and p["observation"]["payload"].get("stop_reason") == "completed"]
+    sealed = any(p["call"]["payload"].get("name") == "exec_command"
+                 and any(isinstance(v, dict) and v.get("op") == "seal-role" and v.get("complete") is True
+                         for v in evo.json_values(p["observation"]["payload"].get("output", ""))) for p in view["pairs"])
+    return reads, missing, writes, sealed, status
 
 
 def seal_receipt(contract, view, reads, fingerprint):
@@ -450,9 +527,9 @@ def seal_role(req, request_path):
     view, _, mode = original_view(contract, request_path)
     config = evo.read(mode["config"])
     check(control.sha(mode["config"]) == contract["config_sha256"], "frozen replay configuration changed")
-    reads, missing, writes, sealed = audit_operations(view, contract)
+    reads, missing, writes, sealed, status = observed_role(view, contract, mode, config)
     check(not sealed and not Path(contract["receipt"]).exists(), "replay role is already sealed; do not repeat")
-    if missing:
+    if missing and not record_only(config):
         return {"protocol": PROTOCOL, "complete": False, "sealed": False, "recoverable": True,
             "code": "replay_material_missing", "missing_reads": missing[:8],
             "read_plan": [p for p in contract["read_plan"] if {"path": p["path"], "offset": p["offset"]} in missing][:8]}
@@ -462,7 +539,7 @@ def seal_role(req, request_path):
     except (ValueError, KeyError, TypeError) as exc:
         return {"protocol": PROTOCOL, "complete": False, "sealed": False, "recoverable": True, "code": "replay_draft_invalid",
             "error": str(exc), "write_call": evo.candidate_write_call(contract["output"])}
-    receipt = seal_receipt(contract, view, reads, control.sha(contract["output"]))
+    receipt = {**seal_receipt(contract, view, reads, control.sha(contract["output"])), **(status if record_only(config) else {})}
     stable(contract["receipt"], receipt)
     return receipt
 
@@ -472,7 +549,8 @@ def verify_collected(mode, role, task=None):
     check(record["protocol"] == PROTOCOL and record["role"] == role and record["task_id"] == task, "wrong collected replay identity")
     check(control.sha(record["output"]) == record["output_sha256"], "sealed role output changed")
     for item in record["trace_sources"]:
-        check(control.sha(item["path"]) == item["sha256"], "terminal replay trace changed")
+        audit(mode, evo.read(mode["config"]), record["slot"] + "/terminal-trace",
+              lambda: check(control.sha(item["path"]) == item["sha256"], "terminal replay trace changed"))
     return record
 
 
@@ -484,15 +562,21 @@ def collect_role(req, meta, scratch, mode, config):
     source = control.native_worker(meta, scratch, mode, ticket)
     contract = evo.read(ticket["contract"])
     view, _, _ = original_view(contract, expected_session=source["session_id"])
-    reads, missing, writes, sealed = audit_operations(view, contract)
-    check(not missing and writes and sealed, "fresh role must fully read, author and seal before collection")
-    check(control.worker_text(source["rows"]).strip(), "fresh replay role needs completed native final reply")
-    receipt = evo.read(contract["receipt"])
-    check(receipt == seal_receipt(contract, view, reads, control.sha(contract["output"])), "replay seal changed")
+    reads, missing, writes, sealed, status = observed_role(view, contract, mode, config)
+    final_status = audit(mode, config, slot + "/collection", lambda: check(
+        not missing and writes and sealed and control.worker_text(source["rows"]).strip(),
+        "fresh role reading/sealing/final-reply evidence incomplete"))
+    check(writes, "missing actual child-authored output; cannot fabricate an empty result")
+    receipt = seal_receipt(contract, view, reads, control.sha(contract["output"]))
+    seal_status = audit(mode, config, slot + "/seal-receipt", lambda: check(
+        (receipt_core(evo.read(contract["receipt"])) if record_only(config) else evo.read(contract["receipt"])) == receipt,
+        "replay seal changed"))
     check(writes[-1].encode() == evo.regular(contract["output"]).read_bytes(), "sealed output changed after last child write")
     draft(contract, config, mode)
     result = {**receipt, "trace_sources": view["sources"], "native_handle": source["handle"], "slot": slot,
               "contract": ticket["contract"], "original_solver_reflection": False}
+    if record_only(config):
+        result.update(next((s for s in (status, final_status, seal_status) if not s["audit_passed"]), status))
     stable(collect_path(mode, role, task), result)
     return result
 
@@ -512,7 +596,8 @@ def compile_output(config, mode, decisions, destination):
 def learning(mode, config):
     records = [verify_collected(mode, "learner", t) for t in config["train_ids"]]
     evolver = verify_collected(mode, "evolver")
-    check(len({r["session_id"] for r in [*records, evolver]}) == 6, "each learner and the Evolver require independent native Sessions")
+    audit(mode, config, "learning/sessions", lambda: check(len({r["session_id"] for r in [*records, evolver]}) == 6,
+          "each learner and the Evolver require independent native Sessions"))
     output = private(mode) / "compiled"
     if not output.exists():
         output.mkdir()
@@ -525,7 +610,8 @@ def learning(mode, config):
     return {"protocol": PROTOCOL, "complete": True, "source_manifest_sha256": config["source_manifest_sha256"],
         "learners": records, "evolver": evolver, "package": compiled["package"], "package_path": str(output / "package"),
         "original_solver_reflection": False, "new_training_calls": 0, "new_baseline_calls": 0,
-        "controller_trace": mode["controller_trace"], "config_sha256": mode["config_sha256"]}
+        "controller_trace": mode["controller_trace"], "config_sha256": mode["config_sha256"],
+        **(audit_summary(mode, config) if record_only(config) else {})}
 
 
 def prepare_freeze(req, mode, config):
@@ -597,6 +683,9 @@ def collect_round(req, meta, scratch, mode, config):
     request = {"op": "verify-round", "config": mode["config"], "config_sha256": mode["config_sha256"],
         "evo_tool": str(control.TOOL), "freeze_request": str(private(mode) / "freeze-request.json"), "cells": cellpath, "round": repeat}
     result = benchmark(mode).execute(request)
+    if record_only(config) and result.get("complete") is not True:
+        diagnostic = stable(private(mode) / f"round-{repeat}-diagnostic.json", result)
+        check(False, "actual measurements preserved; unresolved hard boundary or missing trials: " + diagnostic)
     check(result["complete"] is True, "raw trial/injection acceptance did not complete")
     stable(private(mode) / f"round-{repeat}-request.json", request)
     stable(private(mode) / f"round-{repeat}.json", result)
@@ -616,8 +705,12 @@ def completion(mode, config):
     req = evo.read(private(mode) / "round-1-request.json")
     result = benchmark(mode).execute({**req, "op": "verify-test-matrix"})
     check(result["complete"] is True, "five original final-only trials required")
+    summary = audit_summary(mode, config) if record_only(config) else {}
+    if record_only(config) and result.get("audit_status", "passed") != "passed":
+        summary.update({"audit_passed": False, "audit_status": result["audit_status"]})
     return {"protocol": PROTOCOL, "complete": True, "learning": learning(mode, config), "evaluation": result,
             "cost_status": "controller-final-request-pending", "original_solver_reflection": False,
+            **summary,
             "historical_baseline": "reference only; no new baseline measurement"}
 
 
@@ -656,9 +749,12 @@ def native_api(home, path, stream=False):
 
 
 def price_groups(document):
+    """The native session dimension already folds every model into one owner."""
+    check(document.get("groupBy") == "session", "owner accounting requires groupBy=session, never model totals")
+    check(isinstance(document.get("groups"), list), "native session usage groups missing")
     values, seen, total, complete = {}, set(), 0, True
     for group in document["groups"]:
-        key = (group["provider"], group["key"])
+        key = evo.nonempty(group["key"], "native Session usage key")
         check(key not in seen, "duplicate owner usage group")
         seen.add(key)
         check(type(group["requests"]) is int and group["requests"] >= 0, "invalid owner request count")
@@ -788,9 +884,18 @@ def hook(payload, state, meta, scratch, rows, mode):
         waiting = control.pending_stop(payload, meta, scratch, mode)
         if waiting is not None:
             return waiting
+        if record_only(config):
+            status = audit(mode, config, "controller/completion", lambda: completion(mode, config))
+            if not status["audit_passed"]:
+                result = {"complete": False, **status, "protocol": PROTOCOL, "diagnostic_only": True}
+                stable(scratch / "evo-replay-diagnostic-stop.json", result)
+                return {"decision": "stop", "reason": "Diagnostic run stopped with preserved incomplete audit/data", "output": result}
         result = completion(mode, config)
         stable(scratch / "evo-replay-acceptance.json", result)
-        return {"decision": "stop", "reason": "Explicit offline replay evidence verified", "output": {"complete": True, "protocol": PROTOCOL}}
+        return {"decision": "stop", "reason": "Explicit offline replay data collected" if record_only(config) else "Explicit offline replay evidence verified",
+                "output": {"complete": True, "protocol": PROTOCOL,
+                           **({k: result[k] for k in ("audit_policy", "audit_passed", "audit_status", "audit_records", "complete_means")}
+                              if record_only(config) else {})}}
     raise ValueError("unknown replay hook")
 
 

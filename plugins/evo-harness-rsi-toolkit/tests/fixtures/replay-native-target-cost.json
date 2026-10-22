@@ -1,0 +1,206 @@
+{
+  "path": "/home/liuzh/rsi算法集成penguin/evo-harness/data/controller-tg014-v16-r1/default_project/benchmarks/evo_tg014_v16_r1_test/.jobs/CASE-001-tg014-test-001-run1-20261022T091909Z/tg014-test-001__cPDQnqB/agent/penguin-cost-by-session.json",
+  "document": {
+    "summary": {
+      "today": {
+        "total": 271482,
+        "requests": 12,
+        "cost": 0.018855216,
+        "hasUncosted": false
+      },
+      "last7d": {
+        "total": 271482,
+        "requests": 12,
+        "cost": 0.018855216,
+        "hasUncosted": false
+      },
+      "total": {
+        "total": 271482,
+        "requests": 12,
+        "cost": 0.018855216,
+        "hasUncosted": false
+      }
+    },
+    "groupBy": "session",
+    "groups": [
+      {
+        "key": "session-2026-10-22-09-19-27-9b4f9779",
+        "cacheRead": 231936,
+        "cacheWrite": 33324,
+        "output": 6222,
+        "total": 271482,
+        "requests": 12,
+        "cost": 0.018855216,
+        "hasUncosted": false,
+        "costParts": {
+          "cacheRead": 0.001391616,
+          "cacheWrite": 0.0099972,
+          "output": 0.0074664
+        }
+      }
+    ],
+    "granularity": "day",
+    "series": [
+      {
+        "bucket": "2026-10-16",
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "output": 0,
+        "total": 0,
+        "cost": null,
+        "requests": 0,
+        "completed": 0,
+        "denominator": 0
+      },
+      {
+        "bucket": "2026-10-17",
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "output": 0,
+        "total": 0,
+        "cost": null,
+        "requests": 0,
+        "completed": 0,
+        "denominator": 0
+      },
+      {
+        "bucket": "2026-10-18",
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "output": 0,
+        "total": 0,
+        "cost": null,
+        "requests": 0,
+        "completed": 0,
+        "denominator": 0
+      },
+      {
+        "bucket": "2026-10-19",
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "output": 0,
+        "total": 0,
+        "cost": null,
+        "requests": 0,
+        "completed": 0,
+        "denominator": 0
+      },
+      {
+        "bucket": "2026-10-20",
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "output": 0,
+        "total": 0,
+        "cost": null,
+        "requests": 0,
+        "completed": 0,
+        "denominator": 0
+      },
+      {
+        "bucket": "2026-10-21",
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "output": 0,
+        "total": 0,
+        "cost": null,
+        "requests": 0,
+        "completed": 0,
+        "denominator": 0
+      },
+      {
+        "bucket": "2026-10-22",
+        "cacheRead": 231936,
+        "cacheWrite": 33324,
+        "output": 6222,
+        "total": 271482,
+        "cost": 0.018855216,
+        "requests": 12,
+        "completed": 12,
+        "denominator": 12
+      }
+    ],
+    "byAgentSeries": [
+      {
+        "agentId": "default_agent",
+        "requests": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          12
+        ],
+        "completed": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          12
+        ],
+        "denominator": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          12
+        ]
+      }
+    ],
+    "byModelSeries": [
+      {
+        "provider": "deepseek",
+        "modelId": "deepseek-flash",
+        "requests": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          12
+        ],
+        "completed": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          12
+        ],
+        "denominator": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          12
+        ]
+      }
+    ],
+    "errors": {
+      "total": 0,
+      "unexpected": 0,
+      "topCode": null,
+      "recent": [],
+      "rows": 0
+    },
+    "agentIds": [
+      "default_agent"
+    ],
+    "models": [
+      {
+        "provider": "deepseek",
+        "modelId": "deepseek-flash"
+      }
+    ]
+  },
+  "model_calls": 0,
+  "read_only": true
+}
