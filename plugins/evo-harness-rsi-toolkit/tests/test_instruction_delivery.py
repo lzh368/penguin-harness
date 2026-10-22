@@ -21,25 +21,29 @@ def sha(raw):
 
 class InstructionDeliveryTests(unittest.TestCase):
     def test_complete_batch_delivers_full_roles_and_exports_same_reader(self):
-        fixture = test_control.ControlTests("test_full_sequential_batch_two_reflectors_compiles_exports_and_seals")
+        fixture = test_control.ControlTests("test_full_sequential_batch_same_solver_reflections_compiles_exports_and_seals")
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
         # Model messages and HTTP feedback are synthetic. Reads, budgets,
         # claims, role seals, compile/export and training acceptance are real.
-        fixture.test_full_sequential_batch_two_reflectors_compiles_exports_and_seals()
+        fixture.test_full_sequential_batch_same_solver_reflections_compiles_exports_and_seals()
         role_source = (fixture.skill / "references/roles.md").read_text()
         prefix, sections = role_source.split("## Solver", 1)[0], {}
-        titles = {"solver": "Solver (group training leaf)", "reflector": "Reflector", "evolver": "Evolver"}
+        titles = {"solver": "Solver (group training leaf)", "evolver": "Evolver"}
         for role, title in titles.items():
             start = role_source.index("## " + title + "\n")
             end = role_source.find("\n## ", start + 1)
             sections[role] = prefix + role_source[start:end if end >= 0 else None]
+            if role == "solver":
+                reflection_start = role_source.index("## In-session reflection\n")
+                reflection_end = role_source.index("\n## Evolver", reflection_start)
+                sections[role] += "\n" + role_source[reflection_start:reflection_end]
             self.assertEqual(control.role_text(role), sections[role])
             self.assertEqual((fixture.private / "roles" / (role + ".md")).read_bytes(), sections[role].encode())
 
         tickets = [json.loads(path.read_text()) for path in (fixture.private / "dispatch").glob("*.json")]
         tickets = sorted([ticket for ticket in tickets if "call" in ticket], key=lambda ticket: ticket["slot"])
-        self.assertEqual([sum(ticket["phase"] == role for ticket in tickets) for role in titles], [5, 2, 1])
+        self.assertEqual([sum(ticket["phase"] == role for ticket in tickets) for role in titles], [5, 1])
         prompts = []
         for ticket in tickets:
             role, call = ticket["phase"], ticket["call"]
@@ -107,7 +111,7 @@ class InstructionDeliveryTests(unittest.TestCase):
         save("learned-Reader.md", reader)
         for phase, raw in packages.items():
             save(phase + "/SKILL.md", raw)
-        for role in ("solver", "reflector", "evolver"):
+        for role in ("solver", "evolver"):
             save("roles/" + role + ".md", (fixture.private / "roles" / (role + ".md")).read_bytes())
         prepared = []
         for prompt in prompts:
@@ -128,7 +132,7 @@ class InstructionDeliveryTests(unittest.TestCase):
         sources = [SCRIPT, SCRIPT.with_name("evo.py"), SCRIPT.with_name("inspection.py"), fixture.skill / "SKILL.md",
                    fixture.skill / "references/roles.md", fixture.skill / "references/algorithm.md"]
         manifest = {"schema": "evo-full-file-instruction-delivery-v1", "model_calls": 0, "network_calls": 0,
-            "scope": "Synthetic native-shaped full batch: five sequential Solvers, two Reflectors, one Evolver; actual budget/read/capture/seal/compile/export checks. HTTP response and model messages are fixtures.",
+            "scope": "Synthetic native-shaped full batch: five sequential Solvers, two same-Solver reflections, one independent Evolver; actual budget/read/capture/seal/compile/export checks. HTTP response and model messages are fixtures.",
             "limitations": "This proves instruction delivery and mechanics, not that a future model will follow the content or improve scores. Native SDK transport is a separate zero-model probe.",
             "source_hashes": {str(path if path.parent == SCRIPT.parent else SCRIPT.parents[1] / path.relative_to(fixture.skill)): sha(path.read_bytes()) for path in sources},
             "runtime": fixture.runtime, "frozen_limits": {key: fixture.profile[key] for key in ("limits", "max_bytes")},

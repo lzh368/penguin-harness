@@ -65,7 +65,7 @@ class ControlTests(unittest.TestCase):
         self.workspace = self.root / "workspace"
         self.runtime = {"provider": "fixture", "model_id": "no-model", "thinking_level": "xhigh",
                         "effective_reasoning_effort": "high", "api_host": "fixture.invalid", "client_type": "fixture-official"}
-        self.profile = {"guard_version": 2, "train_ids": [f"train_{n:03d}" for n in range(1, 6)],
+        self.profile = {"guard_version": 2, "reflection_mode": "solver-session", "train_ids": [f"train_{n:03d}" for n in range(1, 6)],
             "attempt_id": "attempt-1", "config_sha256": "a" * 64, "private_learning": str(self.private),
             "answer_dir": str(self.workspace / "submission/answers"), "feedback_dir": str(self.private / "feedback"),
             "workspace": str(self.workspace), "runtime": self.runtime, "training_budget_usd": 1,
@@ -228,11 +228,18 @@ class ControlTests(unittest.TestCase):
     def seal_preparation_fixture(self, large=False):
         shutil.copyfile(self.skill / "training.json", self.private / "frozen-training.json")
         audits = []
-        for index, role in enumerate(("reflector", "evolver")):
+        for index, role in enumerate(("evolver",)):
             path = self.private / "requests" / f"audit-{index}.json"
             self.write(path, {"op": "audit-role", "role": role,
                 "materials": [f"{self.private}/material-{n}.json" for n in range(2000 if large else 1)]})
             audits.append(str(path))
+        contexts = [{"task_id": task, "negative": False,
+                     "reflection": {"mode": "solver-session", "status": "not-required"}}
+                    for task in self.profile["train_ids"]]
+        fixture = patch.object(control, "completed_context", side_effect=lambda t, task, parent:
+                               next(c for c in contexts if c["task_id"] == task))
+        fixture.start()
+        self.addCleanup(fixture.stop)
         return audits
 
     def capture_preparation_fixture(self):
@@ -276,21 +283,32 @@ class ControlTests(unittest.TestCase):
             return [{"type": "model_msg", "payload": {"type": "tool_call", "name": "exec_command",
                      "tool_call_id": f"child-{count}", "arguments": json.dumps({"cmd": command})}},
                     {"type": "model_msg", "payload": {"type": "tool_call_output", "tool_call_id": f"child-{count}",
-                     "output": json.dumps(output)}}]
-        def reads(paths):
+                     "stop_reason": "completed", "output": json.dumps(output)}}]
+        def reads(materials, request_dir=None):
             rows = []
-            for path in paths:
+            for path in materials:
                 for offset in range(0, max(1, len(Path(path).read_text())), 4000):
+                    request = {"op": "read-material", "path": path, "offset": offset}
+                    name = evo.digest((str(path) + str(offset)).encode())[:16]
+                    request_path = (request_dir or self.private / "requests") / ("read-" + name + ".json")
+                    self.write(request_path, request)
+                    rows += [{"type": "model_msg", "payload": {"type": "tool_call", "name": "write_file",
+                        "tool_call_id": "request-write-" + name, "arguments": json.dumps({"file_path": str(request_path), "content": json.dumps(request)})}},
+                        {"type": "model_msg", "payload": {"type": "tool_call_output", "tool_call_id": "request-write-" + name, "stop_reason": "completed", "output": "written"}}]
                     rows += pair(evo.material({"path": path, "offset": offset}),
-                                 f"python3 -B {helper} {self.private / 'requests/read-fixture.json'}")
+                                 f"python3 -B {helper} {request_path}")
             return rows
         first = self.trace.parent / (session + "_001.jsonl")
         second = self.trace.parent / (session + "_002.jsonl")
         self.append_trace(first, [{"type": "session_meta", "payload": binding},
             {"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "parent_agent", "text": control.evo.native_prompt(prepared["call"])}}]
-            + h0_read_rows(binding, self.profile["max_bytes"]) + reads(grants[0]["inputs"]))
+            + h0_read_rows(binding, self.profile["max_bytes"])
+            + reads([str(self.private / "roles/solver.md"), *grants[0]["inputs"]]))
         self.append_trace(second, [{"type": "session_meta", "payload": binding}]
-            + pair(evo.judge_stdout(feedback), generated["command"]) + reads([paths["output"]]))
+            + pair(evo.judge_stdout(feedback), generated["command"])
+            + reads([paths["output"]], self.private / "roles" / task / "requests")
+            + [{"type": "model_msg", "payload": {"type": "text", "role": "assistant", "text": "Synthetic Solver complete."}},
+               {"type": "event_msg", "payload": {"type": "request_end", "status": "completed"}}])
         self.append_trace(self.trace, [{"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "harness",
             "text": f"[background_task_done]\nkind: subagent\nid: {handle}\nstatus: completed\n[/background_task_done]\nSynthetic result."}}])
         return {"prepared": prepared, "binding": binding, "traces": [first, second], "inputs": grants[0]["inputs"], "paths": paths}
@@ -786,16 +804,21 @@ class ControlTests(unittest.TestCase):
         control.verify_format_repairs(mode)
 
     def test_candidate_namespaces_and_limits_reach_fresh_role_prompts(self):
-        # The binding validator has its own full trace tests; this checks the material
-        # each freshly spawned role actually receives, including non-default budgets.
+        solver = control.evo.native_prompt(self.request(op="role-request", role="solver", task_id="train_001")["call"])
+        self.assertIn("train_001-attempt-1-c01", solver)
+        self.assertIn("In-session reflection", solver)
+        self.assertIn('"evo_role_seal"', solver)
+        self.assertIn(str(self.private / "roles/train_001/requests/seal.json"), solver)
+        self.assertNotIn(str(self.private / "roles/reflector.md"), solver)
+        with self.assertRaisesRegex(ValueError, "no independent Reflector"):
+            self.request(op="role-request", role="reflector", task_id="train_001")
         contexts = [{"task_id": task, "attempt_id": "attempt-1", "negative": False,
-                     "feedback": {"source": "penguin-evaluation"}} for task in self.profile["train_ids"]]
+                     "feedback": {"source": "penguin-evaluation"},
+                     "reflection": {"mode": "solver-session", "status": "not-required"}}
+                    for task in self.profile["train_ids"]]
         with patch.object(control, "completed_context", side_effect=lambda t, task, parent: next(c for c in contexts if c["task_id"] == task)):
             contexts[0]["negative"] = True
-            reflector = control.evo.native_prompt(self.request(op="role-request", role="reflector", task_id="train_001")["call"])
-            self.assertIn("train_001-attempt-1-c01", reflector)
-            self.assertIn('"op": "validate-candidates"', reflector)
-            with self.assertRaisesRegex(ValueError, "completed Reflector audit"):
+            with self.assertRaisesRegex(ValueError, "negative task requires"):
                 self.request(op="role-request", role="evolver")
             contexts[0]["negative"] = False
             evolver = control.evo.native_prompt(self.request(op="role-request", role="evolver")["call"])
@@ -804,7 +827,40 @@ class ControlTests(unittest.TestCase):
             self.assertIn('"op": "validate-decisions"', evolver)
             self.assertIn("UTF-8", evolver)
 
-    def test_full_sequential_batch_two_reflectors_compiles_exports_and_seals(self):
+    def test_reflection_must_be_same_native_solver_and_not_parent_supplied(self):
+        binding = {"session_id": "original-solver"}
+        audit = {"op": "audit-role", "role": "reflector", "task_id": "train_001",
+                 "binding": binding, "traces": ["terminal.jsonl"], "require_role_seal": True}
+        context = {"task_id": "train_001", "negative": True,
+                   "trace": {"binding": binding, "sources": [{"path": "terminal.jsonl"}]},
+                   "reflection": {"mode": "solver-session", "status": "sealed", "audit_request": audit}}
+        self.assertEqual(control.reflection_audits([context]), [audit])
+        for replacement in ({**audit, "binding": {"session_id": "new-reflector"}},
+                            {**audit, "traces": ["earlier.jsonl"]},
+                            {**audit, "task_id": "train_002"}):
+            with self.assertRaisesRegex(ValueError, "original Solver reflection"):
+                control.reflection_audits([{**context, "reflection": {**context["reflection"], "audit_request": replacement}}])
+        with self.assertRaisesRegex(ValueError, "not caller input"):
+            self.request(op="role-request", role="evolver", reflectors=[audit])
+
+    def test_training_input_subagent_only_polls_and_does_not_accept_prompt_file(self):
+        self.assertEqual(self.tool("input_subagent", {"subagent_id": "original", "prompt": ""}), {})
+        for args in ({"subagent_id": "original", "prompt": "Reflect now"},
+                     {"subagent_id": "original", "prompt_file": "/tmp/reflection.txt"},
+                     {"subagent_id": "original", "prompt_sha256": "a" * 64}):
+            with self.subTest(args=args):
+                self.assertEqual(self.tool("input_subagent", args)["decision"], "deny")
+
+    def test_full_sequential_batch_same_solver_reflections_compiles_exports_and_seals(self):
+        self.full_sequential_fixture(negative_count=2)
+
+    def test_full_successful_batch_still_runs_one_evolver_and_legitimate_empty_export(self):
+        self.full_sequential_fixture(negative_count=0)
+
+    def test_negative_batch_can_seal_justified_empty_candidates_without_skipping_reflection(self):
+        self.full_sequential_fixture(negative_count=2, empty_candidates=True)
+
+    def full_sequential_fixture(self, negative_count, empty_candidates=False):
         # The HTTP responder and native model messages are fixtures; every method,
         # trace, budget, candidate, compilation and seal check below is real.
         evo = control.evo
@@ -822,13 +878,19 @@ class ControlTests(unittest.TestCase):
             return [{"type": "model_msg", "payload": {"type": "tool_call", "name": name,
                      "tool_call_id": call_id, "arguments": json.dumps(arguments)}},
                     {"type": "model_msg", "payload": {"type": "tool_call_output", "tool_call_id": call_id,
-                     "output": json.dumps(output)}}]
-        def reads(materials):
+                     "stop_reason": "completed", "output": json.dumps(output)}}]
+        def write_observation(path, value):
+            self.write(path, value)
+            return pair("write_file", "written", {"file_path": str(path), "content": json.dumps(value)})
+        def reads(materials, request_dir=None):
             rows = []
             for material in materials:
                 for offset in range(0, max(1, len(Path(material).read_text())), 4000):
-                    rows.extend(pair("exec_command", evo.material({"path": str(material), "offset": offset}),
-                        {"cmd": f"python3 -B {helper} {self.private / 'fixture-read-request.json'}"}))
+                    request = {"op": "read-material", "path": str(material), "offset": offset}
+                    name = evo.digest((str(material) + str(offset)).encode())[:16]
+                    request_path = (request_dir or self.private / "requests") / ("read-" + name + ".json")
+                    rows += write_observation(request_path, request)
+                    rows += pair("exec_command", evo.material(request), {"cmd": f"python3 -B {helper} {request_path}"})
             return rows
         def delegate(prepared, session_id):
             call_id = "dispatch-" + session_id
@@ -870,17 +932,37 @@ class ControlTests(unittest.TestCase):
                 with patch.object(evo.urllib.request, "build_opener") as opener:
                     response = opener.return_value.open.return_value.__enter__.return_value
                     response.status = 200
-                    response.read.return_value = json.dumps({"score": 0.5 if n <= 2 else 1, "correct": n > 2}).encode()
+                    response.read.return_value = json.dumps({"score": 0.5 if n <= negative_count else 1, "correct": n > negative_count}).encode()
                     feedback = evo.judge(request)
             inputs = [str(self.workspace / "train_tasks" / task / "instruction.md"), str(self.workspace / "environment_access.md")]
             rows = [{"type": "session_meta", "payload": binding},
                     {"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "parent_agent", "text": control.evo.native_prompt(prepared["call"])}}]
             rows += h0_read_rows(binding, self.profile["max_bytes"])
-            rows += reads(inputs)
+            rows += reads([str(self.private / "roles/solver.md"), *inputs])
             rows += pair("exec_command", evo.judge_stdout(feedback), {"cmd": generated["command"]})
-            rows += reads([paths["output"]])
-            trace = self.trace.parent / (binding["session_id"] + ".jsonl")
+            rows += reads([paths["output"]], self.private / "roles" / task / "requests")
+            trace = self.trace.parent / (binding["session_id"] + "_001.jsonl")
             self.append_trace(trace, rows)
+            if n <= negative_count:
+                candidate_path = self.private / "roles" / task / "candidates.json"
+                values = [{"id": task + "-attempt-1-c01", "task_id": task, "attempt_id": "attempt-1",
+                    "lesson": "SYNTHETIC inspect all required fields before submission", "trigger": "SYNTHETIC incomplete record",
+                    "scope_hint": "SYNTHETIC documents", "evidence": [{"kind": "feedback", "claim": "Partial aggregate feedback", "epistemic": "observed"}]}]
+                if empty_candidates:
+                    values = []
+                self.append_trace(trace, write_observation(candidate_path, values))
+                seal_request = {"op": "seal-role-output", "role": "reflector", "task_id": task}
+                seal_path = candidate_path.parent / "requests/seal.json"
+                self.append_trace(trace, write_observation(seal_path, seal_request))
+                active = pair("exec_command", {}, {"cmd": f"python3 -B {helper} {seal_path}"})
+                self.append_trace(trace, [active[0]])
+                with patch.object(evo, "__file__", str(helper)), patch.dict(os.environ, PENGUIN_SESSION_ID=binding["session_id"]):
+                    sealed_reflection = evo.execute(seal_request, str(seal_path))
+                self.assertTrue(sealed_reflection["complete"])
+                active[1]["payload"]["output"] = json.dumps(sealed_reflection)
+                self.append_trace(trace, [active[1]])
+            self.append_trace(trace, [{"type": "model_msg", "payload": {"type": "text", "role": "assistant", "text": "Synthetic Solver complete."}},
+                {"type": "event_msg", "payload": {"type": "request_end", "status": "completed"}}])
             self.append_trace(self.trace, [{"type": "model_msg", "payload": {"type": "text", "role": "user", "sender": "harness",
                 "text": f"[background_task_done]\nkind: subagent\nid: subagent-{binding['session_id']}\nstatus: completed\n[/background_task_done]"}}])
             output = self.private / "contexts" / (task + ".json")
@@ -893,34 +975,19 @@ class ControlTests(unittest.TestCase):
             self.assertEqual(self.tool("exec_command", {"cmd": receipt["command"]}), {})
             evo.capture(evo.read(receipt["request_path"]))
             contexts.append(str(output))
-            if n <= 2:
-                reflector = self.request(op="role-request", role="reflector", task_id=task)
-                reflect_binding = delegate(reflector, "fixture-reflector-" + task)
-                candidate_path = self.private / "roles" / task / "candidates.json"
-                self.write(candidate_path, [{"id": task + "-attempt-1-c01", "task_id": task, "attempt_id": "attempt-1",
-                    "lesson": "SYNTHETIC inspect all required fields before submission", "trigger": "SYNTHETIC incomplete record",
-                    "scope_hint": "SYNTHETIC documents", "evidence": [{"kind": "feedback", "claim": "Partial aggregate feedback", "epistemic": "observed"}]}])
-                draft_before = candidate_path.read_bytes()
-                checked = evo.execute({"op": "validate-candidates", "contexts": [str(output)], "train_ids": [task],
-                    "candidates": str(candidate_path), "candidate_prefix": task + "-attempt-1-"})
-                self.assertTrue(checked["complete"])
-                self.assertEqual(candidate_path.read_bytes(), draft_before)
-                materials = [str(self.private / "roles/reflector.md"), str(output)]
-                reflect_trace = seal_leaf(reflector, reflect_binding, materials, "reflector", task)
-                audit = {"role": "reflector", "task_id": task, "role_text_path": materials[0], "traces": [str(reflect_trace)],
-                         "binding": reflect_binding, "materials": materials, "outputs": [str(candidate_path)]}
-                evo.audit_role(audit)
-                roles.append(audit)
-        evolver = self.request(op="role-request", role="evolver", reflectors=roles)
+            if n <= negative_count:
+                roles.append(evo.read(output)["reflection"]["audit_request"])
+        evolver = self.request(op="role-request", role="evolver")
         evolved_binding = delegate(evolver, "fixture-evolver-batch-1")
         self.assertIn('"max_bytes": 16000', control.evo.native_prompt(evolver["call"]))
         candidates = self.private / "candidates.json"
         decisions = self.private / "decisions.json"
         ids = [candidate["id"] for candidate in evo.read(candidates)]
-        self.assertEqual(len(set(ids)), 2)
-        self.write(decisions, [{"op": "ADD", "candidate_ids": ids, "reason": "SYNTHETIC supported procedure", "entry": {
+        self.assertEqual(len(set(ids)), 0 if empty_candidates else negative_count)
+        operations = [{"op": "ADD", "candidate_ids": ids, "reason": "SYNTHETIC supported procedure", "entry": {
             "id": "fixture-field-review", "level": "general", "trigger": "SYNTHETIC required-field task", "scope": "SYNTHETIC forms",
-            "body": "Before submission, compare the public required fields with the current document and fill any omitted public fields."}}])
+            "body": "Before submission, compare the public required fields with the current document and fill any omitted public fields."}}]
+        self.write(decisions, operations if ids else [])
         before_decisions = decisions.read_bytes()
         checked = evo.execute({"op": "validate-decisions", "train_ids": self.profile["train_ids"], "contexts": contexts,
             "candidates": str(candidates), "decisions": str(decisions), "library": str(self.private / "prebatch-library.json"),
@@ -954,7 +1021,7 @@ class ControlTests(unittest.TestCase):
                     evo.seal_training(rejected)
                 self.assertFalse(Path(seal["output"]).exists())
         role_requests = []
-        for index, role in enumerate(roles):
+        for index, role in enumerate(roles[-1:]):
             path = self.private / "requests" / f"completed-audit-{index}.json"
             self.write(path, {"op": "audit-role", **role})
             role_requests.append(str(path))
@@ -964,7 +1031,11 @@ class ControlTests(unittest.TestCase):
         sealed = evo.seal_training(seal)
         self.assertEqual(sealed["runtime"], self.runtime)
         self.assertEqual(len(sealed["members"]), 5)
-        self.assertEqual(len(sealed["roles"]), 3)
+        self.assertEqual(len(sealed["roles"]), negative_count + 1)
+        self.assertEqual(evo.validate_package(skill)["empty"], not bool(ids))
+        ledger = evo.read(journal)
+        self.assertEqual(len(ledger["operations"]), 7)
+        self.assertFalse(any(op["slot"].startswith("reflector/") for op in ledger["operations"].values()))
         self.assertTrue(self.request(op="verify-training")["complete"])
         self.assertTrue(self.invoke("stop")["output"]["complete"])
         self.assertEqual({path: Path(path).read_bytes() for path in evidence_before}, evidence_before)

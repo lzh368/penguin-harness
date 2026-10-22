@@ -104,17 +104,21 @@ def load_mode(trace, state=None):
 
 
 def role_text(role):
-    title = {"solver": "Solver (group training leaf)", "reflector": "Reflector", "evolver": "Evolver"}[role]
+    """Deliver reflection instructions inside the original Solver task."""
+    check(role in ("solver", "evolver"), "reflection is performed by the original Solver, never a new role")
     text = (SKILL / "references/roles.md").read_text()
     common = text.split("## Solver", 1)[0]
-    section = text.split("## " + title + "\n", 1)[1].split("\n## ", 1)[0]
-    return common + "## " + title + "\n" + section
+    titles = ["Solver (group training leaf)", "In-session reflection"] if role == "solver" else ["Evolver"]
+    sections = ["## " + title + "\n" + text.split("## " + title + "\n", 1)[1].split("\n## ", 1)[0]
+                for title in titles]
+    return common + "\n".join(sections)
 
 
 def training_profile(state):
     path = Path(state) / "skills/evo-harness-rsi-toolkit/training.json"
     t = evo.read(path)
     check(t.get("guard_version") == 2, "guarded training profile v2 required")
+    check(t.get("reflection_mode") == "solver-session", "this method requires original Solver Session reflection")
     check(t["attempt_id"] == "attempt-1" and t["train_ids"], "invalid frozen attempt")
     for name in ("private_learning", "answer_dir", "feedback_dir", "workspace"):
         check(Path(t[name]).is_absolute(), "training paths must be absolute")
@@ -141,7 +145,7 @@ def training_bootstrap(meta, scratch, state, trace_path=None):
     clock = private / "coordinator-clock.json"
     if not clock.exists():
         evo.write_once(clock, evo.encoded({"started_unix": time.time(), "session_id": meta["session_id"]}))
-    for role in ("solver", "reflector", "evolver"):
+    for role in ("solver", "evolver"):
         dest = private / "roles" / (role + ".md")
         expected = role_text(role).encode()
         if dest.exists():
@@ -169,6 +173,8 @@ def training_bootstrap(meta, scratch, state, trace_path=None):
         "Use role-request to prepare each requested native call; then invoke run_subagent with its exact short returned call, "
         "including prompt_file and prompt_sha256. The native tool reads the complete immutable prompt for the child; "
         "do not copy its text into a prompt argument or reconstruct the role instructions. "
+        "Each Solver completes answer, its single judge, full feedback observation and any required reflection within one native run. "
+        "Reserve its complete solve-plus-reflection cost under its one solver slot; do not dispatch or reserve a separate Reflector. "
         "After each Solver's native completed notification, use prepare-capture with only task_id and your trace_path; "
         "execute its returned exact command to capture the original evidence. Never hand-copy inputs or bindings. "
         "Only helpers run in this root's shell. Root write_file may write private request/evidence JSON, "
@@ -423,9 +429,11 @@ def format_request(req, meta, scratch, mode):
 
 
 def authorize_input(args, meta, scratch, mode, call_id):
+    check("prompt_file" not in args and "prompt_sha256" not in args,
+          "input_subagent accepts prompt, not run_subagent prompt files")
     if not args.get("prompt", "").strip():
         return
-    check(mode["mode"] == "controller", "training role steering/retries are forbidden; preserve failure and stop")
+    check(mode["mode"] == "controller", "training role steering/retries are forbidden; reflection must finish in the original Solver run")
     child_id = evo.ident(args["subagent_id"])
     path = scratch / "evo-guard/format" / (child_id + ".json")
     repair = evo.read(path)
@@ -701,14 +709,37 @@ def completed_context(t, task, parent=None):
     return context
 
 
+def reflection_audits(contexts):
+    """Use only captured original Solver audits in frozen task order."""
+    audits = []
+    for context in contexts:
+        reflection = context.get("reflection", {})
+        check(reflection.get("mode") == "solver-session", "captured original Solver reflection evidence required")
+        if not context["negative"]:
+            check(reflection.get("status") == "not-required" and "audit_request" not in reflection,
+                  "successful task cannot supply reflection candidates")
+            continue
+        audit = reflection.get("audit_request", {})
+        check(reflection.get("status") == "sealed" and audit.get("op") == "audit-role"
+              and audit.get("role") == "reflector" and audit.get("task_id") == context["task_id"]
+              and audit.get("binding") == context["trace"]["binding"]
+              and audit.get("traces") == [item["path"] for item in context["trace"]["sources"]]
+              and audit.get("require_role_seal") is True,
+              "negative task requires its captured original Solver reflection audit")
+        audits.append(audit)
+    return audits
+
+
 def role_request(req, meta, scratch, mode):
     state = Path(meta["agent_state"])
     _, t = training_profile(state)
     check(sha(mode["training_path"]) == mode["training_sha256"], "training profile changed")
     private = Path(t["private_learning"])
     role = req["role"]
-    check(role in ("solver", "reflector", "evolver"), "unknown method role")
+    check(role in ("solver", "evolver"), "no independent Reflector: original Solver completes reflection before returning")
+    check(not req.get("reflectors"), "reflection audits come from captured original Solver evidence, not caller input")
     task = req.get("task_id")
+    check(role != "evolver" or task is None, "batch Evolver must not receive an individual task identity")
     if role != "evolver":
         check(task in t["train_ids"], "task not in frozen batch")
         prior = t["train_ids"][:t["train_ids"].index(task)]
@@ -743,7 +774,7 @@ def role_request(req, meta, scratch, mode):
         # the helper checks the canonical identity and never permits another attempt.
         text += "\n" + json.dumps(grant, ensure_ascii=False)
         text += "\nFirst satisfy the learned reader inherited in your Agent State: use native read_file for the public task and the entire learned SKILL.md, completing every page before business actions. Every task observes the same complete frozen Skill; there is no selector. Complete all public inputs before solving. A complete native read_file of a granted public input also satisfies its read audit; do not duplicate that read through the helper. Use read-material for any incomplete or truncated native input; this does not replace the learned reader's own native read_file requirement.\n"
-        text += f"\nRead full role file {role_file} using read-material. Read every granted public input completely, either with exact successful native read_file windows (all lines, before judge) or read-material chunks. Native output with any truncation, a line over 2000 UTF-16 units, or a file at least 8 MiB needs read-material instead. This public-input option never applies to the feedback ledger or learning-role materials."
+        text += f"\nBefore judge, read full role file {role_file} using read-material. Read every granted public input completely, either with exact successful native read_file windows (all lines, before judge) or read-material chunks. Native output with any truncation, a line over 2000 UTF-16 units, or a file at least 8 MiB needs read-material instead. This public-input option never applies to the feedback ledger or learning-role materials."
         text += f"\nFinal answer: {Path(t['answer_dir']) / (task + '.json')}\n"
         text += "Use judge exactly once via one standalone helper command. Never probe judge directly. "
         text += "After feedback, do not revise the answer or call the service again.\n"
@@ -754,38 +785,39 @@ def role_request(req, meta, scratch, mode):
         text += "\nAfter preparation, execute the returned canonical command exactly once. "
         text += f"It must be: python3 -B {shlex.quote(str(TOOL))} {shlex.quote(paths['judge_request'])}\n"
         text += "Judge stdout is a compact receipt. Afterwards read the canonical output feedback file fully with read-material chunks; never rerun judge to recover truncated output.\n"
+        candidate = private / "roles" / task / "candidates.json"
+        reflection_requests = candidate.parent / "requests"
+        reflection_requests.mkdir(parents=True, exist_ok=True)
+        text += (f"\nAfter judge, use only {reflection_requests} for JSON helper requests. "
+                 "Use native write_file to create one read-material request per feedback offset and await every full receipt. "
+                 "Do not alter a request after its execution. Judge anomalies are method failures, never negative learning feedback. "
+                 "After successful scoring, the answer is immutable. No more business queries, second judge, skill-library reads, "
+                 "other-task candidates, or test materials are allowed. Keep the task history already observed in this same Session.\n")
+        text += (f"If authorized feedback is negative, perform the in-session reflection below and write candidates only to {candidate}. "
+                 f"Every id must start with {task}-{t['attempt_id']}- (for example {task}-{t['attempt_id']}-c01). "
+                 "Use lesson, trigger, evidence and scope_hint. A justified empty candidate list still requires the same-session reflection "
+                 "seal; absence of reflection is not an empty update. The seal validates the draft against this original task, answer and feedback. "
+                 "You may correct your own unsealed JSON after a structural validation error. "
+                 f"Then seal using {reflection_requests / 'seal.json'} and return after complete=true. "
+                 "For a successful non-negative result, finish the full feedback read and return without candidate generation or reflection sealing. "
+                 "Do not return after judge before checking whether reflection is required.\n")
         text += "\nBinary inputs (read via appropriate tools, do not fabricate text receipts): " + json.dumps(binary)
         slot = f"solver/{task}/{t['attempt_id']}"
-    elif role == "reflector":
-        context = completed_context(t, task, meta)
-        check(context["negative"], "success produces no Reflector")
-        out = private / "roles" / task / "candidates.json"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        text += f"\nEvery candidate id must start with {task}-{t['attempt_id']}- (for example {task}-{t['attempt_id']}-c01); this prevents collisions between independent Reflectors.\n"
-        text += f"\nTask/attempt: {task}/{t['attempt_id']}\nRead {role_file} and {private / 'contexts' / (task + '.json')} in full.\nOutput only to {out}.\n"
-        text += "Before sealing, validate your own output and correct any structural error using: " + json.dumps({
-            "op": "validate-candidates", "contexts": [str(private / "contexts" / (task + ".json"))],
-            "train_ids": [task], "candidates": str(out), "candidate_prefix": task + "-" + t["attempt_id"] + "-"})
-        text += "\nAfter validation succeeds, use seal-role-output below. Do not change output after a successful seal.\n"
-        slot = f"reflector/{task}/{t['attempt_id']}"
     else:
         contexts = [completed_context(t, task_id, meta) for task_id in t["train_ids"]]
         candidates = []
-        audits = req.get("reflectors", [])
-        negative = [context["task_id"] for context in contexts if context["negative"]]
-        check([audit.get("task_id") for audit in audits] == negative,
-              "Evolver requires each negative task's completed Reflector audit in frozen order")
+        audits = reflection_audits(contexts)
         evo.verify_training_root(contexts, audits)
-        for audit, task_id in zip(audits, negative):
+        for audit in audits:
+            task_id = audit["task_id"]
             output = str(private / "roles" / task_id / "candidates.json")
-            context_path = str(private / "contexts" / (task_id + ".json"))
-            check(audit.get("role") == "reflector" and audit.get("outputs") == [output]
-                  and context_path in audit.get("materials", [])
-                  and str(private / "roles/reflector.md") in audit["materials"], "wrong Reflector material/output audit")
-            evo.audit_role({**audit, "require_role_seal": True})
+            check(audit.get("outputs") == [output]
+                  and audit.get("role_text_path") == str(private / "roles/solver.md"),
+                  "wrong original Solver reflection material/output audit")
+            evo.audit_role(audit)
             values = evo.read(output)
             check(all(candidate["id"].startswith(task_id + "-" + t["attempt_id"] + "-") for candidate in values),
-                  "Reflector candidate ids need their frozen task/attempt namespace")
+                  "Solver candidate ids need their frozen task/attempt namespace")
             candidates.extend(values)
         evo.validate_candidates(candidates, {(context["task_id"], context["attempt_id"]): context for context in contexts})
         target = private / "candidates.json"
@@ -808,16 +840,19 @@ def role_request(req, meta, scratch, mode):
             **{key: t[key] for key in ("limits", "max_bytes")}})
         text += f"\nOutput operations to {private / 'decisions.json'} and seal with seal-role-output. Zero candidates requires [] and a real Evolver return.\n"
         slot = "evolver/batch-1"
-    if role in ("reflector", "evolver"):
-        contract = evo.role_contract(t, role, task if role == "reflector" else None)
+    if role in ("solver", "evolver"):
+        seal_role = "reflector" if role == "solver" else role
+        contract = evo.role_contract(t, seal_role, task if role == "solver" else None)
         text += "\n" + json.dumps({"evo_role_seal": {**contract, "parent_session_id": meta["session_id"]}}, ensure_ascii=False)
-        text += "\nSeal request: " + json.dumps({"op": "seal-role-output", "role": role,
-                    **({"task_id": task} if role == "reflector" else {})})
-        text += ("\nWrite the seal request in your scratchpad, then execute one foreground python3 -B command using the literal absolute helper and request paths. "
+        text += ("\nThe following grant and seal request apply only to negative-feedback reflection; a successful Solver returns after the full feedback read without using this seal.\n" if role == "solver" else "")
+        text += "\nSeal request: " + json.dumps({"op": "seal-role-output", "role": seal_role,
+                    **({"task_id": task} if role == "solver" else {})})
+        text += ("\nFor a negative Solver result, write the seal request only to your assigned reflection request directory seal.json; "
+                 "the Evolver writes its seal request in its scratchpad. Execute one foreground python3 -B command using the literal absolute helper and request paths. "
                  "The helper discovers your current native Session from its server-injected environment and checks all your original trace segments, fixed materials and draft structure. "
                  "If complete=false, read each missing offset in this same leaf with a separate read-material exec and retry seal; "
                  "if draft validation fails, correct only your own unsealed draft and retry. This is receipt/format repair, never another Solver attempt, service call, or judge call. "
-                 "Do not claim completion until complete=true. Generic file-digest is not a role seal. "
+                 "When sealing is required, do not claim completion until complete=true. Generic file-digest is not a role seal. "
                  "Do not request parent steering. After successful sealing, do not change your output or retry learning.\n")
     # The coordinator copies only a short native call. Preserve the complete
     # original role/grants in an immutable file; do not ask the model to retype
@@ -831,8 +866,7 @@ def role_request(req, meta, scratch, mode):
     call = {"description": f"Evo-Harness {role}" + (f" {task}" if task else ""),
             "prompt_file": str(prompt_path), "prompt_sha256": evo.digest(raw_prompt),
             **{k: t["runtime"][k] for k in ("provider", "model_id", "thinking_level")}, "run_in_background": True}
-    return write_ticket(scratch, mode, call, slot, role, {"task_id": task,
-        **({"reflectors": req.get("reflectors", [])} if role == "evolver" else {})})
+    return write_ticket(scratch, mode, call, slot, role, {"task_id": task})
 
 
 def worker_request(req, scratch, mode):
@@ -879,8 +913,7 @@ def authorize_call(args, meta, scratch, mode, call_id):
     else:
         _, t = training_profile(meta["agent_state"])
         runtime_call(args, t["runtime"])
-        prepared = role_request({"role": ticket["phase"], "task_id": ticket["task_id"],
-                                 "reflectors": ticket.get("reflectors", [])}, meta, scratch, mode)
+        prepared = role_request({"role": ticket["phase"], "task_id": ticket["task_id"]}, meta, scratch, mode)
         check(prepared["call"] == args, "role evidence changed after its registered request")
     claim = ticket_path(scratch, mode, args).parent / (evo.digest(ticket["slot"].encode()) + ".claimed.json")
     if claim.exists():
@@ -1237,9 +1270,10 @@ def prepare_seal_training(req, meta, mode):
           and all(isinstance(path, str) for path in req["role_requests"]),
           "completed audit-role request paths required")
     roles = [evo.read(evo.regular(inside(path, private / "requests"))) for path in req["role_requests"]]
-    check(all(isinstance(role, dict) and role.get("op") == "audit-role"
-              and role.get("role") in ("reflector", "evolver") for role in roles),
-          "completed Reflector/Evolver audit requests required")
+    check(len(roles) == 1 and roles[0].get("op") == "audit-role" and roles[0].get("role") == "evolver",
+          "provide only the independent Evolver audit request; Solver reflection is derived from captured contexts")
+    contexts = [completed_context(t, task, meta) for task in t["train_ids"]]
+    roles = reflection_audits(contexts) + roles
     prepared = {"op": "seal-training", "private_learning": str(private), "train_ids": t["train_ids"],
         "contexts": [str(private / "contexts" / (task + ".json")) for task in t["train_ids"]],
         "candidates": str(private / "candidates.json"), "decisions": str(private / "decisions.json"),

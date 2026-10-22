@@ -1,7 +1,7 @@
 ---
 name: evo-harness-rsi-toolkit
 description: Run Evo-Harness with frozen Solver settings, negative-feedback reflection and batch compilation of general and task-type skills. Use native Penguin workers, State, snapshots and evaluation; the continuous GDPevo profile adds checked native delegation and export acceptance.
-version: 2026.10.22.2
+version: 2026.10.22.3
 ---
 
 # Evo-Harness
@@ -19,7 +19,8 @@ Implement [Evo-Harness v2](https://arxiv.org/html/2608.15071v2), §3,
 [algorithm.md](references/algorithm.md). The
 [official release](https://github.com/A-EVO-Lab/a-evolve/tree/3c7c7b8c62a3f07da1d4407aa03f0ca079954bcf)
 is pinned for provenance. A frozen Solver reads one complete learned SKILL.md
-and applies its rules when their conditions hold; negative executions produce candidates; one Evolver compiles each
+and applies its rules when their conditions hold; the original Solver reflects
+on negative feedback in its own conversation to produce candidates; one Evolver compiles each
 complete batch with ADD / MERGE / REVISE / SKIP at general and topic levels.
 Keep the final compilation. There is no score-based candidate search or
 strictly-improving acceptance gate. Never learn from held-out tests.
@@ -86,7 +87,12 @@ on ordinary RSI Benchmarks.
 For ordinary RSI, use the declared Benchmark protocol and the shared native
 evaluation workers; the default is H0 measurement before training. For GDPevo,
 use the training-first sequence above and the exact delegation in
-group-training.md. In both settings:
+group-training.md. The following same-Solver reflection contract is validated
+for guarded continuous GDPevo. Ordinary capture-evaluation supplies completed
+Target evidence but does not itself implement feedback continuation in that
+Target Session. Do not claim this workflow supports another Benchmark without
+validating its continuation path, or substitute a fresh Reflector. For this
+GDPevo experiment:
 
 1. Preserve H0 and its fixed Reader with empty rules. Keep test tasks, outputs, traces and
    scores outside every learning role's materials. Native workers evaluate
@@ -96,8 +102,12 @@ group-training.md. In both settings:
    result, public inputs and actual Target trace. A score of 100 means complete
    success unless another predicate was frozen. The continuous GDPevo profile
    uses canonical judge receipts and capture inside the training container.
-3. For each completed negative execution call a fresh native Reflector with
-   the full role instructions and task-bound context. Successful executions
+3. For each completed negative execution, the original Solver continues in
+   its own native Session, with its original history and model. It fully reads
+   the single authorized feedback, keeps the answer frozen, then writes and
+   seals candidates before returning. A fresh Reflector reading a trace is not
+   equivalent. Capture the terminal trace after reflection; do not capture then
+   silently accept changed trace hashes. Successful executions
    remain evidence and produce no candidate; success does not validate every
    local inference. Infrastructure, missing evidence
    or judge failure stops learning; it never becomes a zero or an empty update.
@@ -132,7 +142,10 @@ Before dispatch reserve its semantic operation id, request hash and cost; bind
 the returned native Session/job. Reconcile an existing operation instead of
 launching another. Unknown costs remain reserved. Trial totals already include
 their container roles: do not count those children twice. Host and worker
-overhead are separate. This accounting is not a provider-enforced spending cap.
+overhead are separate. A Solver's cumulative native Session cost includes its
+reflection; the internal reflection audit is not an additional expense or
+reservation. Pending usage stays reserved; resuming does not reset the budget.
+This accounting is not a provider-enforced spending cap.
 
 In ordinary RSI follow the shared protocol's narrowly evidenced formatting or
 pre-start recovery rules. The guarded continuous profile permits empty child polls and a registered,

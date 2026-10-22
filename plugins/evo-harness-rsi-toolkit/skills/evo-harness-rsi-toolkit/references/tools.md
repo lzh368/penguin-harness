@@ -19,7 +19,7 @@ of entry objects (`id,level,topic?,trigger,scope,body`), initially `[]`.
 | op | Required request fields (in addition to op) | Output |
 |---|---|---|
 | prepare-judge-request | task_id, url | Data-only canonical request writer; derives all paths/attempt/roster from installed training.json, returns exact judge command and makes no HTTP call |
-| validate-candidates | contexts, train_ids, candidates, candidate_prefix | Read-only draft check for the Reflector before output sealing; no rewritten content |
+| validate-candidates | contexts, train_ids, candidates, candidate_prefix | Read-only draft check for candidate structure before output sealing; no rewritten content |
 | validate-decisions | compile fields except output, plus max_bytes | Read-only compile/export validation of the complete rendered SKILL.md, including the whole-file UTF-8 budget and native 2000-UTF-16-unit physical-line capacity, in a temporary directory before Evolver sealing; no published State |
 | judge | split=train, task_id, attempt_id, train_ids, url, answer (JSON file), output; request file itself must have the canonical judge_request path | Writes full canonical ledger with raw feedback and hashes; CLI returns a short ledger path/hash/byte-count receipt |
 | capture | split=train, task_id, attempt_id, train_ids, answer, feedback (canonical receipt path), judge_request (canonical JSON path), inputs (text file paths), traces (all Solver JSONL segment paths), binding, output | Full context; requires exactly one canonical native judge exec and rejects changed or extra feedback. Guarded group roots obtain this request through control.py prepare-capture, never by copying grant paths. |
@@ -113,9 +113,9 @@ Additional operations:
   bytes as rendered by Penguin, and contain no truncation or error wrapper.
   Lines over 2000 UTF-16 units or files at least 8 MiB need read-material.
   Empty files require a successful native empty-file observation. This option
-  does not apply to feedback ledgers or Reflector/Evolver materials.
-- `seal-role-output`: role=reflector/evolver, task_id for Reflector only; guarded
-  training leaves call this from their own native Session. It derives fixed
+  does not apply to feedback ledgers or learning materials.
+- `seal-role-output`: role=reflector/evolver, task_id for the Solver reflection phase only; guarded
+  training leaves call this from their own native Session. The reflector label is the original Solver phase, never a new child. It derives fixed
   materials/output/validation from training.json and the registered parent task,
   checks every actual read and validates the unsealed draft. Missing offsets
   return complete=false/sealed=false; the same leaf reads those chunks and
@@ -123,7 +123,7 @@ Additional operations:
   role/Session/config identity and material hashes. Output is then immutable.
   The only permitted unpaired trace action is this currently running seal call.
 - `file-digest`: path; prints file_path/sha256 for ordinary unguarded RSI or
-  inspection. It cannot replace guarded Reflector/Evolver sealing.
+  inspection. It cannot replace guarded Solver reflection/Evolver sealing.
 - `audit-role`: traces, binding, materials (paths), outputs (paths); verifies
   full material receipts and output seals in actual paired tool results.
 - `verify-package`: path; validates the fixed Reader, complete rule rendering,
@@ -132,7 +132,10 @@ Additional operations:
 - `seal-training`: private_learning, train_ids, contexts, candidates, decisions,
   library (pre-batch), skill, roles, runtime, limits, max_bytes, output.
   Each roles item is an audit-role
-  request plus role=reflector/evolver, task_id for reflector, role_text_path.
+  request plus role=reflector/evolver, task_id for reflection, role_text_path.
+  Reflection binds the original Solver Session; Evolver alone is independent.
+  Capture hashes the complete terminal Solver trace after reflection, and any
+  later change invalidates that captured context.
   All materials/outputs/contexts must be within private_learning. It verifies
   candidate concatenation and writes portable hashes and trace bindings for
   the host's verify-export. No role dispatch or stage decision occurs here.

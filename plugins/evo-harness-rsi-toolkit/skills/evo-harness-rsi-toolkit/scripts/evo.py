@@ -968,13 +968,16 @@ def role_contract(training, role, task_id=None):
     require(training.get("guard_version") == 2, "role sealing requires guarded training")
     require(role in ("reflector", "evolver"), "only learning roles seal outputs")
     private = Path(training["private_learning"])
-    role_file = str(private / "roles" / (role + ".md"))
+    same_solver = role == "reflector" and training.get("reflection_mode") == "solver-session"
+    role_file = str(private / "roles" / (("solver" if same_solver else role) + ".md"))
     contexts = [str(private / "contexts" / (task + ".json")) for task in training["train_ids"]]
     if role == "reflector":
         require(task_id in training["train_ids"], "role task is outside the frozen batch")
         context = str(private / "contexts" / (task_id + ".json"))
         output = str(private / "roles" / task_id / "candidates.json")
         materials = [role_file, context]
+        if same_solver:
+            materials = [role_file, judge_paths(training, task_id, training["attempt_id"])["output"]]
         validation = {"op": "validate-candidates", "contexts": [context], "train_ids": [task_id],
                       "candidates": output, "candidate_prefix": task_id + "-" + training["attempt_id"] + "-"}
     else:
@@ -984,8 +987,329 @@ def role_contract(training, role, task_id=None):
         validation = {"op": "validate-decisions", "contexts": contexts, "train_ids": training["train_ids"],
                       "candidates": materials[1], "library": materials[2], "decisions": output,
                       **{key: training[key] for key in ("limits", "max_bytes")}}
-    return {"schema": 1, "role": role, "task_id": task_id, "config_sha256": training["config_sha256"],
-            "materials": materials, "output": output, "validation": validation}
+    contract = {"schema": 1, "role": role, "task_id": task_id, "config_sha256": training["config_sha256"],
+                "materials": materials, "output": output, "validation": validation}
+    if same_solver:
+        contract.update(reflection_mode="solver-session", dispatch_phase="solver",
+                        attempt_id=training["attempt_id"], request_dir=str(private / "roles" / task_id / "requests"))
+        contract["validation"] = {"op": "seal-role-output", "role": "reflector", "task_id": task_id}
+    return contract
+
+
+def solver_reflection_profile(fb, path_map=None):
+    if fb.get("source") != "evo-judge":
+        return None
+    mapped = path_map or {}
+    raw = regular(mapped.get(fb["training_snapshot"], fb["training_snapshot"])).read_bytes()
+    require(digest(raw) == fb["training_sha256"], "frozen training snapshot changed")
+    profile = json.loads(raw)
+    return profile if profile.get("reflection_mode") == "solver-session" else None
+
+
+def reflection_action(call, training, task_id, requests=None):
+    """Finite post-judge protocol, reconstructed from native writes, never shell intent.
+
+    Requests are plain data written through write_file. Only literal foreground
+    read-material/seal helper invocations are accepted. This is an evidence
+    validator; native child tools are not a hostile-code sandbox.
+    """
+    contract = role_contract(training, "reflector", task_id)
+    require(contract.get("reflection_mode") == "solver-session", "original Solver reflection mode required")
+    args = json.loads(call["arguments"])
+    require(isinstance(args, dict), "invalid post-judge tool arguments")
+    requests = requests if requests is not None else {}
+    directory = contract["request_dir"]
+    def request_path(value):
+        return (isinstance(value, str) and posixpath.dirname(value) == directory
+                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.json", posixpath.basename(value)) is not None)
+    def valid_request(value):
+        require(isinstance(value, dict), "reflection request must be a JSON object")
+        if value.get("op") == "read-material":
+            require(set(value) <= {"op", "path", "offset"} and value.get("path") == contract["materials"][1]
+                    and type(value.get("offset", 0)) is int and value.get("offset", 0) >= 0,
+                    "post-judge reads are restricted to this attempt's complete feedback")
+        else:
+            require(value == {"op": "seal-role-output", "role": "reflector", "task_id": task_id},
+                    "post-judge helper is restricted to feedback reading or original Solver sealing")
+        return value
+    if call.get("name") == "write_file":
+        path, content = args.get("file_path"), args.get("content")
+        require(isinstance(content, str), "reflection write needs literal content")
+        if path == contract["output"]:
+            return {"kind": "candidate-write", "path": path, "content": content}
+        require(request_path(path), "post-judge writes are restricted to own candidates and request directory")
+        value = valid_request(json.loads(content))
+        require(path not in requests or requests[path] == value, "an executed reflection request cannot be changed")
+        requests[path] = value
+        return {"kind": "request-write", "path": path, "request": value}
+    require(call.get("name") == "exec_command", "post-judge business queries, answer edits and extra tools are forbidden")
+    pair = {"call": {"payload": call}}
+    path = standalone_helper_request(pair, {"binding": {"agent_state": training.get("agent_state", "")}})
+    # The installed helper may be relocated during offline review. The exact
+    # helper in the original Session's State is supplied by the caller profile.
+    require(path is not None and request_path(path) and path in requests,
+            "post-judge exec needs one literal helper request previously written by this Solver")
+    return {"kind": requests[path]["op"], "path": path, "request": valid_request(requests[path])}
+
+
+def verify_solver_scoped_reads(pair, view, training, task, fb, contract):
+    """Check explicit native/helper reads; never interpret arbitrary programs."""
+    workspace = view["binding"]["workspace"]
+    def canonical(path):
+        require(isinstance(path, str) and path and "\0" not in path, "invalid Solver material path")
+        return posixpath.normpath(path if posixpath.isabs(path) else posixpath.join(workspace, path))
+    def under(path, root):
+        return path == root or path.startswith(root.rstrip("/") + "/")
+    private = canonical(training["private_learning"])
+    own_requests = canonical(contract["request_dir"])
+    own_answer = canonical(judge_paths(training, task, training["attempt_id"])["answer"])
+    allowed_private = {canonical(contract["materials"][0]), canonical(fb["judge_request_path"]),
+                       canonical(fb["training_snapshot"])}
+    call, paths = pair["call"]["payload"], []
+    if call.get("name") == "read_file":
+        paths.append(json.loads(call["arguments"]).get("file_path"))
+    elif standalone_helper_request(pair, view):
+        paths.extend(value["material_path"] for value in json_values(pair["observation"]["payload"]["output"])
+                     if isinstance(value, dict) and "material_path" in value and "sha256" in value
+                     and all(k in value for k in ("offset", "end", "total", "text")))
+    for path in paths:
+        actual = canonical(path)
+        if under(actual, private):
+            require(actual in allowed_private or under(actual, own_requests),
+                    "Solver cannot read private candidates, other tasks, or a library for curation before scoring")
+        if under(actual, canonical(training["answer_dir"])):
+            require(actual == own_answer, "Solver cannot read another task's answer")
+        roster_root = canonical(posixpath.join(workspace, "train_tasks"))
+        if under(actual, roster_root):
+            require(under(actual, posixpath.join(roster_root, task)), "Solver cannot read another training task")
+        # /app is GDPevo's fixed container root; offline fixtures may relocate
+        # workspace but must not turn that explicit original test root public.
+        test_roots = {canonical(posixpath.join(workspace, "test_tasks")), "/app/test_tasks"}
+        require(not any(under(actual, root) for root in test_roots),
+                "Solver cannot read held-out test materials")
+
+
+def verify_solver_reflection(view, fb, path_map=None, require_seal=True, input_records=None):
+    training = solver_reflection_profile(fb, path_map)
+    if training is None:
+        return None
+    mapped = path_map or {}
+    require(view["binding"].get("source") == "subagent" and view["binding"].get("parent_trace"),
+            "reflection requires the original native Solver child Session")
+    sources = [source["path"] for source in view["sources"]]
+    require(sources == sorted(set(sources)), "original Solver trace segments must be complete and ordered")
+    if path_map is None:
+        trace_root = Path(view["binding"]["agent_state"]).parent / "traces"
+        actual_sources = sorted(str(path) for path in trace_root.rglob(view["binding"]["session_id"] + "_*.jsonl"))
+        require(sources == actual_sources, "all original Solver trace segments are required")
+    task, attempt = fb["task_id"], fb["attempt_id"]
+    contract = role_contract(training, "reflector", task)
+    require(fb["status"] == "ok", "judge error cannot become negative reflection")
+    negative = feedback(fb, task, attempt, fb["answer_sha256"])
+    judge = verify_judge_evidence(view, fb, fb["judge_request_path"], path_map)
+    verify_solver_skill(view, fb, path_map)
+    positions = observation_positions(view)
+    judge_pair, (judge_at, judge_returned) = next((p, loc) for p, loc in zip(view["pairs"], positions)
+        if p["call"]["payload"]["tool_call_id"] == judge["tool_call_id"])
+    require(judge_at < judge_returned, "judge observation must follow its operation")
+    user_messages = [m for m in view["messages"] if m["payload"].get("type") == "text"
+                     and m["payload"].get("role") == "user" and m["payload"].get("sender") == "parent_agent"]
+    require(len(user_messages) == 1, "reflection must inherit the original Solver run without parent steering")
+    first = user_messages[0]
+    first_index = view["messages"].index(first)
+    require(all(first_index < called for called, _ in positions), "original Solver task must precede every action")
+    grants = [value.get("evo_task") for value in json_values(first["payload"]["text"])
+              if isinstance(value, dict) and "evo_task" in value]
+    seals = [value.get("evo_role_seal") for value in json_values(first["payload"]["text"])
+             if isinstance(value, dict) and "evo_role_seal" in value]
+    require(len(grants) == len(seals) == 1 and isinstance(grants[0], dict), "original Solver task/reflection grants required")
+    grant = grants[0]
+    require(set(grant) == {"split", "task_id", "attempt_id", "inputs"} and grant["split"] == "train"
+            and grant["task_id"] == task and grant["attempt_id"] == attempt,
+            "reflection grant belongs to another task or attempt")
+    parent_rows = [json.loads(line) for line in regular(mapped.get(view["binding"]["parent_trace"], view["binding"]["parent_trace"])).read_bytes().splitlines()]
+    parent_metas = [r["payload"] for r in parent_rows if r.get("type") == "session_meta" and not r.get("origin")]
+    require(len(parent_metas) == 1 and parent_metas[0].get("source") in ("cli", "benchmark"), "reflection parent is not the original training root")
+    require(seals[0] == {**contract, "parent_session_id": parent_metas[0]["session_id"]}, "original Solver reflection contract changed")
+    records = material_records(contract["materials"], path_map)
+    before = [p for p, (_, observed) in zip(view["pairs"], positions) if observed < judge_at]
+    verify_material_records({**view, "pairs": before}, records[:1], standalone=True)
+    if input_records is None and path_map is not None:
+        context_path = str(Path(training["private_learning"]) / "contexts" / (task + ".json"))
+        if context_path in mapped:
+            context = read(mapped[context_path])
+            require(context["task_id"] == task and context["attempt_id"] == attempt,
+                    "portable original Solver input context changed")
+            input_records = context["inputs"]
+    if input_records is None:
+        inputs = material_records(grant["inputs"], path_map)
+    else:
+        require([record["source"] for record in input_records] == grant["inputs"], "original input grants changed")
+        inputs = [(record["source"], record["text"], record["sha256"]) for record in input_records]
+        require(all(digest(text.encode()) == fingerprint for _, text, fingerprint in inputs), "captured input changed")
+    verify_solver_inputs(view, inputs, judge["tool_call_id"])
+    after = [p for p, (called, _) in zip(view["pairs"], positions) if called > judge_returned]
+    feedback_reads, observed_feedback = verify_material_records({**view, "pairs": after}, records[1:], standalone=True)
+    reads, _, missing = material_read_status(view, records, standalone=True)
+    require(not missing, "original Solver must observe complete role and raw feedback")
+    requests, writes, sealed, seal_id = {}, [], False, None
+    for pair, (called, observed) in zip(view["pairs"], positions):
+        call, result = pair["call"]["payload"], pair["observation"]["payload"]
+        if called <= judge_at:
+            verify_solver_scoped_reads(pair, view, training, task, fb, contract)
+            # Fixed feedback/seal requests may be prepared before judging, but
+            # candidate creation itself must follow complete feedback observation.
+            if call.get("name") == "write_file":
+                args = json.loads(call["arguments"])
+                if args.get("file_path") == contract["output"]:
+                    raise ValueError("candidate was written before authorized feedback")
+                if posixpath.dirname(args.get("file_path", "")) == contract["request_dir"]:
+                    reflection_action(call, {**training, "agent_state": view["binding"]["agent_state"]}, task, requests)
+            require(observed <= judge_returned, "pre-judge operation completed after scoring boundary")
+            continue
+        require(called > judge_returned and called < observed, "post-judge actions must follow scoring observation")
+        require(not sealed, "no tool operation is allowed after successful reflection sealing")
+        action = reflection_action(call, {**training, "agent_state": view["binding"]["agent_state"]}, task, requests)
+        require(result.get("stop_reason") == "completed", "post-judge operation did not complete")
+        if action["kind"] == "candidate-write":
+            require(negative, "success cannot generate failure candidates")
+            require(called > observed_feedback, "full raw feedback must be observed before candidate writing")
+            writes.append(action["content"])
+        elif action["kind"] == "read-material":
+            receipt = material({**action["request"], "path": mapped.get(action["request"]["path"], action["request"]["path"])})
+            receipt["material_path"] = action["request"]["path"]
+            require(contains_json(result["output"], receipt), "reflection feedback read was incomplete or fabricated")
+        elif action["kind"] == "seal-role-output":
+            require(negative and called > observed_feedback and writes, "reflection seal requires feedback followed by a candidate draft")
+            output = regular(mapped.get(contract["output"], contract["output"])).read_bytes()
+            expected = role_seal_receipt(contract, view["binding"]["session_id"], reads, digest(output))
+            values = list(json_values(result.get("output", "")))
+            complete = [v for v in values if isinstance(v, dict) and v.get("op") == "seal-role-output" and v.get("complete") is True]
+            if complete:
+                require(complete == [expected], "reflection output differs from its original successful seal")
+                require(writes[-1].encode() == output, "sealed candidate file differs from original Solver write")
+                sealed, seal_id = True, call["tool_call_id"]
+            else:
+                require(not any(isinstance(v, dict) and v.get("complete") is True for v in values), "unbound complete reflection receipt")
+    base = {"mode": "solver-session", "task_id": task, "attempt_id": attempt,
+            "session_id": view["binding"]["session_id"], "answer_sha256": fb["answer_sha256"],
+            "judge_tool_call_id": judge["tool_call_id"], "feedback_sha256": digest(encoded(fb)),
+            "feedback_observed_at": observed_feedback}
+    if not negative:
+        require(not writes and not sealed, "successful Solver must not invent failure reflection")
+        return {**base, "status": "not-required"}
+    require(writes, "negative feedback requires the original Solver's explicit candidate decision")
+    candidate_raw = regular(mapped.get(contract["output"], contract["output"])).read_bytes()
+    require(writes[-1].encode() == candidate_raw, "candidate output changed after original Solver write")
+    candidates = json.loads(candidate_raw)
+    require(isinstance(candidates, list), "candidate output must be a JSON list; [] means an explicit empty decision")
+    require(all(c.get("id", "").startswith(task + "-" + attempt + "-") for c in candidates), "candidate namespace changed")
+    context = {"negative": True, "trace": view, "inputs": [{"sha256": fp} for _, _, fp in inputs]}
+    validate_candidates(candidates, {(task, attempt): context})
+    require(not require_seal or sealed, "negative feedback is missing original Solver reflection sealing")
+    return {**base, "status": "sealed" if sealed else "unsealed", "output": contract["output"],
+            "output_sha256": digest(candidate_raw), "seal_tool_call_id": seal_id,
+            "audit_request": {"op": "audit-role", "role": "reflector", "task_id": task,
+                              "binding": view["binding"], "traces": [s["path"] for s in view["sources"]],
+                              "materials": contract["materials"], "outputs": [contract["output"]],
+                              "role_text_path": contract["materials"][0], "require_role_seal": True}}
+
+
+def solver_completion(view, path_map=None, expected=None):
+    """Bind terminal Solver evidence to the original native background dispatch.
+
+    Child traces are sealed in full after reflection. The still-running parent
+    may append other tasks, so only its immutable prefix through this completion
+    notice is committed; no existing bytes may change.
+    """
+    mapped = path_map or {}
+    rows = [json.loads(line) for s in view["sources"]
+            for line in regular(mapped.get(s["path"], s["path"])).read_bytes().splitlines()]
+    events = [r["payload"] for r in rows if not r.get("origin") and r.get("type") == "event_msg"
+              and r.get("payload", {}).get("type") == "request_end"]
+    require(events and events[-1].get("status") == "completed", "original Solver needs a completed terminal request")
+    require(view["messages"] and view["messages"][-1]["payload"].get("type") == "text"
+            and view["messages"][-1]["payload"].get("role") == "assistant", "original Solver must return after its final tool observation")
+    prompt = next(m["payload"]["text"] for m in view["messages"]
+                  if m["payload"].get("role") == "user" and m["payload"].get("sender") == "parent_agent")
+    first_path = view["binding"]["parent_trace"]
+    first_rows = [json.loads(line) for line in regular(mapped.get(first_path, first_path)).read_bytes().splitlines()]
+    metas = [r["payload"] for r in first_rows if r.get("type") == "session_meta" and not r.get("origin")]
+    require(len(metas) == 1, "original training parent metadata missing")
+    parent = metas[0]
+    for key in ("provider", "model_id", "workspace", "agent_state"):
+        require(parent.get(key) == view["binding"][key], "original Solver parent runtime changed")
+    if expected is not None:
+        sources = expected.get("sources", [])
+        require(sources and any(s["path"] == first_path for s in sources), "missing original parent completion prefix")
+    else:
+        paths = sorted(Path(first_path).parent.glob(parent["session_id"] + "_*.jsonl"))
+        if Path(first_path) not in paths:
+            paths.append(Path(first_path)); paths.sort()
+        sources = [{"path": str(p), "bytes": len(regular(p).read_bytes())} for p in paths]
+    parent_rows, loaded = [], []
+    for source in sources:
+        raw = regular(mapped.get(source["path"], source["path"])).read_bytes()
+        prefix = raw[:source["bytes"]]
+        require(len(prefix) == source["bytes"] and prefix.endswith(b"\n"), "parent completion prefix is incomplete")
+        if expected is not None:
+            require(digest(prefix) == source["sha256"], "original parent completion prefix changed")
+        segment_rows = [json.loads(line) for line in prefix.splitlines()]
+        segment_metas = [r["payload"] for r in segment_rows if r.get("type") == "session_meta" and not r.get("origin")]
+        require(len(segment_metas) == 1 and all(segment_metas[0].get(key) == parent.get(key)
+                for key in ("session_id", "source", "provider", "model_id", "workspace", "agent_state")),
+                "original parent segment identity changed")
+        offset = 0
+        for line in prefix.splitlines(keepends=True):
+            offset += len(line)
+            row = json.loads(line)
+            if not row.get("origin"):
+                parent_rows.append((source["path"], offset, row))
+        loaded.append({"path": source["path"], "bytes": len(prefix), "sha256": digest(prefix)})
+    def matching_call(payload):
+        if payload.get("type") != "tool_call" or payload.get("name") != "run_subagent":
+            return False
+        call = json.loads(payload["arguments"])
+        if call.get("prompt") != prompt and not ("prompt" not in call and call.get("prompt_sha256") == digest(prompt.encode())
+                                                 and isinstance(call.get("prompt_file"), str)):
+            return False
+        require(call.get("run_in_background") is True and all(call.get(k) == view["binding"][k] for k in ("provider", "model_id")),
+                "original Solver must use the frozen native background call")
+        return True
+    calls = [(i, r["payload"]) for i, (_, _, r) in enumerate(parent_rows)
+             if r.get("type") == "model_msg" and matching_call(r.get("payload", {}))]
+    require(len(calls) == 1, "one original Solver dispatch required")
+    call_at, call = calls[0]
+    outputs = [(i, r["payload"]) for i, (_, _, r) in enumerate(parent_rows)
+               if r.get("type") == "model_msg" and r.get("payload", {}).get("type") == "tool_call_output"
+               and r["payload"].get("tool_call_id") == call["tool_call_id"]]
+    require(len(outputs) == 1 and outputs[0][0] > call_at, "original Solver launch result missing")
+    handles = re.findall(r"\bsubagent_id ([A-Za-z0-9_-]+)(?:[;\]\s])", outputs[0][1]["output"])
+    require(len(handles) == 1, "original Solver native handle missing")
+    require(any(r.get("type") == "event_msg" and r.get("payload", {}).get("type") == "subagent"
+                and r["payload"].get("session_id") == view["binding"]["session_id"] for _, _, r in parent_rows), "original Solver parent pointer missing")
+    notices = []
+    for i, (path, offset, row) in enumerate(parent_rows):
+        p = row.get("payload", {})
+        if p.get("type") != "text" or p.get("sender") != "harness":
+            continue
+        block = re.match(r"(?:\[background_task_done\]\n(.*?)\n\[/background_task_done\]|<background_task_done>\n(.*?)\n</background_task_done>)", p.get("text", ""), re.S)
+        if block:
+            values = dict(re.findall(r"^(kind|id|status):\s*(\S+)\s*$", block[1] or block[2], re.M))
+            if values.get("kind") == "subagent" and values.get("id") == handles[0]:
+                notices.append((i, path, offset, values))
+    require(len(notices) == 1 and notices[0][0] > outputs[0][0] and notices[0][3].get("status") == "completed",
+            "original Solver requires its completed native background notice")
+    end_path, end_offset = notices[0][1:3]
+    committed = []
+    for source in loaded:
+        if source["path"] == end_path:
+            raw = regular(mapped.get(end_path, end_path)).read_bytes()[:end_offset]
+            committed.append({"path": end_path, "bytes": end_offset, "sha256": digest(raw)})
+            break
+        committed.append(source)
+    return {"parent_session_id": parent["session_id"], "subagent_id": handles[0],
+            "dispatch_tool_call_id": call["tool_call_id"], "sources": committed, "status": "completed"}
 
 
 def guarded_role_contract(req):
@@ -1053,7 +1377,7 @@ def seal_role_output(req, request_path):
         if path.name.endswith(".claimed.json"):
             continue
         ticket = read(path)
-        if (ticket.get("phase") == contract["role"] and ticket.get("task_id") == contract["task_id"]
+        if (ticket.get("phase") == contract.get("dispatch_phase", contract["role"]) and ticket.get("task_id") == contract["task_id"]
                 and native_prompt(ticket.get("call")) == prompts[0]):
             claim = read(path.parent / (digest(ticket["slot"].encode()) + ".claimed.json"))
             require(claim["request_sha256"] == digest(json.dumps(ticket["call"], sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()),
@@ -1085,6 +1409,12 @@ def seal_role_output(req, request_path):
     require(standalone_helper_request({"call": {"payload": active}}, {"binding": binding}) == str(request_path),
             "seal must be one literal foreground helper command in the current native Session")
     view = trace_view([str(path) for path in traces], binding, active_call=active["tool_call_id"])
+    if contract.get("reflection_mode") == "solver-session":
+        require(not any(value.get("op") == "seal-role-output" and value.get("complete") is True
+                        for pair in view["pairs"] if standalone_helper_request(pair, view)
+                        for value in json_values(pair["observation"]["payload"]["output"])
+                        if isinstance(value, dict)),
+                "original Solver reflection is already sealed; preserve the existing receipt and return")
     records = material_records(contract["materials"])
     reads, _, missing = material_read_status(view, records, standalone=True)
     if missing:
@@ -1092,7 +1422,10 @@ def seal_role_output(req, request_path):
                 "missing_reads": missing[:64], "missing_read_count": len(missing), "more_missing_reads": len(missing) > 64,
                 "next_action": "In this same leaf, read each listed offset in one standalone literal helper exec; await complete output, then retry sealing to check any remaining offsets. Do not rerun Solver/judge or ask the parent to edit content."}
     validation = contract["validation"]
-    if contract["role"] == "reflector":
+    if contract.get("reflection_mode") == "solver-session":
+        fb = read(contract["materials"][1])
+        verify_solver_reflection(view, fb, require_seal=False)
+    elif contract["role"] == "reflector":
         validate_candidate_file(validation)
     else:
         validate_decisions(validation)
@@ -1108,6 +1441,9 @@ def seal_role_output(req, request_path):
 def audit_role(req):
     view = trace_view(req["traces"], req["binding"], req.get("path_map"))
     contract = guarded_role_contract(req)
+    if contract and contract.get("reflection_mode") == "solver-session":
+        fb = read(req.get("path_map", {}).get(contract["materials"][1], contract["materials"][1]))
+        verify_solver_reflection(view, fb, req.get("path_map"))
     materials = contract["materials"] if contract else req["materials"]
     reads, last_read = verify_material_records(view, material_records(materials, req.get("path_map")), standalone=contract is not None)
     outputs = []
@@ -1223,11 +1559,22 @@ def seal_training(req):
         require(role["role"] in ("reflector", "evolver"), "invalid learning role")
         require(role["role_text_path"] in role["materials"], "role text missing")
         require(len(role["outputs"]) == 1, "one role output required")
-        require(role["binding"]["session_id"] not in sessions, "learning roles require fresh sessions")
-        sessions.add(role["binding"]["session_id"])
+        original = next((c for c in contexts if c["task_id"] == role.get("task_id")), None)
+        in_solver = (role["role"] == "reflector" and original is not None
+                     and original.get("reflection", {}).get("mode") == "solver-session")
+        if in_solver:
+            require(role["binding"] == original["trace"]["binding"]
+                    and role["traces"] == [s["path"] for s in original["trace"]["sources"]],
+                    "reflection must retain the original Solver history and Session")
+            require({k: v for k, v in role.items() if k != "op"} ==
+                    {k: v for k, v in original["reflection"]["audit_request"].items() if k != "op"},
+                    "reflection audit differs from captured original Solver")
+        else:
+            require(role["binding"]["session_id"] not in sessions, "learning roles require fresh sessions")
+            sessions.add(role["binding"]["session_id"])
         if role["role"] == "reflector":
             context_path = next(p for p, c in zip(req["contexts"], contexts) if c["task_id"] == role["task_id"])
-            require(context_path in role["materials"], "Reflector did not read assigned context")
+            require(in_solver or context_path in role["materials"], "Reflector did not read assigned context")
             proposals = read(role["outputs"][0])
             require(all(c["task_id"] == role["task_id"] for c in proposals), "Reflector output crosses task boundary")
             reflected.extend(proposals)
@@ -1250,6 +1597,7 @@ def seal_training(req):
     members = {}
     for path, c in zip(req["contexts"], contexts):
         trace_paths.update(s["path"] for s in c["trace"]["sources"])
+        trace_paths.update(s["path"] for s in c.get("completion", {}).get("sources", []))
         if c["trace"]["binding"].get("parent_trace"):
             trace_paths.add(c["trace"]["binding"]["parent_trace"])
         members[c["task_id"]] = {"answer_sha256": c["answer_sha256"], "attempt_id": c["attempt_id"],
@@ -1273,6 +1621,8 @@ def seal_training(req):
               "skill_sha256": validate_package(req["skill"])["sha256"]}
     if training_root is not None:
         record["training_root"] = training_root
+    if all(c.get("reflection", {}).get("mode") == "solver-session" for c in contexts):
+        record["reflection_mode"] = "solver-session"
     write_once(req["output"], encoded(record))
     return record
 
@@ -1324,6 +1674,10 @@ def capture(req):
               "feedback": fb, "negative": negative, "trace": view}
     if judge_receipt is not None:
         record["judge_request"] = judge_receipt
+        reflection = verify_solver_reflection(view, fb)
+        if reflection is not None:
+            record["reflection"] = reflection
+            record["completion"] = solver_completion(view)
     write_once(req["output"], encoded(record))
     return {"path": req["output"], "sha256": digest(encoded(record)), "negative": negative}
 
@@ -1371,6 +1725,11 @@ def validate_contexts(contexts, train_ids, path_map=None):
                     == c["judge_request"], "captured judge operation changed")
             verify_solver_skill(actual, c["feedback"], path_map)
             require(c["feedback"]["request"]["answer"] == c["answer"], "judge submitted a different answer")
+            reflection = verify_solver_reflection(actual, c["feedback"], path_map, input_records=c["inputs"])
+            if reflection is not None:
+                require(reflection == c.get("reflection"), "captured Solver reflection changed")
+                require(solver_completion(actual, path_map, c.get("completion")) == c.get("completion"),
+                        "captured Solver terminal evidence changed")
     return {(c["task_id"], c["attempt_id"]): c for c in contexts}
 
 

@@ -11,7 +11,7 @@ against that same local commit on 2026-10-22.
 The paper formalizes frozen solver weights, relevant selection under a budget,
 failure/negative-feedback reflection into lesson/trigger/evidence/scope_hint,
 then batch compilation with ADD/MERGE/REVISE/SKIP into general and topic skills.
-Reflection is not final curation. Do not give the Reflector the library to
+Reflection is not final curation. Do not give the reflecting Solver extra library material to
 compare against. The Evolver receives both candidates and existing entries.
 The learning product is a coherent method for future tasks: observable need,
 required information, operations, result and use. Preserve effective operations
@@ -19,11 +19,23 @@ while addressing supported gaps; neither a reminder list nor an invented rule
 deduced from a low score serves that purpose.
 
 The release has benchmark-specific vocabulary: CL proposals NEW/ENHANCE/NONE,
-curation ACCEPT/MERGE/SKIP, and general NEW/UPDATE/DELETE. Its CL reflector can
-see existing context skills, unlike the separation stated in paper §3.2.
-This implementation follows the paper's explicit four-operation formulation
-and isolated reflection, records the discrepancy, and does not claim byte-for-
-byte reproduction of one benchmark launcher. The CL general curator's repeated-
+curation ACCEPT/MERGE/SKIP, and general NEW/UPDATE/DELETE. The actual CL path is
+`solve_raw → _process_one_task → _propose_in_context`: solve_raw retains the
+system prompts, user/assistant messages, client and model_id; the proposal
+function copies those messages and appends feedback to the same Solver context.
+It is not a fresh Reflector Agent. This version preserves that continuity with
+one native Solver run through scoring, full feedback observation and reflection,
+then captures the terminal trace. No second model or reconstructed conversation
+is used. The negative-feedback predicate and exactly-one judge are the frozen
+GDPevo protocol; the official launcher's transport retries/rephrased feedback
+are not additional permissions here.
+
+CL also supplies existing context-skill descriptions at proposal time. This
+adaptation follows the paper's separation from final curation: the Solver keeps
+already-seen pre-batch guidance but receives no extra library retrieval during
+reflection. The independent Evolver performs batch curation using the paper's
+explicit four-operation formulation. These differences are recorded, not a
+claim of byte-for-byte reproduction of one benchmark launcher. The CL general curator's repeated-
 context threshold is not imposed on localized topic rules. Useful enterprise
 rules may be supported by a single authorized training task.
 
@@ -84,3 +96,10 @@ training-record walkthrough, not another role, execution or scoring round.
 
 No Wiki database, one-candidate edit loop, strictly-improving acceptance gate,
 TRACE contrastive trajectories, SkillAdam edit budget, or test-driven selection.
+
+Revision 2026.10.22.3 replaces 2026.10.22.2's separate Reflector Session.
+Earlier frozen runs and their verdicts remain historical evidence; they are
+not relabelled as having used in-session reflection. Post-score tool boundaries
+are verified from the original paired trace and bound helper receipts. Native
+leaves do not run root hooks, so this is cooperative execution acceptance, not
+an arbitrary-code runtime sandbox. Violations block compilation and testing.

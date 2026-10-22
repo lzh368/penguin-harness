@@ -2,8 +2,7 @@
 
 The main Penguin owns training → compile/freeze → H0 tests → final tests.
 One native evaluation child handles the single continuous Harbor training case.
-Harbor starts a fresh native training root with one level of Solver, Reflector
-and Evolver leaves. The five members share its workspace and business service;
+Harbor starts a fresh native training root with one level of Solver and Evolver leaves. The five members share its workspace and business service;
 they are not five independent Harbor trials. See [control.md](control.md).
 
 ## Host preparation and worker
@@ -15,7 +14,7 @@ method_hooks, training_budget_usd and host_operation_id. method_hooks is the
 native installed hooks/evo-harness-rsi-toolkit directory, including hooks.json,
 guard.mjs and icon.svg, not the source plugin's uninstalled hooks directory.
 Preparation installs the exact method Skill and native hook package, enables
-Trainer hooks and writes guard_version=2 training.json; the test Target's hooks
+Trainer hooks and writes guard_version=2 and reflection_mode=solver-session in training.json; the test Target's hooks
 stay disabled. Never copy host credentials or test materials into Trainer State.
 
 training.json freezes train_ids, attempt_id=attempt-1, limits,
@@ -98,8 +97,10 @@ native traces or role-authored candidates/decisions.
 2. In listed member order request role-request with role=solver and task_id.
    The helper constructs the full role prompt, literal evo_task grant, public
    text inputs, binary hashes, exact answer/judge paths and frozen runtime.
-   Invoke its returned run_subagent call unchanged. Await this leaf before the
-   next Solver; the service is shared. Do not send candidates to later Solvers.
+   Invoke its returned run_subagent call unchanged. This one Solver keeps its
+   native conversation through the single judge, complete raw feedback and,
+   for negative feedback, candidate generation and sealing. Its allocation
+   covers solving and reflection together. Await this leaf before the next Solver; the service is shared. Do not send candidates to later Solvers.
 3. After the Solver's native completed notification, write one control request:
    `{"op":"prepare-capture","trace_path":"<your current original root trace>","task_id":"<member>"}`.
    Execute it with the installed control.py, then execute its returned exact
@@ -123,28 +124,22 @@ native traces or role-authored candidates/decisions.
    for truncated native output, lines over 2000 UTF-16 units or files at least
    8 MiB. Learning-role materials and feedback still require helper receipts. Transport, parse,
    identity or evidence failure ends this batch as method_failed.
-4. For each negative captured execution, request one role=reflector for that
-   task and invoke the exact returned call. It reads its full role/context and
-   writes private_learning/roles/<task_id>/candidates.json. Candidate ids use
-   the fixed task/attempt prefix; the role validates its own draft before
-   seal-role-output. The same child resolves any missing-read/structure error
-   before a successful seal; root never sends another instruction or rewrites it.
-   Audit its original trace/material/output bindings. Successful
-   executions have no Reflector or candidate. Do not rewrite candidates.
-5. Once all five contexts and eligible Reflectors are complete, request
-   role=evolver with reflectors containing every negative task's original
-   audit-role request, in frozen task order (each includes role, task_id,
-   role_text_path, traces, binding, materials and outputs). Use [] when all
-   five executions succeeded. The helper re-audits these roles and their
-   task/attempt candidate namespaces before concatenating arrays without edits;
-   a failed Reflector blocks Evolver dispatch. The Evolver receives the actual
-   frozen private entry ceilings and full-file UTF-8 budget, and checks its own
-   draft with validate-decisions
-   before sealing. Invoke the returned call; the Evolver reads all
-   contexts, candidates and prebatch-library.json and writes decisions.json.
-   Zero candidates still requires a real Evolver call and explicit [] output.
-   It uses seal-role-output to verify complete actual reads and structure; any
-   missing-read repair occurs in that same child before success. Audit its seal.
+4. Check the captured context's reflection binding. For negative feedback it
+   must contain the original Solver's complete sealed candidate audit, even
+   when its output array is empty. Successful tasks have no reflection output.
+   The internal role label `reflector` names a phase of that Solver Session;
+   never request role=reflector or create another Agent. Do not edit candidates,
+   replay a finished reflection, or send a nonempty continuation to the Solver.
+5. Once all five terminal contexts are complete, request role=evolver. The
+   helper derives each required reflection audit from its captured context,
+   verifies the original Solver identity, feedback/answer/order and output,
+   and concatenates candidates without edits. Do not hand-supply a replacement
+   learner identity. The Evolver receives all contexts, candidates and
+   prebatch-library.json plus the frozen entry ceilings and full-file budget.
+   It validates its own decisions, then seals decisions.json. Zero candidates
+   still requires this real Evolver call and explicit [] output. Missing-read
+   or structural repair occurs in that same child before sealing. Audit its
+   original completed trace and successful seal.
 6. Write a compile request using the five contexts, candidates.json,
    decisions.json, prebatch-library.json and frozen limits; execute evo.py.
    Export the resulting library with unchanged limits/max_bytes as one complete
@@ -169,8 +164,9 @@ native traces or role-authored candidates/decisions.
    Private artifacts never enter the skill slot.
 7. Write a control request inside private_learning/requests/ with
    op="prepare-seal-training", your trace_path and role_requests (absolute
-   paths to all completed Reflector/Evolver audit-role requests inside
-   private_learning/requests/, in negative-task order followed by Evolver).
+   path to the completed independent Evolver audit-role request inside
+   private_learning/requests/). Solver reflection audits are derived from the
+   five captured contexts, never copied into a new Session identity.
    Execute it with the installed control
    helper. It copies the complete frozen runtime and limits, derives the
    canonical evidence paths, and writes requests/seal-training.json without
@@ -182,7 +178,9 @@ native traces or role-authored candidates/decisions.
    without new solving/scoring. An existing export is never overwritten.
    The stop hook rechecks this request and complete export.
    Missing reflection/compilation/trace/seal evidence is failure, not no-op.
-8. Wait for all native children to finish and return their evidence paths and
+8. Account for each Solver Session once, including its reflection. Reflection
+   audit records do not create another expense; unknown final usage remains
+   reserved until the native total settles. Wait for all native children to finish and return their evidence paths and
    costs/unknown liabilities. Harbor then exports artifacts and terminates.
    The host, not this training root, installs the exact package and runs tests.
 
