@@ -122,6 +122,28 @@ class SolverSkillTests(unittest.TestCase):
         evo.validate_contexts([context], ["train_001"])
         self.assertEqual(context["feedback"], self.feedback)
 
+    def test_complete_reader_prefix_followed_by_discovery_survives_capture(self):
+        command = "cat " + self.target + '; echo "-----"; ls -R ' + str(Path(self.target).parent.parent)
+        observed = self.pair("exec_command", {"cmd": command}, self.raw.decode() + "-----\nSYNTHETIC Skill names\n", "prefix-h0")
+        self.write(self.rows[:2] + observed + self.rows[4:])
+        context = evo.read(evo.capture(self.request)["path"])
+        evo.validate_contexts([context], ["train_001"])
+        self.assertEqual(context["feedback"], self.feedback)
+
+    def test_business_in_same_call_after_full_cat_is_still_before_model_observation(self):
+        for suffix in ('; curl http://business.invalid/items', '; touch /app/answer'):
+            observed = self.pair("exec_command", {"cmd": "cat " + self.target + suffix}, self.raw.decode(), "premature-business")
+            self.assert_rejected(self.rows[:2] + observed + self.rows[4:], "not fully observed")
+
+    def test_unrecognized_earlier_preparation_reports_specific_evidence_gap(self):
+        command = 'for f in /app/input/payloads/*; do echo "=== $f ==="; cat "$f"; echo; done'
+        earlier = self.pair("exec_command", {"cmd": command}, "SYNTHETIC public payload display", "unverified-preparation")
+        self.write(self.rows[:2] + earlier + self.rows[2:])
+        with self.assertRaisesRegex(ValueError, "cannot verify pre-read call unverified-preparation under the finite inspection protocol"):
+            evo.capture(self.request)
+        self.assertFalse(Path(self.request["output"]).exists())
+        self.assertEqual(Path(self.f["paths"]["output"]).read_bytes(), self.feedback_bytes)
+
     def test_real_actions_before_combo_observation_remain_violations(self):
         command = "ls -la /app/input && echo '---' && cat " + self.target
         observed = self.pair("exec_command", {"cmd": command}, "total 0\n---\n" + self.raw.decode(), "combined-h0")

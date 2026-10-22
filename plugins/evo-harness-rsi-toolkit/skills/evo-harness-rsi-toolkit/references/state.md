@@ -55,11 +55,17 @@ abandoned/measured version numbers. Use the shared snapshot shape, atomically:
 cd "<TARGET>"
 mkdir -p snapshots
 # If v<N>.tar.gz exists, validate/reuse it; never overwrite it.
-tar --exclude=.vault.toml -czf snapshots/v<N>.tar.gz.tmp agent_state
+tar --exclude=agent_state/.vault.toml --exclude=agent_state/memory --exclude=agent_state/schedule -czf snapshots/v<N>.tar.gz.tmp agent_state
 mv snapshots/v<N>.tar.gz.tmp snapshots/v<N>.tar.gz
 ```
 
-Record all State file hashes except `.vault.toml`. Immediately before and after
+Record all transported State file hashes, excluding only the top-level
+`.vault.toml`, `memory/` and `schedule/`, exactly as the native transport and
+container State inventory do. Preserve every Skill, `AGENTS.md` and configuration
+byte; similarly named files inside Skills are not excluded. Snapshot archives
+must already omit these three roots; the checker does not silently remove them
+from an old snapshot. Existing snapshots and their original audits stay intact.
+Immediately before and after
 every evaluation matrix compare State hashes; a mutation invalidates it. The
 Harbor evaluator packs State using the shared evaluation protocol, excluding
 vault, memory and schedule, and passes `agent_state_tar`. Do not copy scratch,
@@ -96,7 +102,8 @@ packages use H0 measurements as reuse, never another score chosen afterward.
 For guarded continuous GDPevo, first validate the full verify-export request,
 then create the freeze request described in [control.md](control.md). Its native
 snapshots contain agent_state/ as their root, unlike the worker's State-only
-transport tar. verify-freeze compares every State file and the full learned
+transport tar. Both omit the three top-level transport exclusions above.
+verify-freeze compares every transported State file and the full learned
 package. Only the declared Reader/method Skill paths and one native plain top-level
 integer version may differ; the combined package byte budget remains fixed. H0 is always the same
 valid Reader format with empty rules. Changed guidance requires final_version > h0_version. An equivalent

@@ -961,7 +961,7 @@ def solver_skill_observation(view, training, task_id, attempt_id, allow_missing=
                                            workspace, slot, public, public_input, preparation_files=preparation):
             complete = observed if complete is None else min(complete, observed)
     if not allow_missing:
-        require(complete is not None, "Solver frozen H0 Skill was not fully observed through native read_file or exact foreground cat")
+        require(complete is not None, f"Solver frozen H0 Skill was not fully observed through native read_file or exact foreground cat: missing complete, exact observation of {target}; use the frozen Reader read_calls native read_file calls to supply remaining evidence")
     for pair, (called, _) in zip(view["pairs"], positions):
         if complete is not None and called >= complete:
             continue
@@ -973,9 +973,12 @@ def solver_skill_observation(view, training, task_id, attempt_id, allow_missing=
                     "only granted public files, this native State's AGENTS.md/training.json or the frozen H0 Skill may be read before its complete observation")
         else:
             require(call.get("name") == "exec_command", "task actions may not precede the complete Solver H0 Skill read")
-            inspection._readonly_commands(call, workspace, slot, public, public_input, preparation_files=preparation)
+            try:
+                inspection._readonly_commands(call, workspace, slot, public, public_input, preparation_files=preparation)
+            except ValueError as exc:
+                raise ValueError(f"{exc}; cannot verify pre-read call {call.get('tool_call_id', '<missing>')} under the finite inspection protocol before complete observation of {target}") from exc
     if complete is None:
-        require(allow_missing, "Solver frozen H0 Skill was not fully observed through native read_file or exact foreground cat")
+        require(allow_missing, f"Solver frozen H0 Skill was not fully observed through native read_file or exact foreground cat: missing complete, exact observation of {target}; use the frozen Reader read_calls native read_file calls to supply remaining evidence")
         return None
     return {"path": target, "sha256": digest(expected), "bytes": len(expected), "observed_at": complete}
 
@@ -2082,11 +2085,11 @@ All general descriptions are already complete in this Reader; never read their
 SKILL.md bodies. All five tests load this same frozen set. Empty entries and
 read_calls are normal H0: finish the Reader, with no additional method bodies.
 
-Prefer this native read plan before payload inspection. One foreground literal
-cat per required file is also accepted with exact complete stdout, optionally
-after literal cd/pwd/ls and short echo separators joined by &&; no pipe or
-redirection. Neither a directory listing nor an instruction/config read proves
-a Skill read. Do not change State or output limits.
+Prefer this native read plan before payload inspection. One complete foreground
+cat of one exact required file may accompany supported read-only discovery.
+Preserve exact, untruncated stdout; business actions require a later tool call
+after the complete output is observed. Neither a directory listing nor an
+instruction/config read proves a Skill read. Do not change State or output limits.
 
 Preparation may read exact own State AGENTS.md and public task files. A guarded
 training Solver may also read its exact own toolkit/training.json; tests gain

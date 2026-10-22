@@ -25,6 +25,11 @@ class ReadPlanTests(unittest.TestCase):
   raw=evo.render_skill([],16000);cmd='cd /app && cat '+self.slot+'/SKILL.md'
   self.assertTrue(self.ins.complete_file_stdout(self.call(cmd),raw.decode(),raw,self.slot+'/SKILL.md','/app',self.slot))
   self.assertFalse(self.ins.complete_file_stdout(self.call('cat /state/AGENTS.md'),'native instructions',raw,self.slot+'/SKILL.md','/app',self.slot))
+ def test_actual_reader_prefers_native_plan_and_separates_business_from_observation(self):
+  raw=evo.render_skill([],16000).decode()
+  self.assertLess(raw.index('Prefer this native read plan'),raw.index('cat of one exact required file'))
+  self.assertIn('business actions require a later tool call\nafter the complete output is observed',raw)
+  self.assertEqual(evo.parse_reader(raw.encode())['read_calls'],[])
  def test_complete_native_topic_page_plan_excludes_general_bodies(self):
   f=test_full_skill.FullSkillTests('runTest');f.setUp();self.addCleanup(f.doCleanups);entries=copy.deepcopy(f.entries[:1]+f.entries[-2:]);entries[-1]['body']='row\n'*1100
   files=evo.render_package(entries,16000);reader=evo.parse_reader(files['SKILL.md']);calls=reader['read_calls'];self.assertTrue(calls)

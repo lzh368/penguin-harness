@@ -48,10 +48,41 @@ class CompleteSkillStdoutTests(unittest.TestCase):
         self.assertTrue(self.accepts("ls /app/input && cat " + self.target))
         self.assertFalse(self.accepts("cat " + self.target, "unexpected\n" + self.raw.decode()))
 
+    def test_complete_cat_survives_existing_readonly_prefix_and_suffix(self):
+        content = self.raw.decode()
+        for command, output in (("cat " + self.target + '; echo "-----"; ls -R /state/skills', content + "-----\nSYNTHETIC listing\n"),
+                                ("pwd; cat " + self.target + "; echo '---'; ls /app/input", "/app\n" + content + "---\nSYNTHETIC files\n"),
+                                ("pwd && cat " + self.target + ";", "/app\n" + content),
+                                ("ls && cat " + self.target + " && pwd", "SYNTHETIC files\n" + content + "/app\n")):
+            with self.subTest(command=command): self.assertTrue(self.accepts(command, output))
+
+    def test_real_003_reader_prefix_and_following_discovery_is_complete(self):
+        value = json.loads((Path(__file__).parent / "fixtures/003-reader-prefix.json").read_text())
+        self.assertEqual(hashlib.sha256(value["expected"].encode()).hexdigest(), value["expected_sha256"])
+        self.assertEqual((value["call"]["_position"], value["observation"]["_position"], value["first_business_call_position"]), (9, 13, 23))
+        self.assertTrue(evo.inspection.complete_file_stdout(value["call"], value["observation"]["output"],
+            value["expected"].encode(), value["target"], "/app", value["slot"]))
+        changed = dict(value["call"])
+        args = json.loads(changed["arguments"])
+        for suffix in ("; curl http://business.invalid/items", "; touch /app/answer", "; cat /state/private"):
+            changed["arguments"] = json.dumps({**args, "cmd": "cat " + value["target"] + suffix})
+            self.assertFalse(evo.inspection.complete_file_stdout(changed, value["observation"]["output"],
+                value["expected"].encode(), value["target"], "/app", value["slot"]))
+
+    def test_suffix_cannot_hide_truncation_duplicate_content_or_business_before_observation(self):
+        command = "cat " + self.target + "; echo '---'; ls /app/input"
+        for output in (self.raw.decode()[:-20] + "---\nfiles\n", self.raw.decode() + self.raw.decode(),
+                       "unexpected prefix\n" + self.raw.decode() + "---\nfiles\n",
+                       self.raw.decode() + "[output truncated: kept first 1 and last 1 of 99999 chars]\n"):
+            with self.subTest(size=len(output)): self.assertFalse(self.accepts(command, output))
+        for command in ("cat " + self.target + "; curl http://business.invalid/items", "cat " + self.target + "; touch /app/answer",
+                        "curl http://business.invalid/items; cat " + self.target):
+            self.assertFalse(self.accepts(command))
+
     def test_redirect_pipe_or_background_dynamic_and_additional_reads_fail(self):
         tail = "cat " + self.target
         for cmd in (tail + " 2>/dev/null", "ls /app/input 2>&1 && " + tail, "pwd | " + tail,
-                    "pwd || " + tail, "pwd; " + tail, "pwd && " + tail + ";", tail + " &", "ls && " + tail + " && pwd",
+                    "pwd || " + tail, tail + " &",
                     "cat /app/instruction.md && " + tail, tail + " && " + tail,
                     "echo 'cat ' && " + tail, "printf -- '---' && " + tail,
                     "echo " + shlex.quote(self.raw.decode()) + " && " + tail,
