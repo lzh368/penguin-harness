@@ -2499,9 +2499,10 @@ def context_read_calls(entries, files):
     return calls
 
 
-def render_package(entries, max_bytes):
+def render_package(entries, max_bytes, *, general_storage="full"):
     """Package each complete authored method; never choose or rewrite its rules."""
     require(type(max_bytes) is int and 0 < max_bytes <= 16000, "invalid byte budget; group maximum is 16000 UTF-8 bytes")
+    require(general_storage in ("full", "description-only"), "unknown general storage policy")
     validate_entries(entries, {"general": len(entries), "topic": len(entries)})
     manifest = {"schema": FULL_SKILL_SCHEMA, "max_bytes": max_bytes, "entries": [], "read_calls": []}
     files = {}
@@ -2511,6 +2512,11 @@ def render_package(entries, max_bytes):
         topic = f"Topic: {entry['topic']}\n" if entry["level"] == "topic" else ""
         raw = (method_prefix(entry["id"], entry["level"], entry.get("description")) + topic +
                f"Trigger: {entry['trigger']}\nScope: {entry['scope']}\n\n{entry['body']}\n").replace("\r\n", "\n").encode()
+        description_only = entry["level"] == "general" and general_storage == "description-only"
+        if description_only:
+            # The authored body stays in the private compiled library. The
+            # test package cannot disclose additional rules through file reads.
+            raw = method_prefix(entry["id"], "general", entry["description"]).replace("\r\n", "\n").encode()
         require(path not in files, "native method name collision")
         validate_skill_readability(raw)
         files[path] = raw
@@ -2518,6 +2524,7 @@ def render_package(entries, max_bytes):
                                     "path": path, "state_path": state_path,
                                     "bytes": len(raw), "sha256": digest(raw),
                                     "load_mode": "description" if entry["level"] == "general" else "body",
+                                    **({"body_storage": "description-only"} if description_only else {}),
                                     **({"description": entry["description"]} if entry["level"] == "general" else {})})
     manifest["read_calls"] = context_read_calls(manifest["entries"], files)
     files["SKILL.md"] = READER.encode() + FULL_SKILL_OPEN.encode() + encoded(manifest) + FULL_SKILL_CLOSE.encode()
@@ -2547,6 +2554,10 @@ def parse_reader(raw):
     ids, names = [], []
     for entry in manifest["entries"]:
         keys = {"id", "level", "name", "path", "state_path", "bytes", "sha256", "load_mode"}
+        if isinstance(entry, dict) and "body_storage" in entry:
+            require(entry.get("level") == "general" and entry["body_storage"] == "description-only",
+                    "description-only storage is restricted to general entries")
+            keys.add("body_storage")
         require(isinstance(entry, dict) and set(entry) == keys | ({"description"} if entry.get("level") == "general" else set()),
                 "invalid multi-Skill entry manifest")
         require(entry["load_mode"] == ("description" if entry["level"] == "general" else "body"),
@@ -2579,6 +2590,9 @@ def validate_package_files(files):
         raw = files[entry["path"]]
         require(len(raw) == entry["bytes"] and digest(raw) == entry["sha256"], "Skill body fingerprint mismatch")
         require(raw.startswith(method_prefix(entry["id"], entry["level"], entry.get("description")).encode()), "native Skill identity mismatch")
+        if entry.get("body_storage") == "description-only":
+            require(raw == method_prefix(entry["id"], "general", entry["description"]).replace("\r\n", "\n").encode(),
+                    "description-only general file contains additional content")
         validate_skill_readability(raw)
     require(manifest["read_calls"] == context_read_calls(manifest["entries"], files),
             "native context read plan differs from complete frozen files")
@@ -2828,7 +2842,7 @@ def publish_skill(stage, dest, placeholder):
 def export_skill(req):
     entries = read(req["library"])
     validate_entries(entries, req["limits"])
-    files = render_package(entries, req["max_bytes"])
+    files = render_package(entries, req["max_bytes"], general_storage=req.get("general_storage", "full"))
     dest = Path(req["output"])
     require(not dest.is_symlink(), "export destination is a symlink")
     check_prior_publication(dest)

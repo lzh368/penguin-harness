@@ -105,6 +105,14 @@ All five final tasks receive the same context bodies and general descriptions.
 General body reads remain outside the description-only loading policy. Loading a rule does not
 make its applicability conditions true. Never shorten or drop rules at injection.
 
+An explicitly authorized new compilation may export with
+`general_storage: description-only`. The deterministic exporter retains each
+general description and identity in its native file, marks body_storage in the
+manifest, and leaves the authored general body in the private compiled library.
+Topic files remain complete. This prevents later file inspection from exposing
+additional general rules; it does not turn extra body reads in old runs into
+valid loading. Existing frozen exports and legacy storage remain unchanged.
+
 Archive old State, stage the exact new learned file set, increment State version, snapshot and
 hash before evaluation. On a failure retain the interrupted version and
 evidence; do not silently publish an empty package. Exact H0-equivalent

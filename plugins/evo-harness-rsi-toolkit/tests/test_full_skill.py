@@ -98,6 +98,37 @@ class FullSkillTests(unittest.TestCase):
             self.assertEqual(len(files), 2)
             self.assertEqual([item["level"] for item in evo.parse_reader(files["SKILL.md"])["entries"]], [entry["level"]])
 
+    def test_description_only_storage_keeps_body_private_and_topic_complete(self):
+        private_before = self.library.read_bytes()
+        files = evo.render_package(self.entries, 16000, general_storage="description-only")
+        manifest = evo.validate_package_files(files)
+        state = evo.package_state_files(files)
+        for original, item in zip(self.entries, manifest["entries"]):
+            raw = state[item["state_path"]]
+            self.assertEqual(raw, files[item["path"]])
+            if original["level"] == "general":
+                self.assertEqual(item["body_storage"], "description-only")
+                self.assertIn(original["description"].encode(), raw)
+                self.assertNotIn(original["body"].encode(), b"".join(files.values()))
+            else:
+                self.assertNotIn("body_storage", item)
+                self.assertIn(original["body"].encode(), raw)
+        self.assertEqual(self.library.read_bytes(), private_before)
+        prompts = [evo.model_context(files) for _ in range(5)]
+        self.assertEqual(len({value["sha256"] for value in prompts}), 1)
+        self.assertLessEqual(prompts[0]["injected_bytes"], 16000)
+        self.assertEqual(evo.render_package([], 16000), evo.render_package([], 16000, general_storage="description-only"))
+
+    def test_description_only_storage_cannot_hide_an_extra_general_rule(self):
+        files = evo.render_package(self.entries, 16000, general_storage="description-only")
+        manifest = evo.parse_reader(files["SKILL.md"])
+        item = manifest["entries"][0]
+        files[item["path"]] += b"\nSYNTHETIC_UNAUTHORIZED_BODY\n"
+        item.update(bytes=len(files[item["path"]]), sha256=evo.digest(files[item["path"]]))
+        files["SKILL.md"] = evo.READER.encode() + evo.FULL_SKILL_OPEN.encode() + evo.encoded(manifest) + evo.FULL_SKILL_CLOSE.encode()
+        with self.assertRaisesRegex(ValueError, "additional content"):
+            evo.validate_package_files(files)
+
     def test_general_description_is_explicit_and_never_derived_from_body(self):
         entry = copy.deepcopy(self.entries[0])
         for value in (None, "", {}, 7):

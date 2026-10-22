@@ -213,14 +213,20 @@ supported retrieval, joins, deduplication and arithmetic: uncertainty about a
 parameter must not erase the usable method or leave only "check carefully".
 A spread of observed values does not identify an unstated policy cutoff; compare
 only quantities with compatible units. A defensible calculation and a justified
-business decision are separate claims.
+business decision are separate claims. Distinguish the statistic, the business
+judgment, and each action field: a statistical extreme does not itself choose
+a business priority, action, or the entity named by an output field. Preserve
+each field's task-defined role and the evidence connecting these steps; a
+training-instance choice is not a mandatory rule for later tasks.
 
 Non-SKIP operations include a complete replacement entry: id, level
 (general/topic), topic for topic entries, trigger, scope and Markdown body.
 Evolver chooses the level from the evidence and transfer scope; no new classifier.
 General requires an authored, concise, self-contained description: applicability,
 core operation and necessary boundary. General descriptions alone are injected;
-general bodies remain in the installed package but are not injected. Current-context/topic bodies
+general bodies are not injected. With description-only storage, complete general
+bodies remain in the private library and exported general files expose only their
+descriptions and identity metadata. Current-context/topic bodies
 are injected in full. Verify these ACTUALLY VISIBLE descriptions/bodies; conditions
 in a reason or an unloaded body cannot repair an unconditional visible rule.
 Do not use topic keywords as a description, paste a whole body into metadata,
