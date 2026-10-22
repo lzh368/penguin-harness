@@ -42,12 +42,13 @@ An acknowledgment or a path in the prompt alone is not proof of reading.
 
 ## Solver (group training leaf)
 
-First satisfy the inherited learned Reader: observe it, including all general descriptions, and every
+Before substantive work, satisfy the inherited learned Reader: observe it, including all general descriptions, and every
 listed current-context Skill body in full through its supported read operations before business actions, helper
 calls, or file writes. The Reader permits a final exact cat after literal
-pwd/ls and short echo separators joined by &&; full output must finish first. Then read the installed training.json beside the method
-Skill for the exact frozen train_ids/attempt and canonical path policy; it
-contains no other member's answers. Read the complete assigned role file with
+pwd/ls and short echo separators joined by &&; full output must finish first.
+Reading your exact own native AGENTS.md and installed toolkit/training.json is
+pre-judge preparation and may precede the Skill read. The config supplies the
+frozen train_ids/attempt and canonical paths, not other members' answers. Read the complete assigned role file with
 read-material. Every granted public input must be fully observed before solving:
 complete successful native read_file output also satisfies that input's audit,
 so do not duplicate a full native read with the helper. Normal offset/limit pages
@@ -186,8 +187,11 @@ Produce one JSON array of operations:
 `op` ADD/MERGE/REVISE/SKIP, nonempty `candidate_ids`, and `reason`; non-SKIP
 operations include a complete replacement `entry` with id, level
 (general/topic), topic for topic entries, trigger, scope and Markdown body.
-General entries also require an explicit description that you author: concise
-purpose and applicability, not the procedure copied into metadata. All general
+General entries also require an explicit description that you author: a concise,
+self-contained method summary: applicability, core operation/principle, and
+necessary boundary. A reader who receives only this description must know what
+to do and what remains task-dependent. Do not supply just topic keywords or
+copy the complete body into metadata. All general
 descriptions are loaded; general bodies are stored but not loaded. Current-context
 (topic) bodies are all loaded. Preserve the evidence-supported level; never
 relabel a general rule as topic to bypass this policy or fill an empty layer.
@@ -201,7 +205,8 @@ MERGE/REVISE target an existing entry. SKIP records noise, duplication,
 contradiction or an unsupported premise without inventing content.
 
 In reason, connect the original operation, supported gap or reuse, proposed
-change and its evidence. Check the candidate's interpretation, not just its
+change and its evidence: identify the query, join, calculation or decision that
+would actually change, plus effective steps to retain. Check the candidate's interpretation, not just its
 citations: a step already performed cannot become a failure in the explanation.
 Retain useful parts while correcting supported gaps. A proposed improvement
 is not a demonstrated repair of lost points or a guarantee of higher scores;
@@ -237,17 +242,27 @@ every memory or erasing useful local rules to fill the general layer.
 
 Write a coherent “when → inspect → query/join/calculate/decide → result → use”
 procedure with necessary conditions and alternative branches in its body.
-The trigger states when the rule applies. All rules are read in full before
-business actions, but their presence does not establish their preconditions.
+The trigger states when the rule applies. Before business actions the Solver
+receives all topic bodies and all general descriptions, never general bodies.
+Check those actually visible texts for necessary premises and actionable steps;
+private provenance or an unloaded body cannot supply a missing condition.
+Their presence does not establish their preconditions.
 Put checks of relevant task facts and authorized business records before the
 steps that depend on them. Keep title, trigger, scope and body consistent. In reason,
-walk through the proposed body using an already read relevant training scene
+walk through the text actually injected (general description or topic body)
+using an already read relevant training scene
 and check available counterevidence or a previously correct substep. Note an
 uncovered boundary instead of inventing a case. This uses supplied records,
 not another Solver attempt or judge call; matching a historical prediction
 proves consistency, not its premises. Do not force correct work to be repeated
 or add unrequested answer fields. Export methods and conditions only; raw
 answers, traces, feedback dumps and provenance remain in private method records.
+For example, "avoid duplicate counts" is only a reminder. A method states:
+for a distinct-day count, filter the entity and time window, convert timestamps
+to the required date basis, deduplicate dates, then count; count runs directly
+only if one run per day is established. This is a synthetic expression example,
+not a required domain rule. If the original Solver already compared dates,
+retain that supported step; do not claim adding that comparison repairs a loss.
 Do not generate executable support code.
 No test data, test scores, extra training passes, model changes or acceptance
 thresholds. Seal your output using the fixed seal-role-output request in guarded training (file-digest only for unguarded RSI) and return the successful receipt. You do not publish

@@ -66,7 +66,7 @@ class SolverSkillTests(unittest.TestCase):
         operations = [
             ("exec_command", {"cmd": "curl http://business.invalid/api/records"}, "read-only inspection"),
             ("write_file", {"file_path": self.f["paths"]["answer"], "content": "{}"}, "task actions"),
-            ("read_file", {"file_path": str(self.fixture.skill / "training.json")}, "only granted public"),
+            ("read_file", {"file_path": str(self.fixture.skill.parent / "other-method/training.json")}, "only granted public"),
             ("read_file", {"file_path": str(self.fixture.workspace / "train_tasks/train_002/instruction.md")}, "only granted public"),
             ("exec_command", {"cmd": "cat " + str(self.fixture.workspace / "train_tasks/train_002/input/other.json")}, "nonpublic files"),
         ]
@@ -75,6 +75,14 @@ class SolverSkillTests(unittest.TestCase):
                 self.assert_rejected(self.rows[:2] + self.pair(name, args) + self.rows[2:], pattern)
         # A parallel write between read request and observed output is still early.
         self.assert_rejected(self.rows[:3] + self.pair("write_file", {"file_path": "/tmp/answer", "content": "x"}) + self.rows[3:], "task actions")
+
+    def test_exact_native_agents_instructions_may_precede_frozen_skill(self):
+        path = str(Path(self.target).parent.parent.parent / "AGENTS.md")
+        for name, args in (("read_file", {"file_path": path}), ("exec_command", {"cmd": "cat " + path})):
+            self.write(self.rows[:2] + self.pair(name, args, "SYNTHETIC native instructions") + self.rows[2:])
+            result = evo.capture(self.request)
+            evo.validate_contexts([evo.read(result["path"])], ["train_001"])
+            Path(result["path"]).unlink()
 
     def test_granted_public_inspection_and_complete_pages_succeed(self):
         root = self.fixture.workspace / "train_tasks/train_001/input"

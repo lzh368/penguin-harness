@@ -87,7 +87,7 @@ positive-source candidates or retesting training answers.
 
 Compilation preserves certainty and field/entity/time/granularity scope in the
 actual trigger, scope and body. Triggers describe applicability, not a retrieval
-decision. Reading all rules does not establish their preconditions: check the
+decision. Receiving a method does not establish its preconditions: check the
 relevant task facts and authorized records before applying a procedure.
 Methods may use supported logical
 inference and local conventions from one training task. Unknown benefit is
@@ -130,3 +130,16 @@ may follow literal pwd/ls discovery and short echo separators joined only by
 required a separate cat; historical runs and verdicts are not changed. This
 engineering read-interface revision changes no learning, loading classification,
 feedback, budget or original-Solver reflection boundary.
+
+Revision `2026.10.22.8` preserves native orchestration and Evo learning, while
+correcting the delivered Evolver description contract: general descriptions
+are self-contained method summaries; only topic bodies are fully loaded.
+The fixed GDPevo Reader generates exact native read_file calls for every topic
+page, included in the same 16,000-byte package budget. They are a read plan,
+not a selector or executable loader. The native AGENTS.md is an explicitly
+allowed State instruction; the training Solver may also read its exact own
+toolkit/training.json before the Skill, without granting tests training access; one initial literal public/workspace cd with &&
+and the fixed public JSON display loop are preparation operations. Business
+APIs and writes still require all required Skill observations first. These
+are recorded protocol extensions, not retroactive passes for .6/.7 evidence.
+Old018's business call before both topic observations remains invalid.

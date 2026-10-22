@@ -60,6 +60,9 @@ class InstructionDeliveryTests(unittest.TestCase):
             self.assertIn(str(fixture.private / "roles" / (role + ".md")), text)
             if role == "evolver":
                 self.assertIn("Supply a concise explicit description for each general entry", text)
+                self.assertIn("self-contained method summary", text)
+                self.assertNotIn("All rules are read in full", text)
+                self.assertNotIn("describing its purpose and applicability", text)
                 self.assertIn("general Skill bodies are not loaded", text)
                 self.assertIn("do not relabel general entries as topic", text)
                 self.assertIn("Either level may remain empty", text)

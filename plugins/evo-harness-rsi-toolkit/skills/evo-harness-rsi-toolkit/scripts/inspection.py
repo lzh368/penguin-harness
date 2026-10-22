@@ -142,27 +142,65 @@ def _public_name_enumeration(argv, workdir, workspace, public_input=None):
     return predicates.get("-type") == "f"
 
 
-def _readonly_commands(call, workspace, slot, public_files=None, public_input=None, *, skill_files=None):
+def native_instructions(slot):
+    """The exact native State instructions, never another Skill or memory file."""
+    return str(PurePosixPath(slot).parent.parent / "AGENTS.md")
+
+
+def _public_json_loop(call, workspace, public_files, public_input):
+    """One fixed public payload display form seen in018; never execute shell.
+
+    Explicit training file grants do not authorize a wildcard over other files.
+    The fixed body only displays public JSON; arbitrary loops remain unsupported.
+    """
+    if public_files is not None or call.get("name") != "exec_command":
+        return None
+    args = json.loads(call["arguments"])
+    if args.get("run_in_background"):
+        return None
+    command = args.get("cmd", args.get("command", ""))
+    match = re.fullmatch(r'cd\s+([A-Za-z0-9_./-]+)\s+&&\s+for f in \*\.json;\s*do echo "=== \$f ===";\s*cat "\$f";\s*echo;\s*done', command)
+    if not match:
+        return None
+    cwd = _path(match[1], _path(args.get("workdir", workspace), workspace))
+    root = public_input or workspace.rstrip("/") + "/input"
+    require(cwd == root or cwd.startswith(root + "/"), "payload display loop must stay in public input")
+    return cwd
+
+
+def _readonly_commands(call, workspace, slot, public_files=None, public_input=None, *, skill_files=None, preparation_files=None):
     """Allow only public-file reads, fixed Skill reads and discovery.
 
     Pipes can feed a bounded stdin head, or a bare stdin sort immediately after
     public file-name enumeration. Every branch of &&/||/; must itself be
     read-only. This is an evidence grammar, not a general shell sandbox.
     """
+    loop = _public_json_loop(call, workspace, public_files, public_input)
+    if loop is not None:
+        return ([{"argv": ["public-json-display"], "connector": None, "quoted_patterns": []}], loop, 0, [])
     commands, workdir, redirects = _shell_commands(call, workspace)
     reads = []
-    fixed = {slot + "/SKILL.md"}
-    if skill_files is not None:
-        require(isinstance(skill_files, (set, list, tuple)) and all(isinstance(p, str) and p.startswith("/") and _path(p, workspace) == p for p in skill_files),
-                "frozen Skill files must be canonical absolute paths")
-        fixed.update(skill_files)
+    fixed = {slot + "/SKILL.md", native_instructions(slot)}
+    for files in (skill_files, preparation_files):
+        if files is not None:
+            require(isinstance(files, (set, list, tuple)) and all(isinstance(p, str) and p.startswith("/") and _path(p, workspace) == p for p in files),
+                    "frozen Skill/preparation files must be canonical absolute paths")
+            fixed.update(files)
     for position, item in enumerate(commands):
         argv = item["argv"]
         program = argv[0]
-        require(program in ("pwd", "ls", "find", "cat", "head", "echo", "sort"), "only literal read-only inspection may precede the complete Skill read")
+        require(program in ("pwd", "ls", "find", "cat", "head", "echo", "sort", "cd"), "only literal read-only inspection may precede the complete Skill read")
         require(all(program == "find" and index >= 2 and argv[index - 1] in ("-name", "-iname")
                     for index in item["quoted_patterns"]), "quoted patterns are only find name predicates")
-        if program in ("cat", "head"):
+        if program == "cd":
+            require(position == 0 and len(argv) == 2 and not argv[1].startswith("-")
+                    and (len(commands) == 1 or commands[1]["connector"] == "&&"),
+                    "cd only supports one initial literal directory, alone or followed by &&")
+            # Changing directory exposes no file content. Every later file
+            # operand is checked against the same bound read set below.
+            workdir = _path(argv[1], workdir)
+            operands = []
+        elif program in ("cat", "head"):
             operands = _file_operands(argv)
             require(operands or program == "head" and item["connector"] == "|", "read needs a literal file")
             paths = [_path(value, workdir) for value in operands]
@@ -212,7 +250,7 @@ def _readonly_commands(call, workspace, slot, public_files=None, public_input=No
 
 
 def complete_file_stdout(call, stdout, expected, target, workspace, slot,
-                         public_files=None, public_input=None, *, skill_files=None):
+                         public_files=None, public_input=None, *, skill_files=None, preparation_files=None):
     """Exact whole-file stdout from one final cat, optionally after discovery.
 
     This recognizes a finite foreground read protocol, not arbitrary shell
@@ -224,7 +262,7 @@ def complete_file_stdout(call, stdout, expected, target, workspace, slot,
             return False
         content = expected.decode("utf-8")
         commands, workdir, redirects, _ = _readonly_commands(
-            call, workspace, slot, public_files, public_input, skill_files=skill_files)
+            call, workspace, slot, public_files, public_input, skill_files=skill_files, preparation_files=preparation_files)
         args = json.loads(call["arguments"])
         command = args.get("cmd", args.get("command", ""))
         if redirects:
@@ -236,7 +274,7 @@ def complete_file_stdout(call, stdout, expected, target, workspace, slot,
             return False
         for item in commands[:-1]:
             argv = item["argv"]
-            if argv[0] in ("pwd", "ls"):
+            if argv[0] in ("pwd", "ls", "cd"):
                 continue
             if argv[0] != "echo" or not (len(argv) == 1 or len(argv) == 2 and re.fullmatch(r"[-=_.: ]{1,64}", argv[1])):
                 return False

@@ -932,6 +932,8 @@ def solver_skill_observation(view, training, task_id, attempt_id, allow_missing=
     require(posixpath.isabs(workspace) and posixpath.isabs(state), "Solver native State/workspace must be absolute")
     slot = state.rstrip("/") + "/skills/evo-harness-learned"
     target = slot + "/SKILL.md"
+    preparation = {inspection.native_instructions(slot),
+                   state.rstrip("/") + "/skills/evo-harness-rsi-toolkit/training.json"}
     grants = []
     for message in view["messages"]:
         payload = message["payload"]
@@ -956,7 +958,7 @@ def solver_skill_observation(view, training, task_id, attempt_id, allow_missing=
                 or output.get("images") or called >= observed):
             continue
         if inspection.complete_file_stdout(call, output.get("output"), expected, target,
-                                           workspace, slot, public, public_input):
+                                           workspace, slot, public, public_input, preparation_files=preparation):
             complete = observed if complete is None else min(complete, observed)
     if not allow_missing:
         require(complete is not None, "Solver frozen H0 Skill was not fully observed through native read_file or exact foreground cat")
@@ -967,11 +969,11 @@ def solver_skill_observation(view, training, task_id, attempt_id, allow_missing=
         if call.get("name") == "read_file":
             args = json.loads(call["arguments"])
             path = inspection._path(args.get("file_path"), workspace)
-            require(path == target or path in public,
-                    "only granted public files or the frozen H0 Skill may be read before its complete observation")
+            require(path == target or path in public or path in preparation,
+                    "only granted public files, this native State's AGENTS.md/training.json or the frozen H0 Skill may be read before its complete observation")
         else:
             require(call.get("name") == "exec_command", "task actions may not precede the complete Solver H0 Skill read")
-            inspection._readonly_commands(call, workspace, slot, public, public_input)
+            inspection._readonly_commands(call, workspace, slot, public, public_input, preparation_files=preparation)
     if complete is None:
         require(allow_missing, "Solver frozen H0 Skill was not fully observed through native read_file or exact foreground cat")
         return None
@@ -2064,50 +2066,47 @@ def verify_compilation(req):
 
 READER = '''---
 name: evo-harness-learned
-description: Load all context Skill bodies and general descriptions for this task group.
-version: 2026.10.22.7
+description: Before task work read this Reader and follow all its native read_file calls; context bodies and general descriptions only.
+version: 2026.10.22.8
 ---
 
-Read this entire Reader, including every general description in its frozen
-manifest, and every current-context Skill with load_mode body before business
-API calls, executing task programs or writing the answer. All five tasks use
-this same loading policy: no selector, filtering or loading other groups.
-General entries have load_mode description: their complete descriptions are
-provided here. Do not read their SKILL.md bodies, including after other reads
-are complete. Keep general and context levels unchanged. Each state_path is
-relative to your Agent State root; methods are sibling native Skills.
-Use native read_file with all remaining pages, or foreground `cat ABSOLUTE_SKILL_PATH`
-with complete exact stdout. A cat may be last after literal pwd/ls discovery
-and short echo separators joined only by &&; no other cat, pipe, redirection,
-OR or background execution. The complete file must be the unique exact stdout
-tail; a standalone cat must output only that file. Missing or truncated output must be completed before
-acting; do not assume an omitted rule. Do not change State or output settings.
+For the frozen GDPevo adapter, this Reader is:
+/opt/penguin-bench/home/default_project/agents/default_agent/agent_state/skills/evo-harness-learned/SKILL.md
 
-Before the complete set has been observed, inspect only public task files and
-directories or the required Reader/context Skill files with native reads or literal
-read-only pwd, ls, find, cat, head and echo separators. Limited combinations may
-use &&, ||, semicolons or bounded stdin head. Use only find type/depth/name/iname/
-print predicates with quoted name patterns. Only literal stderr suppression to
-/dev/null is allowed. A find with one root at/below public input (/app/input
-here), explicit -type f, optional nonrepeated -maxdepth/-mindepth/-name/-iname
-and terminal -print may pipe directly to bare sort with no arguments, then
-optionally bounded stdin head. Example: `find /app/input -type f | sort`.
-Enumeration does not prove reading file contents. Other programs, APIs, writes
-and sort forms wait until the complete frozen set is observed. Material-access
-rules still apply afterward.
+Finish every page of this Reader, then issue every native read_file request in
+read_calls, in order. The list supplies exact absolute file_path, offset and
+limit for every current-context/topic body page. Await each actual output and
+complete any truncated page through native continuation. Do not guess paths,
+select entries, load other groups or substitute summaries for required bodies.
+All general descriptions are already complete in this Reader; never read their
+SKILL.md bodies. All five tests load this same frozen set. Empty entries and
+read_calls are normal H0: finish the Reader, with no additional method bodies.
 
-Loading a method is not proof that its premises hold. Check its fields, entities,
-time basis, record granularity and necessary conditions against the current
-request and authorized business facts, then apply relevant supported steps.
-Obtain thresholds, defaults, labels and source priorities from those facts;
-do not supply unverified conventions. Transfer a condition to another field
-only with an applicable definition or valid inference. For unresolved premises,
-follow a supported checking branch or leave that rule unused and continue.
-Preserve correct work and produce only the requested answer. Do not edit these
-Skills, obtain training answers or learn from test feedback. An empty manifest
-is normal H0: fully read this Reader, with no method Skills to load.
+Prefer this native read plan before payload inspection. One foreground literal
+cat per required file is also accepted with exact complete stdout, optionally
+after literal cd/pwd/ls and short echo separators joined by &&; no pipe or
+redirection. Neither a directory listing nor an instruction/config read proves
+a Skill read. Do not change State or output limits.
 
-## Frozen group Skills (body paths plus complete general descriptions)
+Preparation may read exact own State AGENTS.md and public task files. A guarded
+training Solver may also read its exact own toolkit/training.json; tests gain
+no training-file access. Use native reads or simple literal pwd/ls/find/cat/head/
+echo, initial cd and public filename sorting, e.g. find /app/input -type f | sort.
+The fixed public JSON display form is also supported:
+cd input/payloads && for f in *.json; do echo "=== $f ==="; cat "$f"; echo; done
+Finish the Skill plan before other programs, business APIs, task execution,
+answer writes or final answers. Material and post-scoring restrictions remain.
+
+A loaded method does not establish its premises. Check fields, entities, time
+basis, granularity and necessary conditions against the current request and
+authorized facts; apply the supported steps. Obtain thresholds, defaults,
+labels and source priorities from those facts. Transfer a condition between
+fields only by an applicable definition or valid inference. For unresolved
+premises, use a supported checking branch or leave the method unused. Preserve
+correct work, produce only requested outputs, and do not obtain training
+answers or learn from test feedback.
+
+## Frozen group Skills and native read_file requests
 
 '''
 
@@ -2138,14 +2137,30 @@ def method_prefix(entry_id, level, description=None):
     description = (general_description(description) if level == "general" else
                    "Frozen current-context Evo-Harness method; read its complete body with the group Reader.")
     return (f"---\nname: {name}\ndescription: {json.dumps(description, ensure_ascii=False)}\n"
-            f"version: 2026.10.22.7\n---\n\n# {entry_id}\n\nLevel: {level}\n")
+            f"version: 2026.10.22.8\n---\n\n# {entry_id}\n\nLevel: {level}\n")
+
+
+GDPEVO_STATE = "/opt/penguin-bench/home/default_project/agents/default_agent/agent_state"
+
+
+def context_read_calls(entries, files):
+    """Native read_file arguments only; no model content or automatic execution."""
+    calls = []
+    for entry in entries:
+        if entry["load_mode"] != "body":
+            continue
+        lines = len(files[entry["path"]].decode().split("\n")) - 1
+        for offset in range(1, lines + 1, 1000):
+            calls.append({"file_path": GDPEVO_STATE + "/" + entry["state_path"],
+                          "offset": offset, "limit": min(1000, lines - offset + 1)})
+    return calls
 
 
 def render_package(entries, max_bytes):
     """Package each complete authored method; never choose or rewrite its rules."""
     require(type(max_bytes) is int and 0 < max_bytes <= 16000, "invalid byte budget; group maximum is 16000 UTF-8 bytes")
     validate_entries(entries, {"general": len(entries), "topic": len(entries)})
-    manifest = {"schema": FULL_SKILL_SCHEMA, "max_bytes": max_bytes, "entries": []}
+    manifest = {"schema": FULL_SKILL_SCHEMA, "max_bytes": max_bytes, "entries": [], "read_calls": []}
     files = {}
     for entry in sorted(entries, key=lambda e: e["id"]):
         name = method_name(entry["id"])
@@ -2161,6 +2176,7 @@ def render_package(entries, max_bytes):
                                     "bytes": len(raw), "sha256": digest(raw),
                                     "load_mode": "description" if entry["level"] == "general" else "body",
                                     **({"description": entry["description"]} if entry["level"] == "general" else {})})
+    manifest["read_calls"] = context_read_calls(manifest["entries"], files)
     files["SKILL.md"] = READER.encode() + FULL_SKILL_OPEN.encode() + encoded(manifest) + FULL_SKILL_CLOSE.encode()
     validate_package_files(files)
     return files
@@ -2177,10 +2193,10 @@ def parse_reader(raw):
     require(raw.startswith(prefix) and raw.endswith(FULL_SKILL_CLOSE.encode()), "learned reader or multi-Skill format changed")
     manifest_raw = raw[len(prefix):-len(FULL_SKILL_CLOSE.encode())]
     manifest = json.loads(manifest_raw)
-    require(isinstance(manifest, dict) and set(manifest) == {"schema", "max_bytes", "entries"}
+    require(isinstance(manifest, dict) and set(manifest) == {"schema", "max_bytes", "entries", "read_calls"}
             and manifest["schema"] == FULL_SKILL_SCHEMA
             and type(manifest["max_bytes"]) is int and 0 < manifest["max_bytes"] <= 16000
-            and isinstance(manifest["entries"], list), "invalid multi-Skill manifest")
+            and isinstance(manifest["entries"], list) and isinstance(manifest["read_calls"], list), "invalid multi-Skill manifest")
     require(encoded(manifest) == manifest_raw, "noncanonical multi-Skill manifest")
     validate_skill_readability(raw)
     ids, names = [], []
@@ -2219,6 +2235,8 @@ def validate_package_files(files):
         require(len(raw) == entry["bytes"] and digest(raw) == entry["sha256"], "Skill body fingerprint mismatch")
         require(raw.startswith(method_prefix(entry["id"], entry["level"], entry.get("description")).encode()), "native Skill identity mismatch")
         validate_skill_readability(raw)
+    require(manifest["read_calls"] == context_read_calls(manifest["entries"], files),
+            "native context read plan differs from complete frozen files")
     require(sum(map(len, files.values())) <= manifest["max_bytes"], "complete Skill package exceeds frozen byte budget")
     return manifest
 
