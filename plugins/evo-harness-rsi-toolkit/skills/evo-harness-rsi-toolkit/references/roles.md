@@ -127,14 +127,11 @@ cooperative execution constraints, not a sandbox for arbitrary hostile code.
 ## In-session reflection
 
 Extract a coherent reusable method from this negative attempt. In lesson, connect
-the original operation to the supported gap or useful substep, the step to change
-or retain, and its output field. Keep effective queries, identifier namespaces,
-joins, units and calculations, including a mistaken lookup that you corrected;
-do not describe completed work as a missing repair. For a proposed change, name
-the task definition, observed fact or valid deduction supporting it. A guess
-about exact matching or another hidden grading convention is not a business
-rule. Separate a supported method from an untested repair; a low total score
-does not supply the missing premise or justify discarding the effective steps.
+the original operation and final outcome to the supported gap or useful substep,
+the step to change or retain, and the output it affects. Keep effective queries,
+joins and calculations; do not present an already completed step as a missing
+repair or discard the whole approach because the attempt lost points. Distinguish
+the procedure actually supported by records from the untested repair you propose.
 Use this same Solver conversation's task inputs, action/observation pairs,
 final answer and completely observed raw external feedback. Do not substitute
 a new Agent's reconstruction or a parent summary for your own execution
@@ -170,15 +167,15 @@ identify a failed field, grader weight or causal step; success also does not
 validate every local inference. Analyze the final delivery, not a repaired
 intermediate error. Correct or omit a premise contradicted by the record.
 
-Business judgments may follow from task facts and valid reasoning without a
-verbatim decision table. State the premises and output meaning connecting them;
-an enum or source field alone does not establish that connection. Unknown score
-benefit does not invalidate a supported method. If a premise is unsupported,
-narrow that step, check authorized evidence or omit it while retaining the
-supported procedure. Carry its uncertainty into lesson, trigger and scope_hint,
-not only an evidence label. Parameterize instance IDs, dates and amounts; keep
-the instance answer in the private record. Zero candidates is valid only after
-this negative-feedback reflection was performed and sealed.
+Useful business decisions and tool procedures may follow from facts and logical
+reasoning, not only verbatim task instructions. State their necessary premises
+and boundaries; supported local conventions need not recur in several tasks.
+Unknown benefit is different from an unsupported premise: retain the former,
+but turn the latter into a bounded check of authorized evidence, narrow the
+lesson or omit it. Keep uncertainty in lesson, trigger and scope_hint as well
+as evidence. Write for future similar tasks; temporary IDs, dates, amounts and
+answers stay in the private record, not as business constants. Zero candidates
+is valid only after this negative-feedback reflection was performed and sealed.
 For a weak attempt, verify the reusable substep against the already observed
 records: reproduce its filter, join keys, units and calculation or its logical
 premises, using observed-v1 local computation when needed. Keep the result and
@@ -208,15 +205,15 @@ constrain a candidate's scope, but do not create new positive-source candidates.
 An already completed or corrected step is retained work, not a missing repair.
 
 Produce one JSON array of ADD/MERGE/REVISE/SKIP operations with nonempty
-candidate_ids and reason. In that existing reason, connect the original operation,
-evidenced gap or useful method, changed step/output and correct work retained.
-Demonstrate the critical new or changed judgment using one supplied training
-scene: source fields -> concrete calculation or deduction -> destination field.
-Check a relevant supplied counterexample or previously correct branch. Merely
-restating the proposed steps is not a walkthrough. If the final visible rule does
-not follow, remove that mapping or narrow its premises while retaining valid
-queries, joins and calculations. This is review within the one compilation,
-not a new solve, judge or score acceptance test.
+candidate_ids and reason. Keep the existing reason compact: original operation ->
+evidenced gap or useful method -> changed step and affected output -> correct work
+retained. Then walk the FINAL VISIBLE TEXT through an already supplied relevant
+training scene. Name the source fields, a concrete intermediate calculation or
+logical inference, and its destination field; compare with the task's definition
+and observed records, not merely with the old answer. Check a relevant supplied
+counterexample or previously correct branch. If the visible steps fail this check,
+repair their premise/scope, keep the supported part, or SKIP. This is content review
+within the one compilation, not a new solve, judge or claim of improved score.
 
 Preserve field, entity, time basis, record grain and necessary premises through
 compilation. Recheck signed formulas, units, date boundaries, grouping keys and
@@ -234,10 +231,8 @@ collect the relevant facts and resolve competing explanations for the requested
 field. Source authority remains scoped to the field and task family establishing
 it; the word "live" alone is insufficient. Preserve the supporting premises and
 degree of certainty in the delivered method. An unconfirmed interpretation must
-not become an unconditional instruction during merging. In particular, a possible
-grading-format explanation cannot require copying one business field into another
-without an applicable definition or deduction. A valid deduction remains usable
-with its premises, even when the evidence labels it "inferred".
+not become an unconditional instruction during merging; a valid deduction remains
+usable with its premises, even when the evidence labels it "inferred".
 
 Preserve useful business reasoning. For a requested recommendation, classification
 or action, use the current objective, constraints and observed facts to compare
@@ -247,12 +242,10 @@ reason to refuse a judgment that the available facts support. A statistic or
 extreme alone does not choose a priority/action; state the evidence connecting
 them. Unknown thresholds, defaults or mappings require task evidence, not a
 remembered number, observed value cluster or training-instance choice. When an
-essential premise really is missing, check the authorized evidence and use the
-task's permitted uncertainty representation if one exists. This does not create
-a default permission, status or other answer, and a record's current status is
-not automatically the requested action or readiness status. Keep required
-boolean/enum fields and avoid invented values or extra narrative fields. Retain
-supported steps and fact-based judgments when another premise remains unknown.
+essential premise really is missing, use the task's permitted uncertainty/missing-
+data representation; do not replace a required boolean/enum with an invented
+"unresolved" value or silently add narrative fields. Retain the supported queries,
+joins and calculations even when one decision premise remains unknown.
 
 Non-SKIP operations include a complete replacement entry: id, level
 (general/topic), topic for topic entries, trigger, scope and Markdown body.
