@@ -100,6 +100,14 @@ training-record walkthrough, not another role, execution or scoring round.
 No Wiki database, one-candidate edit loop, strictly-improving acceptance gate,
 TRACE contrastive trajectories, SkillAdam edit budget, or test-driven selection.
 
+Revision `2026.10.23.5` refines generation guidance only. GDPevo methods connect
+the public output contract to authorized queries, joins and derivations; the
+existing compilation reason walks the final visible text through a supplied
+training scene, including a concrete intermediate result and its output field.
+This changes no role, candidate source, loading policy, tool permission or
+scoring protocol. It adds no training execution, model reviewer or acceptance
+gate, and supplies no test answers or feedback to learning roles.
+
 Revision 2026.10.22.3 replaces 2026.10.22.2's separate Reflector Session.
 Earlier frozen runs and their verdicts remain historical evidence; they are
 not relabelled as having used in-session reflection. Post-score tool boundaries

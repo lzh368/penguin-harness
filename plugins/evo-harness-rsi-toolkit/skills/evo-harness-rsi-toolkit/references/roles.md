@@ -1,11 +1,20 @@
 # Native learning roles
 
-Learn reusable methods from actual execution. Around one operational goal,
-state applicability, required inputs, queries and joins, calculation or judgment,
-the result's use and branch boundaries. Preserve correct operations; change only
-evidence-supported gaps. Keep instance IDs, dates and amounts in private records;
-write parameters and methods in the Skill. Warnings alone or a new business rule
-inferred from a low total score do not supply a method.
+Learn reusable methods from actual execution. Build one connected procedure:
+applicability -> required output fields -> authorized queries and joins ->
+calculation or judgment -> values written to those fields, with branch boundaries.
+Preserve correct operations; change only evidence-supported gaps. A warning list
+or a business rule inferred from a low total score does not supply a method.
+
+For GDPevo, use the public task, payload/schema and observed tool responses to
+ground that procedure. Keep useful interface/table/field names, join keys, units,
+date basis and output types; parameterize task-specific IDs, dates and amounts.
+State the filter and record grain before aggregating, the operand order and
+rounding when computing, and which requested field uses the result. An endpoint
+must come from the public interface or an authorized observation, not a guessed
+path. An output enum permits values; it does not by itself define a decision rule.
+Related tasks may use different fields for a blocker, team, route and status:
+reuse the evidence-gathering method while preserving each task's output contract.
 
 For ordinary RSI the host calls `run_subagent` with the complete role text.
 For guarded continuous GDPevo the group root first uses control.py role-request
@@ -117,11 +126,12 @@ cooperative execution constraints, not a sandbox for arbitrary hostile code.
 
 ## In-session reflection
 
-Extract a coherent reusable method from this negative attempt. Explain the
-original operation and final outcome, the supported gap or useful existing
-substep, and which step to change or retain with its basis. Keep effective
-queries, joins and calculations; do not present an already completed step as
-a missing repair or discard the whole approach because the attempt lost points.
+Extract a coherent reusable method from this negative attempt. In lesson, connect
+the original operation and final outcome to the supported gap or useful substep,
+the step to change or retain, and the output it affects. Keep effective queries,
+joins and calculations; do not present an already completed step as a missing
+repair or discard the whole approach because the attempt lost points. Distinguish
+the procedure actually supported by records from the untested repair you propose.
 Use this same Solver conversation's task inputs, action/observation pairs,
 final answer and completely observed raw external feedback. Do not substitute
 a new Agent's reconstruction or a parent summary for your own execution
@@ -186,75 +196,64 @@ Agent or a second billable Session. You do not edit State.
 
 ## Evolver
 
-Compile the reusable methods above from the frozen batch; reconcile their
-premises and executable steps before writing any retained entry.
-
-Read all authorized candidates, the complete pre-batch library and all five
-bound training contexts. Rejudge each candidate against the original actions,
-final delivery and counterevidence. A scalar score neither locates a failed
-field nor proves the candidate's explanation; success does not prove every
-local judgment. A performed or already corrected step is useful prior work,
-not an omission. Successful contexts constrain scope; they do not create new
-positive-source candidates.
+Compile the reusable methods above from the frozen batch. Read all authorized
+candidates, the complete pre-batch library and all five bound training contexts.
+Check candidates against the original inputs, actions, final delivery and
+counterevidence. A scalar score does not locate a failed field or prove a proposed
+repair; success does not certify every local judgment. Successful contexts can
+constrain a candidate's scope, but do not create new positive-source candidates.
+An already completed or corrected step is retained work, not a missing repair.
 
 Produce one JSON array of ADD/MERGE/REVISE/SKIP operations with nonempty
-candidate_ids and reason. In the existing reason explain the original operation,
-the evidenced gap or useful method, the query/join/calculation/decision that
-would change, and correct steps retained. Walk through the FINAL VISIBLE TEXT
-on one already supplied relevant training scene, including counterevidence or
-a previously correct substep: can its inputs, operations and branches actually
-be followed, and does it preserve that correct work? This is a consistency
-check, not a new solve, judge, proof of benefit or demonstrated score repair.
-When merging predicates, also check each named output against its own definition.
-Two predicates may share an exclusion union without becoming the same category:
-a withdrawn record with no duplicate evidence is excluded, but is not thereby a
-duplicate. Preserve both predicates and their separate reporting channels; do not
-rename the union as either member. This is a logical illustration, not an extra
-observed training record or a new source of candidates.
+candidate_ids and reason. Keep the existing reason compact: original operation ->
+evidenced gap or useful method -> changed step and affected output -> correct work
+retained. Then walk the FINAL VISIBLE TEXT through an already supplied relevant
+training scene. Name the source fields, a concrete intermediate calculation or
+logical inference, and its destination field; compare with the task's definition
+and observed records, not merely with the old answer. Check a relevant supplied
+counterexample or previously correct branch. If the visible steps fail this check,
+repair their premise/scope, keep the supported part, or SKIP. This is content review
+within the one compilation, not a new solve, judge or claim of improved score.
 
-Preserve the scope and certainty of the supporting facts in the text Solver
-receives: field, entity, time basis, record grain and necessary premises.
-Query order does not establish source priority; a balance-calculation condition
-does not become an eligibility condition; run count is not distinct failed-day
-count. Obtain unknown thresholds, labels, defaults and priority from the current
-task or authorized evidence. Facts and valid logic may support useful derivations
-without a verbatim instruction or recurrence in several tasks. If a business
-premise is unsupported, narrow it to a check with an unresolved branch or SKIP;
-labeling a mandatory guess "assumed" does not justify it. Continue to retain
-supported retrieval, joins, deduplication and arithmetic: uncertainty about a
-parameter must not erase the usable method or leave only "check carefully".
-A spread of observed values does not identify an unstated policy cutoff; compare
-only quantities with compatible units. A defensible calculation and a justified
-business decision are separate claims. Distinguish the statistic, the business
-judgment, and each action field: a statistical extreme does not itself choose
-a business priority, action, or the entity named by an output field. Preserve
-each field's task-defined role and the evidence connecting these steps; a
-training-instance choice is not a mandatory rule for later tasks.
+Preserve field, entity, time basis, record grain and necessary premises through
+compilation. Recheck signed formulas, units, date boundaries, grouping keys and
+rounding against the public output definition. A balance-calculation condition is
+not an eligibility condition; runs are not distinct failed days. Two exclusion
+predicates may share a union while retaining separate reason-specific outputs:
+withdrawn-only is not duplicate. When related templates use different fields or
+enums, write explicit conditional variants or keep the methods separate. A route
+value from one template must not become a team, status or blocker in another.
 
-A request for a recommendation, classification or action can require business
-reasoning rather than a lookup table. Derive the requested judgment from the
-current task's objective and authorized facts, compare the relevant alternatives,
-and preserve the assumptions that matter. Absence of an explicit label mapping
-does not by itself justify leaving a required judgment unresolved. Use that
-branch only when essential facts or decision premises are genuinely missing;
-never invent a policy threshold. An extreme statistic alone is insufficient,
-but a fact-supported argument connecting it to the requested objective is valid.
-Likewise, source authority established for one field or task family stays scoped
-to that field or family; neither query order nor the word "live" establishes a
-universal priority. Put these boundaries in the visible general description or
-topic body, not only in its private reason.
-Classification can use the meaning of authorized type, label and title evidence;
-an absent lookup table does not require exact category-name string matching.
-Do not prohibit a relevant business signal merely because its wording differs
-from an output label. Resolve conflicting signals from task facts and the stated
-objective, without inventing a universal type/label/title priority. A candidate's
-old answer records its choice; it does not establish that priority as policy.
+Separate collecting evidence from choosing a decision. Query order does not
+establish source priority or blocker precedence. A first-match/early-stop rule
+requires a supported task-specific priority or logical dependency; otherwise
+collect the relevant facts and resolve competing explanations for the requested
+field. Source authority remains scoped to the field and task family establishing
+it; the word "live" alone is insufficient. Preserve the supporting premises and
+degree of certainty in the delivered method. An unconfirmed interpretation must
+not become an unconditional instruction during merging; a valid deduction remains
+usable with its premises, even when the evidence labels it "inferred".
+
+Preserve useful business reasoning. For a requested recommendation, classification
+or action, use the current objective, constraints and observed facts to compare
+alternatives and explain the connection to the chosen output. Semantic evidence
+need not exactly match an enum's spelling, and an absent lookup table is not a
+reason to refuse a judgment that the available facts support. A statistic or
+extreme alone does not choose a priority/action; state the evidence connecting
+them. Unknown thresholds, defaults or mappings require task evidence, not a
+remembered number, observed value cluster or training-instance choice. When an
+essential premise really is missing, use the task's permitted uncertainty/missing-
+data representation; do not replace a required boolean/enum with an invented
+"unresolved" value or silently add narrative fields. Retain the supported queries,
+joins and calculations even when one decision premise remains unknown.
 
 Non-SKIP operations include a complete replacement entry: id, level
 (general/topic), topic for topic entries, trigger, scope and Markdown body.
 Evolver chooses the level from the evidence and transfer scope; no new classifier.
 General requires an authored, concise, self-contained description: applicability,
-core operation and necessary boundary. General descriptions alone are injected;
+core operation, result use and necessary boundary. The description must work
+without its private body; use the same training-scene walkthrough on it. General
+descriptions alone are injected;
 general bodies are not injected. With description-only storage, complete general
 bodies remain in the private library and exported general files expose only their
 descriptions and identity metadata. Current-context/topic bodies
@@ -264,7 +263,9 @@ Do not use topic keywords as a description, paste a whole body into metadata,
 or relabel general as topic to bypass loading. A loaded method remains conditional
 on the current task satisfying its premises. No selector or other-group content.
 
-Combine only methods serving the same operational goal. Every candidate gets a
+Combine only methods serving the same operational goal with compatible output
+contracts; preserve the conditions of each branch. Do not merge merely to reduce
+entry count or repeat a topic. Every candidate gets a
 decision, including SKIP; use each at most once per level. One candidate may
 support both levels, one, or neither. Either level may be empty. Counts are
 ceilings, not quotas. ADD uses a new id; MERGE/REVISE targets an existing entry;
