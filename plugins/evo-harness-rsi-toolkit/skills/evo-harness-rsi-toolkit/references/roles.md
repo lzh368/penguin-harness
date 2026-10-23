@@ -205,6 +205,12 @@ on one already supplied relevant training scene, including counterevidence or
 a previously correct substep: can its inputs, operations and branches actually
 be followed, and does it preserve that correct work? This is a consistency
 check, not a new solve, judge, proof of benefit or demonstrated score repair.
+When merging predicates, also check each named output against its own definition.
+Two predicates may share an exclusion union without becoming the same category:
+a withdrawn record with no duplicate evidence is excluded, but is not thereby a
+duplicate. Preserve both predicates and their separate reporting channels; do not
+rename the union as either member. This is a logical illustration, not an extra
+observed training record or a new source of candidates.
 
 Preserve the scope and certainty of the supporting facts in the text Solver
 receives: field, entity, time basis, record grain and necessary premises.
@@ -237,6 +243,12 @@ Likewise, source authority established for one field or task family stays scoped
 to that field or family; neither query order nor the word "live" establishes a
 universal priority. Put these boundaries in the visible general description or
 topic body, not only in its private reason.
+Classification can use the meaning of authorized type, label and title evidence;
+an absent lookup table does not require exact category-name string matching.
+Do not prohibit a relevant business signal merely because its wording differs
+from an output label. Resolve conflicting signals from task facts and the stated
+objective, without inventing a universal type/label/title priority. A candidate's
+old answer records its choice; it does not establish that priority as policy.
 
 Non-SKIP operations include a complete replacement entry: id, level
 (general/topic), topic for topic entries, trigger, scope and Markdown body.

@@ -106,7 +106,9 @@ General body reads remain outside the description-only loading policy. Loading a
 make its applicability conditions true. Never shorten or drop rules at injection.
 
 An explicitly authorized new compilation may export with
-`general_storage: description-only`. The deterministic exporter retains each
+`general_storage: description-only`. For fresh GDPevo runs, copy the frozen
+configuration's `general_storage` into the export request rather than relying
+on the legacy full-storage default. The deterministic exporter retains each
 general description and identity in its native file, marks body_storage in the
 manifest, and leaves the authored general body in the private compiled library.
 Topic files remain complete. This prevents later file inspection from exposing
