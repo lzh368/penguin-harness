@@ -78,6 +78,14 @@ thinking_level and run_in_background=true for prepared learning roles. Do not
 read and retype the prompt file or replace it with an inline prompt: the native
 tool supplies its complete, hash-checked text as the child's original task.
 Ordinary evaluation worker requests may keep the shared inline prompt.
+If the frozen configuration has `h0_reference`, preparation has independently
+reviewed the original fifteen worker-bound Base trials and the identical empty
+State, native context, tools and runtime. After freezing the newly learned Skill,
+copy the exact prepared `h0_reference.matrix_request` JSON to your scratchpad's
+`evo-guard/h0-matrix-request.json`. It references the original cells and workers;
+do not create replacement worker identities or run Base again. `validate-workers`
+and `verify-completion` recheck the frozen source fingerprints and report reused
+Base separately. Continue the three final-Skill test rounds through native workers.
 Guarded evaluation workers must run
 in native background mode so their terminal status arrives as a harness
 notification, including for formatting-only recovery. Do not supply agent_id: the native worker

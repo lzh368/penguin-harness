@@ -582,8 +582,43 @@ def phase_tickets(scratch, mode, phase):
     return tickets
 
 
+def referenced_h0(mode, matrix):
+    """Read the frozen, independently reviewed source; never invent current workers."""
+    config = evo.read(mode["config"])
+    ref = config["h0_reference"]
+    path = evo.regular(ref["receipt"])
+    check(sha(path) == ref["sha256"], "reused H0 review changed")
+    proof = evo.read(path)
+    check(proof.get("schema") == "evo-reviewed-h0-reference-v1" and proof.get("complete") is True,
+          "reused H0 requires a complete original worker/trial review")
+    check(proof["runtime"] == config["runtime"] and proof["test_ids"] == config["test_ids"]
+          and proof["runs"] == config["test_repeats"], "reused H0 conditions differ")
+    check(proof["bundle_sha256"] == config["deployment"]["bundle_sha256"]
+          and proof["model_capacity"] == config["model_capacity"], "reused H0 runtime capacity differs")
+    for original, fingerprint in proof["source_files"].items():
+        check(sha(evo.regular(original)) == fingerprint, "reused H0 source evidence changed")
+    source_matrix = evo.read(proof["matrix_request"])
+    check(matrix["identity"] == source_matrix["identity"]
+          and matrix["case_ids"] == source_matrix["case_ids"] and matrix["runs"] == source_matrix["runs"]
+          and evo.read(matrix["cells"]) == evo.read(source_matrix["cells"]), "reused H0 matrix differs from original")
+    module = protocol_module(mode)
+    acceptance = module.helper(Path(mode["protocol"]).with_name("acceptance.py"))
+    frozen = evo.read(mode["freeze_request"])
+    files = acceptance.snapshot(frozen["h0_snapshot"])["files"]
+    check({name: evo.digest(raw) for name, raw in files.items()} == proof["h0_files"],
+          "reused H0 State/tools/context differ")
+    review = evo.read(proof["injection_review"])
+    check(review["complete"] is True and review.get("audit_passed", True) is True,
+          "reused H0 original injection audit failed")
+    check(module.matrix(matrix)["complete"], "reused H0 matrix is incomplete")
+    return {"complete": True, "workers": proof["workers"], "reused": True,
+            "source_experiment": proof["source_experiment"], "injection": review}
+
+
 def verify_worker_matrix(mode, phase, matrix):
     """Bind matrix cells to strict original worker records; scoring stays in matrix()."""
+    if phase == "h0" and evo.read(mode["config"]).get("h0_reference"):
+        return referenced_h0(mode, matrix)
     meta, scratch = controller_trace(mode)
     tickets = phase_tickets(scratch, mode, phase)
     cells = evo.read(matrix["cells"])
@@ -601,6 +636,12 @@ def verify_worker_matrix(mode, phase, matrix):
 def validate_workers(mode, phase):
     """Read-only receipt check before matrix construction; never repair or dispatch."""
     check(mode["mode"] == "controller" and phase in ("training", "h0", "final"), "invalid worker validation phase")
+    if phase == "h0" and evo.read(mode["config"]).get("h0_reference"):
+        matrix = evo.read(Path(mode["completion_request"]).parent / "h0-matrix-request.json")
+        reviewed = referenced_h0(mode, matrix)
+        return {"complete": True, "phase": phase, "reused": True, "source_workers": reviewed["workers"],
+                "workers": [], "missing": [], "cells": evo.read(matrix["cells"]),
+                "read_only": True, "automatic_dispatch": False}
     meta, scratch = controller_trace(mode)
     registration = registered_benchmarks(mode)
     expected = registration["training" if phase == "training" else "test"]["case_ids"]
@@ -968,6 +1009,8 @@ def worker_request(req, scratch, mode):
     runtime_call(call, config["runtime"])
     check(call.get("run_in_background") is True, "guarded evaluators must use native background completion notifications")
     check(phase in ("training", "h0", "final"), "unknown worker phase")
+    check(not (phase == "h0" and config.get("h0_reference")),
+          "frozen reviewed H0 is reused; do not dispatch duplicate Base tests")
     benchmark = config["benchmark_id"] if phase == "training" else config["test_benchmark_id"]
     field = "trainer_agent_id" if phase == "training" else "test_agent_id"
     agent = config[field].removeprefix("create:").strip()
@@ -1435,6 +1478,9 @@ def controller_final(mode):
     benchmark = Path(config["deployment"]["penguin_home"]) / config["deployment"]["project_id"] / "benchmarks" / config["test_benchmark_id"]
     injection = []
     for phase, matrix_path in [("h0", request["h0_matrix_request"])] + ([] if accepted["equivalent_h0"] else [("final", request["final_matrix_request"])]):
+        if phase == "h0" and config.get("h0_reference"):
+            injection.append(referenced_h0(mode, h0_req)["injection"])
+            continue
         receipt = module.execute({"op": "verify-injection-matrix", "evo_tool": str(TOOL),
             "config": mode["config"], "config_sha256": mode["config_sha256"],
             "matrix_request": matrix_path, "snapshot": frozen_request[phase + "_snapshot"],
