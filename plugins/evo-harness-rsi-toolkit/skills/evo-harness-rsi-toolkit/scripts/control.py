@@ -1542,6 +1542,24 @@ def solver_stage_pretool(payload, state, meta, rows):
     check(task in training["train_ids"] and tasks[0]["attempt_id"] == training["attempt_id"], "Solver task/attempt mismatch")
     paths = evo.judge_paths(training, task, training["attempt_id"])
     if not Path(paths["output"]).exists():
+        # Validate a recognized judge invocation at the native execution boundary.
+        # A helper that aborts its own readiness check must never look like an
+        # executed second score later. Reuse the existing literal parser; other
+        # preparation/business commands keep their existing policy.
+        call = {"name": payload["tool_name"], "arguments": payload["arguments"]}
+        try:
+            commands, _, _ = evo.inspection._shell_commands(call, meta["workspace"])
+        except (ValueError, KeyError, TypeError):
+            commands = []
+        helper = str(Path(state) / "skills/evo-harness-rsi-toolkit/scripts/evo.py")
+        if any(c["argv"] == ["python3", "-B", helper, paths["judge_request"]] for c in commands):
+            contract = evo.role_contract(training, "reflector", task)
+            view = evo.native_role_view(training, contract, None, active_tool=payload)
+            if evo.standalone_helper_request({"call": {"payload": call}}, view) != paths["judge_request"]:
+                command = shlex.join(["python3", "-B", helper, paths["judge_request"]])
+                return {"decision": "deny", "reason": "No scoring request was executed. Run the supplied single command: " + command,
+                        "output": {"refused_before_execution": True, "recoverable": True,
+                                   "phase": "pre_judge", "task_id": task, "judge_calls": 0, "command": command}}
         return {}  # Normal pre-score tools and business work keep their existing policy.
     check(evo.read(Path(training["private_learning"]) / "frozen-training.json") == training, "frozen training changed")
     contract = evo.role_contract(training, "reflector", task)

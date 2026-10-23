@@ -114,6 +114,10 @@ it("refuses the real 024 query before HTTP; permits same-Session draft edits and
     name: "write_file",
     args: { file_path: f.paths.answer, content: '{"synthetic":true}' },
   });
+  // Exact 005 failure shape: helper launched with a cd prefix used to abort
+  // readiness, then poison later evidence as a second executed judge.
+  steps.push({ name: "exec_command", id: "blocked-005-wrapped-judge",
+    args: { cmd: `cd ${quote(workspace)} && python3 -B ${quote(f.helper)} ${quote(f.paths.judge_request)}` } });
   steps.push(cmd(f.paths.judge_request));
   let parentCalls = 0,
     childCalls = 0,
@@ -321,6 +325,7 @@ it("refuses the real 024 query before HTTP; permits same-Session draft edits and
     .filter((r) => r.type === "model_msg" && r.payload.type === "tool_call_output")
     .map((r) => r.payload as { tool_call_id: string; stop_reason: string; output: string });
   for (const id of [
+    "blocked-005-wrapped-judge",
     "blocked-before-full-feedback",
     "blocked-024-query",
     "blocked-answer-edit",
