@@ -191,6 +191,15 @@ def training_bootstrap(meta, scratch, state, trace_path=None):
         "new answer attempts and free-form steering are not. On missing evidence stop as method_failed. "
         "Zero candidates still requires one Evolver, compilation, export and seal.\n"
     )
+    if "general_storage" in t:
+        export = private / "requests/export.json"
+        prepared = {"op": "export", "library": str(private / "library.json"),
+                    "limits": t["limits"], "max_bytes": t["max_bytes"],
+                    "general_storage": t["general_storage"],
+                    "output": str(Path(t["answer_dir"]).parent / "skill")}
+        if not export.exists():
+            evo.write_once(export, evo.encoded(prepared))
+        header += f"After compilation, use the prepared policy-bound export request: python3 -B {TOOL} {export}\n"
     body = "\n\n".join(f"FULL METHOD MATERIAL {name}\n{text}" for name, text in material.items())
     return header + "\n" + json.dumps(t, ensure_ascii=False) + "\n\n" + body
 
@@ -970,7 +979,8 @@ def role_request(req, meta, scratch, mode):
         text += "Validation request: " + json.dumps({"op": "validate-decisions", "train_ids": t["train_ids"],
             "contexts": [str(private / "contexts" / (task_id + ".json")) for task_id in t["train_ids"]],
             "candidates": str(target), "decisions": str(private / "decisions.json"), "library": str(private / "prebatch-library.json"),
-            **{key: t[key] for key in ("limits", "max_bytes")}})
+            **{key: t[key] for key in ("limits", "max_bytes")},
+            **({"general_storage": t["general_storage"]} if "general_storage" in t else {})})
         text += f"\nOutput operations to {private / 'decisions.json'} and seal with seal-role-output. Zero candidates requires [] and a real Evolver return.\n"
         slot = "evolver/batch-1"
     if role in ("solver", "evolver"):
@@ -1416,6 +1426,8 @@ def prepare_seal_training(req, meta, mode):
         "library": str(private / "prebatch-library.json"), "skill": str(Path(t["answer_dir"]).parent / "skill"),
         "roles": roles, "runtime": t["runtime"], "limits": t["limits"],
         "max_bytes": t["max_bytes"], "output": str(private / "training-export.json")}
+    if "general_storage" in t:
+        prepared["general_storage"] = t["general_storage"]
     destination = inside(private / "requests/seal-training.json", private / "requests")
     with evo.locked(private / "requests/.prepare-seal-training.lock"):
         if destination.exists():

@@ -1075,6 +1075,8 @@ def role_contract(training, role, task_id=None):
         validation = {"op": "validate-decisions", "contexts": contexts, "train_ids": training["train_ids"],
                       "candidates": materials[1], "library": materials[2], "decisions": output,
                       **{key: training[key] for key in ("limits", "max_bytes")}}
+        if "general_storage" in training:
+            validation["general_storage"] = training["general_storage"]
     contract = {"schema": 1, "role": role, "task_id": task_id, "config_sha256": training["config_sha256"],
                 "materials": materials, "output": output, "validation": validation}
     if same_solver:
@@ -1994,6 +1996,9 @@ def seal_training(req):
     if guarded:
         require(encoded(req.get("runtime")) == encoded(frozen_runtime),
                 "seal runtime must exactly match the complete frozen runtime; no export was written")
+        profile = read(contexts[0]["feedback"]["training_snapshot"])
+        if "general_storage" in profile:
+            req = {**req, "general_storage": export_storage(req, profile)}
     validated = validate_contexts(contexts, req["train_ids"])
     training_root = verify_training_root(contexts, req["roles"])
     validate_candidates(read(req["candidates"]), validated)
@@ -2064,6 +2069,8 @@ def seal_training(req):
               "limits": req["limits"], "max_bytes": req["max_bytes"],
               "decisions_file": rel(req["decisions"]), "decisions_sha256": digest(regular(req["decisions"]).read_bytes()),
               "skill_sha256": validate_package(req["skill"])["sha256"]}
+    if "general_storage" in req:
+        record["general_storage"] = req["general_storage"]
     if training_root is not None:
         record["training_root"] = training_root
     if all(c.get("reflection", {}).get("mode") == "solver-session" for c in contexts):
@@ -2839,10 +2846,28 @@ def publish_skill(stage, dest, placeholder):
         raise
 
 
+class ExportPolicyError(ValueError):
+    """An unexecuted data-only export can be corrected without new learning."""
+
+
+def export_storage(req, training=None):
+    if training is None:
+        path = Path(__file__).resolve().parent.parent / "training.json"
+        training = read(path) if path.is_file() else {}
+    declared = training.get("general_storage") if training.get("guard_version") == 2 else None
+    requested = req.get("general_storage")
+    if declared is not None and requested is not None and requested != declared:
+        raise ExportPolicyError("general_storage conflicts with frozen training; no export published")
+    policy = declared if declared is not None else (requested if requested is not None else "full")
+    if policy not in ("full", "description-only"):
+        raise ExportPolicyError("unknown general_storage; no export published")
+    return policy
+
+
 def export_skill(req):
     entries = read(req["library"])
     validate_entries(entries, req["limits"])
-    files = render_package(entries, req["max_bytes"], general_storage=req.get("general_storage", "full"))
+    files = render_package(entries, req["max_bytes"], general_storage=export_storage(req))
     dest = Path(req["output"])
     require(not dest.is_symlink(), "export destination is a symlink")
     check_prior_publication(dest)
@@ -2946,7 +2971,10 @@ if __name__ == "__main__":
                          ensure_ascii=False, allow_nan=False))
     except (ValueError, KeyError, OSError, TypeError, IndexError) as exc:
         error = {"error": str(exc)}
-        if isinstance(exc, ReflectionBoundaryError):
+        if isinstance(exc, ExportPolicyError):
+            error.update(code="export_policy_conflict", recoverable=True,
+                         next_action="Use frozen training.json general_storage or omit the duplicate argument; correct this data request without rerunning learning or scoring.")
+        elif isinstance(exc, ReflectionBoundaryError):
             error.update(code="reflection_boundary_violation", recoverable=False, phase=exc.phase,
                          tool_call_id=exc.tool_call_id,
                          next_action="Stop this attempt and return this error to the parent. Preserve evidence; do not retry seal, answer, judge or reflection.")
