@@ -605,10 +605,12 @@ def validate_workers(mode, phase):
     registration = registered_benchmarks(mode)
     expected = registration["training" if phase == "training" else "test"]["case_ids"]
     tickets = phase_tickets(scratch, mode, phase)
+    repeats = 1 if phase == "training" else evo.read(mode["config"])["test_repeats"]
+    expected_cells = {(case, run) for case in expected for run in range(1, repeats + 1)}
     results, cases = [], []
     for ticket in tickets:
         identity = worker_identity(ticket)
-        cases.append(identity["case_id"])
+        cases.append((identity["case_id"], identity["run"]))
         item = {"slot": ticket["slot"], "valid": False, "pending": False, "format_required": False, "repair_available": False}
         try:
             source = native_worker(meta, scratch, mode, ticket)
@@ -635,8 +637,11 @@ def validate_workers(mode, phase):
         except (ValueError, KeyError, OSError) as exc:
             item["reason"] = str(exc)
         results.append(item)
-    return {"complete": sorted(cases) == sorted(expected) and all(item["valid"] and item["cell"]["status"] == "ok" for item in results),
-            "phase": phase, "workers": results, "missing": sorted(set(expected) - set(cases)),
+    missing = sorted(expected_cells - set(cases))
+    return {"complete": len(cases) == len(expected_cells) and set(cases) == expected_cells
+            and all(item["valid"] and item["cell"]["status"] == "ok" for item in results),
+            "phase": phase, "workers": results,
+            "missing": [case if repeats == 1 else f"{case}/run{run}" for case, run in missing],
             "cells": [item["cell"] for item in results if item["valid"]],
             "read_only": True, "automatic_dispatch": False}
 
@@ -974,7 +979,9 @@ def worker_request(req, scratch, mode):
     for key in ("provider", "model_id", "thinking_level"):
         check(line(key) == config["runtime"][key], "worker prompt runtime differs from frozen protocol")
     case, run = line("case_id"), line("run")
-    check(run == "1", "one frozen repetition required")
+    repeats = 1 if phase == "training" else config["test_repeats"]
+    check(re.fullmatch(r"[1-9][0-9]*", run) is not None and 1 <= int(run) <= repeats,
+          "worker repetition is outside the frozen phase range")
     if phase == "training":
         check(line("training_protocol_version") == "1", "continuous group worker contract required")
         check(case in registration["training"]["case_ids"], "not the frozen continuous group Case")
@@ -1422,7 +1429,7 @@ def controller_final(mode):
         check(all(identity[k] == accepted["runtime"][k] for k in ("provider", "model_id", "thinking_level")), "test runtime mismatch")
         check(identity["agent_id"] == config["test_agent_id"].removeprefix("create:").strip(), "test matrix names another Target")
     for matrix_req in [h0_req] + ([] if accepted["equivalent_h0"] else [final_req]):
-        check(matrix_req["runs"] == config["test_repeats"] == 1 and Path(matrix_req["evo_tool"]).resolve() == TOOL,
+        check(matrix_req["runs"] == config["test_repeats"] and Path(matrix_req["evo_tool"]).resolve() == TOOL,
               "test matrix repetitions/helper differ from frozen protocol")
     frozen_request = evo.read(mode["freeze_request"])
     benchmark = Path(config["deployment"]["penguin_home"]) / config["deployment"]["project_id"] / "benchmarks" / config["test_benchmark_id"]

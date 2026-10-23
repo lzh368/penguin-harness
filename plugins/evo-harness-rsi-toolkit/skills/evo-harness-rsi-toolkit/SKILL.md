@@ -1,7 +1,7 @@
 ---
 name: evo-harness-rsi-toolkit
 description: Run Evo-Harness with frozen Solver settings, negative-feedback reflection and batch compilation of general and task-type skills. Use native Penguin workers, State, snapshots and evaluation; the continuous GDPevo profile adds checked native delegation and export acceptance.
-version: 2026.10.23.2
+version: 2026.10.23.3
 ---
 
 # Evo-Harness
@@ -54,6 +54,8 @@ Resolve together, from the request or frozen configuration:
   froze a different protocol. Never fall back to a project default.
 - One pass, one answer/feedback attempt per training task and one compilation
   per batch; runs=1 per test State by default. Freeze any changes before work.
+  A requested three-round evaluation uses test_repeats=3 on the same frozen
+  H0/final States, with distinct case/run worker slots; training still runs once.
 - Initially empty private library; at most 5 general and 5 entries per topic.
   Export each retained entry as an independent native Skill. The fixed Reader,
   its complete manifest, and every Skill body and metadata together fit 16,000

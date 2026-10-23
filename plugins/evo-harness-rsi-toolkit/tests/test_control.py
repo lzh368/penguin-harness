@@ -630,7 +630,7 @@ class ControlTests(unittest.TestCase):
 
     def format_fixture(self, completed=True, from_file=False):
         config = self.root / "format-config.json"
-        self.write(config, {"deployment": {"node": shutil.which("node"), "penguin_checkout": str(native_dependency_checkout())}})
+        self.write(config, {"test_repeats": 1, "deployment": {"node": shutil.which("node"), "penguin_checkout": str(native_dependency_checkout())}})
         mode = {"mode": "controller", "session_id": self.meta["session_id"], "config": str(config), "config_sha256": control.sha(config),
                 "completion_request": str(self.scratch / "evo-guard/completion-request.json")}
         self.write(self.scratch / control.MARKER, mode)

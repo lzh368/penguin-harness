@@ -166,6 +166,12 @@ lesson or omit it. Keep uncertainty in lesson, trigger and scope_hint as well
 as evidence. Write for future similar tasks; temporary IDs, dates, amounts and
 answers stay in the private record, not as business constants. Zero candidates
 is valid only after this negative-feedback reflection was performed and sealed.
+For a weak attempt, verify the reusable substep against the already observed
+records: reproduce its filter, join keys, units and calculation or its logical
+premises, using observed-v1 local computation when needed. Keep the result and
+its evidence in the candidate; do not call an untested proposed repair verified
+or attribute a low scalar score to it. A verified substep is useful experience
+even when the whole answer was poor; no new judge or training attempt is implied.
 Use the fixed validation/seal request supplied in your original Solver prompt;
 this checks structure and references, not the truth of an interpretation.
 A normal `complete: false`, `code: candidate_draft_invalid` seal result permits
@@ -218,6 +224,19 @@ judgment, and each action field: a statistical extreme does not itself choose
 a business priority, action, or the entity named by an output field. Preserve
 each field's task-defined role and the evidence connecting these steps; a
 training-instance choice is not a mandatory rule for later tasks.
+
+A request for a recommendation, classification or action can require business
+reasoning rather than a lookup table. Derive the requested judgment from the
+current task's objective and authorized facts, compare the relevant alternatives,
+and preserve the assumptions that matter. Absence of an explicit label mapping
+does not by itself justify leaving a required judgment unresolved. Use that
+branch only when essential facts or decision premises are genuinely missing;
+never invent a policy threshold. An extreme statistic alone is insufficient,
+but a fact-supported argument connecting it to the requested objective is valid.
+Likewise, source authority established for one field or task family stays scoped
+to that field or family; neither query order nor the word "live" establishes a
+universal priority. Put these boundaries in the visible general description or
+topic body, not only in its private reason.
 
 Non-SKIP operations include a complete replacement entry: id, level
 (general/topic), topic for topic entries, trigger, scope and Markdown body.
