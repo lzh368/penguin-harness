@@ -20,7 +20,7 @@ class RecoveryTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        self.call = {"subagent_id": "subagent-original", "prompt": "Fixed pre-start repair only"}
+        self.call = {"description": "Repair original worker", "subagent_id": "subagent-original", "prompt": "Fixed pre-start repair only"}
         self.mode = {"mode": "controller", "session_id": "parent", "config_sha256": "frozen"}
         self.result = self.root / "failed.json"
         self.write(self.result, {"finished_at": "done", "exception_info": {"type": "network"},
@@ -104,6 +104,20 @@ class RecoveryTests(unittest.TestCase):
         rows = request("status: failed") + request("status: ok")
         self.assertEqual(c.worker_text(rows, last_request=True), "status: ok")
         self.assertIn("status: failed", c.worker_text(rows))
+
+    def test_native_panel_receipt_binds_parent_child_and_exact_input(self):
+        p = self.root / "panel-receipt.json"
+        receipt = {"parent_session": "parent", "child_session": "original",
+                   "prompt_sha256": c.evo.digest(self.call["prompt"].encode()),
+                   "response": {"outcome": "resumed"}}
+        self.write(p, receipt)
+        delivery = {"kind": "native-subagent-panel", "receipt": str(p), "sha256": c.sha(p)}
+        c.verify_recovery_delivery(delivery, self.grant, self.mode)
+        for field, value in (("parent_session", "other"), ("child_session", "new-worker"),
+                             ("prompt_sha256", "changed"), ("response", {"outcome": "steered"})):
+            self.write(p, {**receipt, field: value}); delivery["sha256"] = c.sha(p)
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                c.verify_recovery_delivery(delivery, self.grant, self.mode)
 
 
 if __name__ == "__main__":

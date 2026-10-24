@@ -473,6 +473,18 @@ def engineering_recovery_grant(scratch, mode, child_id):
     return grants[0] if grants else None
 
 
+def verify_recovery_delivery(delivery, grant, mode):
+    """Bind the native panel's revival of an expired in-memory child handle."""
+    check(delivery.get("kind") == "native-subagent-panel", "unknown recovery delivery")
+    check(sha(delivery["receipt"]) == delivery["sha256"], "native recovery receipt changed")
+    receipt = evo.read(delivery["receipt"])
+    check(receipt["parent_session"] == mode["session_id"]
+          and receipt["child_session"] == grant["worker_session"]
+          and receipt["prompt_sha256"] == evo.digest(grant["call"]["prompt"].encode())
+          and receipt["response"]["outcome"] in ("started", "resumed"),
+          "native recovery did not start this original idle worker")
+
+
 def authorize_engineering_recovery(args, meta, scratch, mode, call_id, grant):
     check(mode["mode"] == "controller" and args == grant["call"] and grant["phase"] == "h0",
           "only the exact registered pre-start recovery input is permitted")
@@ -577,17 +589,23 @@ def worker_result(meta, scratch, mode, ticket):
     source = native_worker(meta, scratch, mode, ticket)
     grant = engineering_recovery_grant(scratch, mode, source["handle"])
     claim_path = scratch / "evo-guard/recovery-claims" / (source["handle"] + ".json")
-    recovered = bool(grant and claim_path.exists())
+    delivery = grant.get("native_host_delivery") if grant else None
+    recovered = bool(grant and (claim_path.exists() or delivery))
     if recovered:
-        claim = evo.read(evo.regular(claim_path))
-        calls = [r["payload"] for r in source["parent_rows"] if r.get("type") == "model_msg"
-                 and r.get("payload", {}).get("type") == "tool_call"
-                 and r["payload"].get("tool_call_id") == claim["tool_call_id"]]
-        check(len(calls) == 1 and calls[0].get("name") == "input_subagent"
-              and json.loads(calls[0]["arguments"]) == grant["call"], "registered recovery call missing/changed")
+        if delivery:
+            verify_recovery_delivery(delivery, grant, mode)
+        else:
+            claim = evo.read(evo.regular(claim_path))
+            calls = [r["payload"] for r in source["parent_rows"] if r.get("type") == "model_msg"
+                     and r.get("payload", {}).get("type") == "tool_call"
+                     and r["payload"].get("tool_call_id") == claim["tool_call_id"]]
+            check(len(calls) == 1 and calls[0].get("name") == "input_subagent"
+                  and json.loads(calls[0]["arguments"]) == grant["call"], "registered recovery call missing/changed")
         users = [r["payload"]["text"] for r in source["rows"] if r.get("type") == "model_msg"
                  and r.get("payload", {}).get("type") == "text"
-                 and r["payload"].get("role") == "user" and r["payload"].get("sender") == "parent_agent"]
+                 and r["payload"].get("role") == "user"
+                 and (r["payload"].get("sender") == "parent_agent"
+                      or (delivery and r["payload"].get("sender") is None))]
         if len(users) == 1:
             raise WorkerPending("await the registered recovery in the original worker")
         check(len(users) == 2 and users[-1] == grant["call"]["prompt"], "unregistered recovery input")
