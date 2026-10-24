@@ -452,6 +452,60 @@ def format_request(req, meta, scratch, mode):
     return {"call": call, "ticket": str(path), "automatic_dispatch": False}
 
 
+def engineering_recovery_grant(scratch, mode, child_id):
+    """An operator-bound, one-shot continuation of an original pre-start worker.
+
+    No model can mint this grant through a control request. The operator keeps
+    the old verdict, records proof of no Target execution and binds the manifest
+    hash in this stopped controller's mode before resuming it.
+    """
+    binding = mode.get("engineering_recovery")
+    if not binding:
+        return None
+    path = Path(binding["manifest"])
+    check(sha(path) == binding["sha256"], "engineering recovery manifest changed")
+    manifest = evo.read(path)
+    check(manifest["schema"] == "evo-prestart-recovery-v1"
+          and manifest["session_id"] == mode["session_id"]
+          and manifest["config_sha256"] == mode["config_sha256"], "engineering recovery identity changed")
+    grants = [g for g in manifest["grants"] if g["call"]["subagent_id"] == child_id]
+    check(len(grants) <= 1, "ambiguous engineering recovery worker")
+    return grants[0] if grants else None
+
+
+def authorize_engineering_recovery(args, meta, scratch, mode, call_id, grant):
+    check(mode["mode"] == "controller" and args == grant["call"] and grant["phase"] == "h0",
+          "only the exact registered pre-start recovery input is permitted")
+    ticket = evo.read(evo.regular(grant["worker_ticket"]))
+    check(ticket["slot"] == grant["slot"] and ticket["phase"] == "h0", "recovery slot changed")
+    source = native_worker(meta, scratch, mode, ticket)
+    check(source["session_id"] == grant["worker_session"] and source["handle"] == args["subagent_id"],
+          "recovery must continue its original worker Session")
+    for proof in grant["failed_trials"]:
+        check(sha(proof["result"]) == proof["sha256"], "failed pre-start evidence changed")
+        result = evo.read(proof["result"])
+        check(result.get("finished_at") and result.get("exception_info")
+              and not result.get("agent_execution") and not result.get("verifier_result")
+              and not (result.get("agent_result") or {}).get("model_usage"),
+              "recovery cannot repeat an executed or ambiguous Target")
+    freeze(mode, "h0")  # The original empty State must be restored first.
+    ledger = evo.read(journal_path(scratch, mode))
+    operation = ledger["operations"][grant["operation_id"]]
+    check(ledger["controller_session_id"] == mode["session_id"]
+          and ledger["config_sha256"] == mode["config_sha256"]
+          and operation["status"] == "reserved"
+          and operation["request_sha256"] == evo.digest(canonical(args).encode()),
+          "recovery needs its additional reservation in the original ledger")
+    check(ledger["known_cost_usd"] + sum(o["reserve_usd"] for o in ledger["operations"].values()
+          if o["status"] != "complete") <= ledger["budget_usd"], "recovery budget exhausted")
+    claim = scratch / "evo-guard/recovery-claims" / (args["subagent_id"] + ".json")
+    value = {"tool_call_id": call_id, "worker_session": grant["worker_session"]}
+    if claim.exists():
+        check(evo.read(claim) == value, "engineering recovery already dispatched")
+    else:
+        evo.write_once(claim, evo.encoded(value))
+
+
 def authorize_input(args, meta, scratch, mode, call_id):
     check("prompt_file" not in args and "prompt_sha256" not in args,
           "input_subagent accepts prompt, not run_subagent prompt files")
@@ -459,6 +513,9 @@ def authorize_input(args, meta, scratch, mode, call_id):
         return
     check(mode["mode"] == "controller", "training role steering/retries are forbidden; reflection must finish in the original Solver run")
     child_id = evo.ident(args["subagent_id"])
+    grant = engineering_recovery_grant(scratch, mode, child_id)
+    if grant:
+        return authorize_engineering_recovery(args, meta, scratch, mode, call_id, grant)
     path = scratch / "evo-guard/format" / (child_id + ".json")
     repair = evo.read(path)
     check(args == repair["call"] and args["prompt"] == FORMAT_PROMPT, "only the registered formatting-only evaluation repair is allowed")
@@ -518,7 +575,23 @@ def worker_result(meta, scratch, mode, ticket):
     if ticket["phase"] == "training" or config.get("receipt_policy") != "native-trial-v1":
         return legacy_worker_result(meta, scratch, mode, ticket)
     source = native_worker(meta, scratch, mode, ticket)
-    text = worker_text(source["rows"])
+    grant = engineering_recovery_grant(scratch, mode, source["handle"])
+    claim_path = scratch / "evo-guard/recovery-claims" / (source["handle"] + ".json")
+    recovered = bool(grant and claim_path.exists())
+    if recovered:
+        claim = evo.read(evo.regular(claim_path))
+        calls = [r["payload"] for r in source["parent_rows"] if r.get("type") == "model_msg"
+                 and r.get("payload", {}).get("type") == "tool_call"
+                 and r["payload"].get("tool_call_id") == claim["tool_call_id"]]
+        check(len(calls) == 1 and calls[0].get("name") == "input_subagent"
+              and json.loads(calls[0]["arguments"]) == grant["call"], "registered recovery call missing/changed")
+        users = [r["payload"]["text"] for r in source["rows"] if r.get("type") == "model_msg"
+                 and r.get("payload", {}).get("type") == "text"
+                 and r["payload"].get("role") == "user" and r["payload"].get("sender") == "parent_agent"]
+        if len(users) == 1:
+            raise WorkerPending("await the registered recovery in the original worker")
+        check(len(users) == 2 and users[-1] == grant["call"]["prompt"], "unregistered recovery input")
+    text = worker_text(source["rows"], last_request=recovered)
     reply, reply_issue = None, None
     try:
         reply = worker_yaml(text, mode, allow_fence=True)
